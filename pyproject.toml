@@ -1,0 +1,126 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telos-interp"
+version = "0.1.0"
+description = "Utilities for analyzing and steering goal-directedness in agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+    "transformers>=4.42.0",
+    "nnsight>=0.5.3",
+    "torch>=2.0.1",
+    "typer>=0.17.4",
+    "toml>=0.10.2"
+]
+
+[project.optional-dependencies]
+data = [
+  "datasets>=2.4.0",
+  "pandas>=1.5.3",
+]
+lint = [
+  "pre-commit>=4.2.0",
+  "pytest>=8.3.5",
+  "pytest-xdist>=3.6.1",
+  "ruff>=0.11.0"
+]
+notebook = [
+  "ipykernel>=6.29.5",
+  "ipywidgets>=8.1.5"
+]
+
+[project.scripts]
+"interp-cli" = "telos_interp.commands.cli:app"
+
+[tool.pytest.ini_options]
+pythonpath = ["telos-interp"]
+testpaths = "tests"
+python_files = "test_*.py"
+norecursedirs =["hooks", "*.egg", ".eggs", "dist", "build", "docs", ".tox", ".git", "__pycache__"]
+doctest_optionflags = ["NUMBER", "NORMALIZE_WHITESPACE", "IGNORE_EXCEPTION_DETAIL"]
+markers = [
+  "slow",
+  "require_cuda_gpu"
+]
+addopts = [
+  "--strict-markers",
+  "--tb=short",
+  "--doctest-modules",
+  "--doctest-continue-on-failure",
+  "--disable-pytest-warnings",
+  "--color=yes"
+]
+
+
+[tool.setuptools]
+packages = ["telos_interp"]
+
+
+[tool.ruff]
+target-version = "py310"
+exclude = [
+  ".git",
+  ".vscode",
+  ".github",
+  ".claude",
+  "__pycache__",
+  "old",
+  "build",
+  "htmlcov",
+  "dev_examples",
+  "dist",
+  ".tox",
+  "temp",
+  "*.egg",
+  "venv",
+  ".venv",
+]
+fix = true
+line-length = 119
+src = ["telos-interp", "examples", "tests"]
+extend-include = ["*.ipynb"]
+
+[tool.ruff.lint]
+ignore = [
+  "B006", # mutable default argument
+  "C901", # function too complex
+  "E501", # line too long (handled by format)
+  "E731", # do not assign a lambda expression, use a def
+  "E741", # ambiguous variable name
+  "F722", # syntax error in forward annotation (as used by jaxtyping)
+  "F821", # undefined name
+  "PLR2004", # unnamed numerical constants used
+  "PLR0913", # too many arguments
+  "PLR0915", # too many statements
+  "W191", # indentation contains tabs (handled by format)
+  "PLC0415", # import-outside-toplevel
+]
+select = [
+  "E", # pycodestyle errors
+  "F", # pyflakes
+  "W", # pycodestyle warnings
+  "C", # flake8-comprehensions
+  #"D", # flake8-docstrings
+  "B", # flake8-bugbear
+  "I", # isort
+  "UP", # flake8-pyupgrade
+  "PLC", # flake8-pylint
+  "PLE", # flake8-pylint
+  "PLR", # flake8-pylint
+  "PLW", # flake8-pylint
+]
+per-file-ignores = { "__init__.py" = ["F401"], "**/examples/*" = ["B018", "E402"] }
+isort = { known-first-party = ["telos-interp"], order-by-type = true}
+pylint = { max-branches = 22 }
+pyupgrade = { keep-runtime-typing = true }
+pydocstyle = { convention = "google" }
+
+
+[tool.pydoclint]
+style = 'google'
+exclude = '\.git|\.tox|tests/data|some_script\.py'
+require-return-section-when-returning-nothing = true
