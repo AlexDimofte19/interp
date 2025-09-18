@@ -9,15 +9,16 @@
 
 ### Option 1: Using UV (Recommended)
 
-1. **Install UV package manager**:
-   ```bash
-   make uv-download
-   ```
 
-2. **Clone the repository**:
+1. **Clone the repository**:
    ```bash
    git clone https://github.com/SPAR-Telos/interp
    cd interp
+   ```
+
+2. **Install UV package manager**:
+   ```bash
+   make uv-download
    ```
 
 3. **Install development dependencies**:
