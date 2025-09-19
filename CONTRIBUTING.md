@@ -3,35 +3,72 @@
 ## Prerequisites
 
 - Python 3.10 or higher (recommended: 3.12)
-- [UV package manager](https://docs.astral.sh/uv/) (install with `make uv-download`, activate environment with `source .venv/bin/activate`)
+- [UV package manager](https://docs.astral.sh/uv/) (install via the official installer, e.g. `curl -LsSf https://astral.sh/uv/install.sh | sh` and follow the prompts)
 
 ## Development Setup
 
-### Option 1: Using UV (Recommended)
+1. **Install uv** following the [installation guide](https://docs.astral.sh/uv/getting-started/installation/).
 
-
-1. **Clone the repository**:
+2. **Clone the repository**:
    ```bash
    git clone https://github.com/SPAR-Telos/interp
    cd interp
    ```
 
-2. **Install UV package manager**:
+3. **Create the virtual environment and install project dependencies**:
    ```bash
-   make uv-download
-   ```
-
-3. **Install development dependencies**:
-   ```bash
-   source .venv/bin/activate
-   make install-dev
+   uv sync
    ```
 
    This will:
-   - Activate the UV virtual environment
-   - Install all development dependencies
-   - Set up pre-commit hooks
-   - Install the package in editable mode
+   - Resolve dependencies declared in `pyproject.toml` / `uv.lock`
+   - Create a `.venv` folder at the project root (managed by uv)
+
+4. **Activate the environment (optional)**:
+   ```bash
+   source .venv/bin/activate
+   ```
+
+5. **Install pre-commit hooks**:
+   ```bash
+   uvx pre-commit install
+   ```
+
+`uvx` is shorthand for `uv tool run`; it installs and caches development tools without modifying the project's dependency lists.
+
+## Editor Configuration
+
+### VS Code Setup with Ruff
+
+To configure VS Code to format your Python code on save using Ruff via `uvx ruff format`:
+
+1. **Install Ruff and uvx**:
+   ```bash
+   uv tool install ruff@latest
+   ```
+
+2. **Install the Ruff VS Code Extension**:
+   - Open VS Code
+   - Go to Extensions (Ctrl+Shift+X)
+   - Search for "Ruff" and install the extension by `charliermarsh`
+
+3. **Configure VS Code Settings**:
+   Open your VS Code settings (Ctrl+Shift+P → "Preferences: Open Settings (JSON)") and add:
+   ```json
+   {
+     "[python]": {
+       "editor.formatOnSave": true,
+       "editor.defaultFormatter": "charliermarsh.ruff",
+       "editor.codeActionsOnSave": {
+         "source.fixAll.ruff": "always",
+         "source.organizeImports.ruff": "always"
+       }
+     },
+     "ruff.path": ["uvx", "ruff"]
+   }
+   ```
+
+This configuration will automatically format your Python code and organize imports every time you save a file, using Ruff via `uvx ruff format`.
 
 ## Project Structure
 
@@ -117,8 +154,6 @@ Pre-commit hooks are automatically installed with `make install-dev`. They will:
 - Validate TOML files
 - Check for merge conflicts
 - Run Ruff formatting and linting
-- Run tests
-- Clean temporary files
 
 ## Making Changes
 
@@ -164,16 +199,19 @@ Pre-commit hooks are automatically installed with `make install-dev`. They will:
 - `lint`: For development tools (`pytest`, `ruff`, `pre-commit`)
 - `notebook`: For Jupyter notebook support (`ipykernel`, `ipywidgets`)
 
+
 ## Package Management
 
 To update dependencies:
 
-1. **Modify `pyproject.toml`** with new dependencies
-2. **Update requirement files**:
+1. **Modify `pyproject.toml`** with new dependencies or version constraints
+2. **Refresh the lockfile**:
    ```bash
-   make update-deps
+   uv lock --upgrade
    ```
-3. **Install updated dependencies**:
+   Use `uv lock --upgrade-package <name>` for targeted upgrades.
+3. **Install the updated dependencies locally**:
    ```bash
    make install-dev
    ```
+4. Commit both `pyproject.toml` and `uv.lock`.

@@ -9,7 +9,6 @@ help:
 	@echo "uv-activate	   : activates the uv python environment"
 	@echo "install         : installs required dependencies"
 	@echo "install-dev     : installs the dev dependencies for the project"
-	@echo "update-deps     : updates the dependencies and writes them to requirements.txt"
 	@echo "check-style     : run checks on all files without fixing them."
 	@echo "fix-style       : run checks on files and potentially modifies them."
 	@echo "test            : run all tests."
@@ -38,17 +37,11 @@ uv-activate:
 
 .PHONY: install
 install:
-	make uv-activate && uv pip install -r requirements.txt && uv pip install -e .
+	uv sync && uv pip install -e .
 
 .PHONY: install-dev
 install-dev:
-	make uv-activate && uv pip install -r requirements-dev.txt && pre-commit install && pre-commit autoupdate && uv pip install -e .
-
-
-.PHONY: update-deps
-update-deps:
-	uv pip compile pyproject.toml -o requirements.txt
-	uv pip compile --all-extras pyproject.toml -o requirements-dev.txt
+	uv sync --all-extras && pre-commit install && pre-commit autoupdate && uv pip install -e .
 
 #* Linting
 .PHONY: check-style
