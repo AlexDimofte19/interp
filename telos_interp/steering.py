@@ -44,13 +44,17 @@ class SteeringVector:
         vector.strength = data.get("strength", 1.0)
         return vector
 
+    def to(self, device: torch.device):
+        """Move steering vector to device."""
+        self.vector = self.vector.to(device)
+        return self
+
 
 class SteeringController:
     """Core steering controller using nnsight for activation intervention."""
 
-    def __init__(self, model: LanguageModel, token_position: TokenPosition = TokenPosition.response_avg):
+    def __init__(self, model: LanguageModel):
         self.model = model
-        self.token_position = token_position
         self.steering_vectors: dict[str, SteeringVector] = {}
 
     def add_steering_vector(self, name: str, vector: SteeringVector):
@@ -58,8 +62,8 @@ class SteeringController:
         self.steering_vectors[name] = vector
 
     def apply_steering(
-        self, prompt: str, goal_name: str, strength: float | None = None, max_new_tokens: int = 100
-    ) -> tuple[str, torch.Tensor]:
+        self, prompt: str, goal_name: str, layer: int, strength: float | None = None, max_new_tokens: int = 100
+    ) -> str:
         """
         Apply steering to generate a response using nnsight intervention.
 
@@ -70,7 +74,7 @@ class SteeringController:
             max_new_tokens: Maximum tokens to generate
 
         Returns:
-            Tuple of (generated_response, final_activations)
+            Generated response
         """
         if goal_name not in self.steering_vectors:
             raise ValueError(f"No steering vector found for goal: {goal_name}")
@@ -83,59 +87,38 @@ class SteeringController:
         input_ids = self.model.tokenizer(prompt, return_tensors="pt").input_ids
         prompt_length = input_ids.shape[1]
 
+        steering_vector.to(self.model.device)
+
         # Apply steering using nnsight intervention
         with torch.no_grad():
-            with self.model.trace(input_ids):
-                # Apply steering to each specified layer
-                for layer_idx in steering_vector.layer_indices:
-                    if layer_idx < self.model.model.config.num_hidden_layers:
+            with self.model.generate(
+                input_ids, max_new_tokens=max_new_tokens, do_sample=True, temperature=0.7, top_p=0.95
+            ) as tracer:
+                with tracer.all():
+                    # Apply steering to each specified layer
+                    if layer < self.model.model.config.num_hidden_layers:
                         # Get the layer output
-                        layer_output = self.model.model.layers[layer_idx].output
+                        layer_output = self.model.model.layers[
+                            layer
+                        ].output  # Layer output has shape (batch_size, prompt_length, hidden_size) for first generated token and (batch_size, 1, hidden_size) for subsequent tokens.
 
-                        # Apply steering based on token position
-                        if self.token_position == TokenPosition.response_avg:
-                            # Apply to all response tokens
-                            steered_output = layer_output.clone()
-                            steered_output[0, prompt_length:, :] += (
-                                steering_vector.strength * steering_vector.vector[layer_idx]
-                            )
-                            self.model.model.layers[layer_idx].output = steered_output
-
-                        elif self.token_position == TokenPosition.prompt_last:
-                            # Apply to last prompt token
-                            steered_output = layer_output.clone()
-                            steered_output[0, prompt_length - 1, :] += (
-                                steering_vector.strength * steering_vector.vector[layer_idx]
-                            )
-                            self.model.model.layers[layer_idx].output = steered_output
-
-                        elif self.token_position == TokenPosition.prompt_avg:
-                            # Apply to all prompt tokens
-                            steered_output = layer_output.clone()
-                            steered_output[0, :prompt_length, :] += (
-                                steering_vector.strength * steering_vector.vector[layer_idx]
-                            )
-                            self.model.model.layers[layer_idx].output = steered_output
+                        # Apply to all response tokens
+                        steered_output = layer_output.clone()
+                        steered_output[0, :, :] += steering_vector.strength * steering_vector.vector[layer]
+                        self.model.model.layers[layer].output = steered_output
+                    else:
+                        raise ValueError(
+                            f"Layer {layer} is out of range (max {self.model.model.config.num_hidden_layers})"
+                        )
 
                 # Generate response with steering applied
-                output = self.model.model.generate(
-                    input_ids, max_new_tokens=max_new_tokens, do_sample=True, temperature=0.7, top_p=0.95
-                )
+                output = self.model.generator.output.save()
 
         # Extract response
         response_tokens = output[0, prompt_length:]
         response = self.model.tokenizer.decode(response_tokens, skip_special_tokens=True)
 
-        # Get final activations for the response
-        final_activations = self._get_final_activations(prompt, response)
-
-        return response, final_activations
-
-    def _get_final_activations(self, prompt: str, response: str) -> torch.Tensor:
-        """Get final activations for the prompt + response."""
-        from .activations import run_model_and_gather_activations_at_token_position
-
-        return run_model_and_gather_activations_at_token_position(self.model, prompt, response, self.token_position)
+        return response
 
     def save_steering_vectors(self, directory: str):
         """Save all steering vectors to directory."""

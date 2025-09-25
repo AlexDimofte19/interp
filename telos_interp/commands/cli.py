@@ -1,13 +1,10 @@
 import os
 from typing import Annotated
 
-
 import nnsight
 import torch
 import typer
-from nnsight import LanguageModel
 from telos_interp import activations, data_generation, steering
-
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -75,24 +72,22 @@ def apply_steering(
     model_name_or_path: str,
     goal_name: str,
     prompt: str,
+    layer: int,
     steering_dir: Annotated[str, typer.Option(help="Directory containing steering vectors")] = "steering_vectors",
     strength: Annotated[float, typer.Option(help="Steering strength")] = 1.0,
     max_new_tokens: int = 100,
-    token_position: Annotated[
-        activations.TokenPosition, typer.Option(help="Position of the token to gather activations from")
-    ] = activations.TokenPosition.response_avg,
 ):
     """Apply steering to generate a response."""
     # Initialize model and controller
-    model = nnsight.LanguageModel(model_name_or_path, device_map="auto")
-    controller = steering.SteeringController(model, token_position)
+    model = nnsight.LanguageModel(model_name_or_path, device_map="auto", dispatch=True)
+    controller = steering.SteeringController(model)
 
     # Load steering vectors
     controller.load_steering_vectors(steering_dir)
 
     # Apply steering
     typer.echo(f"Generating response for prompt: {prompt}")
-    response, _ = controller.apply_steering(prompt, goal_name, strength, max_new_tokens)
+    response = controller.apply_steering(prompt, goal_name, layer, strength, max_new_tokens)
 
     typer.echo(f"Steered response: {response}")
 
@@ -111,7 +106,7 @@ def steer_interactive(
     """Start an interactive steering session."""
     # Initialize model and controller
     model = nnsight.LanguageModel(model_name_or_path, device_map="auto")
-    controller = steering.SteeringController(model, token_position)
+    controller = steering.SteeringController(model)
 
     # Load steering vectors
     controller.load_steering_vectors(steering_dir)
@@ -125,7 +120,7 @@ def steer_interactive(
             break
 
         try:
-            response, _ = controller.apply_steering(prompt, goal_name, strength, max_new_tokens)
+            response = controller.apply_steering(prompt, goal_name, strength, max_new_tokens)
             typer.echo(f"Response: {response}\n")
         except Exception as e:
             typer.echo(f"Error: {e}\n")
