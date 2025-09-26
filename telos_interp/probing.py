@@ -1,6 +1,7 @@
 import pickle
 from pathlib import Path
 
+import nnsight
 import numpy as np
 import torch
 from sklearn.linear_model import LogisticRegression
@@ -12,6 +13,8 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.preprocessing import StandardScaler
+
+from telos_interp import activations as act_module
 
 ArrayLike = np.ndarray | torch.Tensor
 
@@ -269,3 +272,22 @@ def train_and_save_probe(
     output_path = Path(output_dir) / f"probe_layer_{layer}.pkl"
     probe.save(output_path)
     return output_path
+
+
+def apply_probe_on_prompt_response(
+    model: nnsight.LanguageModel,
+    probe: ProbingClassifier,
+    prompt: str,
+    response: str,
+    layer: int,
+    token_position: act_module.TokenPosition,
+) -> float:
+    activations = act_module.run_model_and_gather_activations_at_token_position(
+        model, prompt, response, token_position
+    )
+
+    layer_activations = activations[layer, :].unsqueeze(0)  # (1, hidden_dim,)
+
+    score = probe.score_tokens(layer_activations)
+
+    return score.item()

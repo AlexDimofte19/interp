@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 class TokenPosition(str, enum.Enum):
     response_avg = "response_avg"
+    response_last = "response_last"
     prompt_avg = "prompt_avg"
     prompt_last = "prompt_last"
 
@@ -56,7 +57,7 @@ def gather_activations_from_csv_data(model_name_or_path: str, csv_path: str, tok
 
     csv_name = os.path.basename(csv_path)
     output_dir_name = csv_name.replace(".csv", "")
-    output_dir = f"data/activations/{output_dir_name}"
+    output_dir = f"data/activations/{output_dir_name}/{token_position.value}"
 
     os.makedirs(output_dir, exist_ok=True)
     torch.save(positive_activations, f"{output_dir}/positive_activations.pt")
@@ -91,10 +92,12 @@ def run_model_and_gather_activations_at_token_position(
                 ].output  # Layer output has shape (batch_size, seq_len, hidden_size)
                 if token_position == TokenPosition.prompt_last:
                     layer_output = full_layer_output[0, prompt_length, :]
-                elif token_position == TokenPosition.response_avg:
-                    layer_output = full_layer_output[0, prompt_length:, :].mean(dim=0)
                 elif token_position == TokenPosition.prompt_avg:
                     layer_output = full_layer_output[0, :prompt_length, :].mean(dim=0)
+                elif token_position == TokenPosition.response_avg:
+                    layer_output = full_layer_output[0, prompt_length:, :].mean(dim=0)
+                elif token_position == TokenPosition.response_last:
+                    layer_output = full_layer_output[0, -1, :]
                 else:
                     raise ValueError(f"Invalid token position: {token_position}")
 

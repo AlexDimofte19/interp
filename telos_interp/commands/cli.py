@@ -60,6 +60,28 @@ def train_probe(
     typer.echo(f"Probe saved to {saved_probe_path}")
 
 
+@app.command("apply-probe", help="Apply a probe to a dataset of activations")
+def apply_probe(
+    model_name_or_path: str,
+    probe_path: str,
+    layer: int,
+    prompt: str,
+    response: str,
+    token_position: Annotated[
+        activations.TokenPosition, typer.Argument(..., help="Position of the token to gather activations from")
+    ] = activations.TokenPosition.response_avg,
+):
+    # Initialize model and controller
+    model = nnsight.LanguageModel(model_name_or_path, device_map="auto", dispatch=True)
+
+    # Load probe
+    probe = probing.ProbingClassifier.load(probe_path)
+
+    # Apply probe
+    score = probing.apply_probe_on_prompt_response(model, probe, prompt, response, layer, token_position)
+    typer.echo(f"Score: {score}")
+
+
 @app.command("compute-steering", help="Compute steering vector from successful and failed activations")
 def compute_steering(
     successful_activations_path: str,
