@@ -4,7 +4,7 @@ from typing import Annotated
 import nnsight
 import torch
 import typer
-from telos_interp import activations, data_generation, steering
+from telos_interp import activations, data_generation, probing, steering
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -16,6 +16,16 @@ def get_version():
     except ImportError:
         version = "unknown"
     typer.echo(f"telos_interp version: {version}")
+
+
+@app.command("generate-data", help="Generate a dataset of prompts and responses on which we later train probes.")
+def generate_data(
+    model_name_or_path: str,
+    num_rollouts: int = 10,
+    max_new_tokens: int = 512,
+    # TODO: Add arguments to generate different types of datasets
+):
+    data_generation.generate_data(model_name_or_path, num_rollouts, max_new_tokens)
 
 
 @app.command("gather-activations", help="Gather model activations on a text dataset")
@@ -30,14 +40,24 @@ def gather_activations(
     typer.echo(f"Activations saved to {results_path}")
 
 
-@app.command("generate-data", help="Generate a dataset of prompts and responses on which we later train probes.")
-def generate_data(
-    model_name_or_path: str,
-    num_rollouts: int = 10,
-    max_new_tokens: int = 512,
-    # TODO: Add arguments to generate different types of datasets
+@app.command("train-probe", help="Train a probing classifier on a dataset of activations.")
+def train_probe(
+    positive_acts: str,
+    negative_acts: str,
+    layer: int,
+    output_dir: str = None,
+    eval_split: float = 0.2,
+    reg_coeff: float = 1e3,
+    normalize: bool = True,
 ):
-    data_generation.generate_data(model_name_or_path, num_rollouts, max_new_tokens)
+    if output_dir is None:
+        output_dir = os.path.join(os.path.dirname(positive_acts), "probes")
+        os.makedirs(output_dir, exist_ok=True)
+
+    saved_probe_path = probing.train_and_save_probe(
+        positive_acts, negative_acts, layer, output_dir, eval_split, reg_coeff, normalize
+    )
+    typer.echo(f"Probe saved to {saved_probe_path}")
 
 
 @app.command("compute-steering", help="Compute steering vector from successful and failed activations")
