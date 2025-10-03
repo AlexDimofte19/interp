@@ -40,6 +40,25 @@ def gather_activations(
     typer.echo(f"Activations saved to {results_path}")
 
 
+@app.command("gather-grid-activations", help="Gather model activations from grid CSV data, organized by cell type")
+def gather_grid_activations(
+    model_name_or_path: str,
+    csv_path: Annotated[
+        str,
+        typer.Argument(
+            ...,
+            help="Path to a grid CSV file with columns: env_idx, observation, x, y, cell_type, symbol, classes_map, optimal_trajectory_length",
+        ),
+    ],
+    token_position: Annotated[
+        activations.TokenPosition, typer.Argument(..., help="Position of the token to gather activations from")
+    ] = activations.TokenPosition.prompt_last,
+    layer: Annotated[int, typer.Option(help="Which layer to extract activations from")] = 12,
+):
+    results_path = activations.gather_activations_from_grid_csv(model_name_or_path, csv_path, token_position, layer)
+    typer.echo(f"Grid activations saved to {results_path}")
+
+
 @app.command("train-probe", help="Train a probing classifier on a dataset of activations.")
 def train_probe(
     positive_acts: str,
