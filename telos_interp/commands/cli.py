@@ -59,6 +59,23 @@ def gather_grid_activations(
     typer.echo(f"Grid activations saved to {results_path}")
 
 
+@app.command("train-multiclass-probe", help="Train a multi-class probing classifier on grid cell activations")
+def train_multiclass_probe(
+    activations_dir: Annotated[
+        str, typer.Argument(..., help="Directory containing activation files (acts_wall.pt, acts_empty.pt, etc.)")
+    ],
+    layer: Annotated[int, typer.Argument(..., help="Layer number for the probe")],
+    output_dir: Annotated[str, typer.Option(help="Directory to save the probe")] = None,
+    eval_split: Annotated[float, typer.Option(help="Fraction of data to use for evaluation")] = 0.2,
+    reg_coeff: Annotated[float, typer.Option(help="Regularization coefficient")] = 1e3,
+    normalize: Annotated[bool, typer.Option(help="Whether to normalize activations")] = True,
+):
+    saved_probe_path = probing.train_and_save_multiclass_probe(
+        activations_dir, layer, output_dir, eval_split, reg_coeff, normalize
+    )
+    typer.echo(f"Multi-class probe saved to {saved_probe_path}")
+
+
 @app.command("train-probe", help="Train a probing classifier on a dataset of activations.")
 def train_probe(
     positive_acts: str,

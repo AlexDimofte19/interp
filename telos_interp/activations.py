@@ -117,6 +117,43 @@ def run_model_and_gather_activations_at_token_position(
     return all_layer_outputs
 
 
+def run_model_and_gather_activations_all_tokens(nnsight_model, prompt, response) -> torch.Tensor:
+    """Input the prompt and response into the model and gather activations for all tokens.
+
+    Returns:
+        A torch.Tensor of shape (num_layers, seq_len, hidden_size)
+    """
+    prompt_and_response = prompt + response
+    input_ids = nnsight_model.tokenizer(prompt_and_response, return_tensors="pt").input_ids
+
+    # For GPT-2/DialoGPT, the model structure is different
+    if hasattr(nnsight_model, "model") and hasattr(nnsight_model.model, "config"):
+        num_layers = nnsight_model.model.config.num_hidden_layers
+    elif hasattr(nnsight_model, "transformer") and hasattr(nnsight_model.transformer, "h"):
+        num_layers = len(nnsight_model.transformer.h)
+    else:
+        raise ValueError("Cannot determine number of layers from model structure")
+    all_layer_outputs = []
+
+    with torch.no_grad():
+        with nnsight_model.trace(input_ids):
+            for layer in range(num_layers):
+                # For GPT-2/DialoGPT, layers are in transformer.h
+                if hasattr(nnsight_model, "model") and hasattr(nnsight_model.model, "layers"):
+                    full_layer_output = nnsight_model.model.layers[layer].output[0]  # Get the tensor, not the tuple
+                elif hasattr(nnsight_model, "transformer") and hasattr(nnsight_model.transformer, "h"):
+                    full_layer_output = nnsight_model.transformer.h[layer].output[0]  # Get the tensor, not the tuple
+                else:
+                    raise ValueError("Cannot access model layers")
+
+                # Return all token activations: (seq_len, hidden_size)
+                layer_output = full_layer_output[0, :, :]  # Remove batch dimension
+                all_layer_outputs.append(layer_output)
+
+    all_layer_outputs = torch.stack(all_layer_outputs).detach().clone().cpu()  # (num_layers, seq_len, hidden_size)
+    return all_layer_outputs
+
+
 def gather_activations_from_grid_csv(
     model_name_or_path: str, csv_path: str, token_position: TokenPosition = TokenPosition.prompt_last, layer: int = 12
 ) -> str:
@@ -193,18 +230,16 @@ def extract_activations_for_grid_cells(
     Returns:
         Dictionary mapping (x, y) coordinates to activations
     """
-    # Get activations for the entire grid using the existing function
+    # Get activations for the entire grid using the new function that returns all tokens
     dummy_response = ""  # Empty response since we're only interested in the input
-    all_layer_activations = run_model_and_gather_activations_at_token_position(
-        model, grid_text, dummy_response, token_position
-    )
+    all_layer_activations = run_model_and_gather_activations_all_tokens(model, grid_text, dummy_response)
 
     # Extract the specific layer we want
     if layer >= len(all_layer_activations):
         print(f"Warning: Layer {layer} not available. Model has {len(all_layer_activations)} layers.")
         return {}
 
-    layer_activations = all_layer_activations[layer]  # Shape: (hidden_dim,)
+    layer_activations = all_layer_activations[layer]  # Shape: (seq_len, hidden_dim)
 
     cell_activations = {}
 
@@ -215,7 +250,7 @@ def extract_activations_for_grid_cells(
         # Find token position for this cell
         token_pos = find_token_position_for_grid_cell(grid_text, x, y, model.tokenizer)
 
-        if token_pos is not None and token_pos < len(layer_activations):
+        if token_pos is not None and token_pos < layer_activations.shape[0]:
             # Extract activation for this token position
             cell_activation = layer_activations[token_pos]  # Shape: (hidden_dim,)
             cell_activations[(x, y)] = cell_activation
