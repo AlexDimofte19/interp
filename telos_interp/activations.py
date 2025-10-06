@@ -215,6 +215,110 @@ def gather_activations_from_grid_csv(
     return output_dir
 
 
+def gather_activations_from_grid_csv_last_prompt(model_name_or_path: str, csv_path: str, layer: int = 12) -> str:
+    """Gather activations from grid CSV using only the last prompt token for all cell types.
+
+    This function extracts activations only at the last prompt token position and groups
+    them by cell type. Each activation represents the model's "summary" of the entire grid.
+
+    Args:
+        model_name_or_path: The name or path of the model to use
+        csv_path: Path to the CSV file containing grid data
+        layer: Layer number to extract activations from
+
+    Returns:
+        Path to the output directory containing saved activations
+    """
+    print(f"Loading grid data from {csv_path}")
+    df = pd.read_csv(csv_path)
+
+    print(f"Loading model: {model_name_or_path}")
+    model = nnsight.LanguageModel(model_name_or_path)
+
+    # Group by environment
+    activations_by_type = {}
+    unique_cell_types = df["cell_type"].unique()
+
+    for cell_type in unique_cell_types:
+        activations_by_type[cell_type] = []
+
+    print(f"Processing {df['env_idx'].nunique()} environments...")
+
+    for env_idx in df["env_idx"].unique():
+        env_data = df[df["env_idx"] == env_idx]
+        grid_text = env_data.iloc[0]["observation"]
+
+        print(f"Processing environment {env_idx}...")
+
+        # Get activation at last prompt token for this environment
+        last_prompt_activation = extract_last_prompt_activation_for_grid(model, grid_text, layer)
+
+        if last_prompt_activation is not None:
+            # For each cell type in this environment, add the same activation
+            for cell_type in unique_cell_types:
+                if cell_type in env_data["cell_type"].values:
+                    activations_by_type[cell_type].append(last_prompt_activation)
+
+    # Save activations by type
+    csv_name = os.path.basename(csv_path)
+    output_dir_name = csv_name.replace(".csv", "")
+    output_dir = f"data/activations/{output_dir_name}/grid_last_prompt_layer_{layer}"
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    for cell_type, activations_list in activations_by_type.items():
+        if activations_list:  # Only save if we have activations for this type
+            activations_tensor = torch.stack(activations_list)
+            output_path = f"{output_dir}/acts_{cell_type}.pt"
+            torch.save(activations_tensor, output_path)
+            print(f"Saved {len(activations_list)} {cell_type} activations to {output_path}")
+        else:
+            print(f"No activations found for cell type: {cell_type}")
+
+    return output_dir
+
+
+def extract_last_prompt_activation_for_grid(model, grid_text: str, layer: int) -> torch.Tensor | None:
+    """Extract activation at the last prompt token for a grid.
+
+    Args:
+        model: The nnsight model
+        grid_text: The full grid observation text
+        layer: Which layer to extract from
+
+    Returns:
+        Activation tensor of shape (hidden_dim,) or None if extraction fails
+    """
+    try:
+        # Tokenize the prompt to get its length
+        tokenized_prompt = model.tokenizer(grid_text, return_tensors="pt").input_ids
+        prompt_length = tokenized_prompt.shape[1]
+
+        # Get activations for all tokens
+        dummy_response = ""  # Empty response since we're only interested in the input
+        all_layer_activations = run_model_and_gather_activations_all_tokens(model, grid_text, dummy_response)
+
+        # Extract the specific layer we want
+        if layer >= len(all_layer_activations):
+            print(f"Warning: Layer {layer} not available. Model has {len(all_layer_activations)} layers.")
+            return None
+
+        layer_activations = all_layer_activations[layer]  # Shape: (seq_len, hidden_dim)
+
+        # Get the last prompt token activation (0-based indexing)
+        last_prompt_idx = prompt_length - 1
+        if last_prompt_idx < layer_activations.shape[0]:
+            last_prompt_activation = layer_activations[last_prompt_idx]  # Shape: (hidden_dim,)
+            return last_prompt_activation
+        else:
+            print(f"Warning: Last prompt token index {last_prompt_idx} out of bounds")
+            return None
+
+    except Exception as e:
+        print(f"Error extracting last prompt activation: {e}")
+        return None
+
+
 def extract_activations_for_grid_cells(
     model, grid_text: str, env_data: pd.DataFrame, token_position: TokenPosition, layer: int
 ) -> dict:

@@ -59,6 +59,25 @@ def gather_grid_activations(
     typer.echo(f"Grid activations saved to {results_path}")
 
 
+@app.command(
+    "gather-grid-activations-last-prompt",
+    help="Gather model activations using only the last prompt token for all cell types",
+)
+def gather_grid_activations_last_prompt(
+    model_name_or_path: str,
+    csv_path: Annotated[
+        str,
+        typer.Argument(
+            ...,
+            help="Path to a grid CSV file with columns: env_idx, observation, x, y, cell_type, symbol, classes_map, optimal_trajectory_length",
+        ),
+    ],
+    layer: Annotated[int, typer.Option(help="Which layer to extract activations from")] = 12,
+):
+    results_path = activations.gather_activations_from_grid_csv_last_prompt(model_name_or_path, csv_path, layer)
+    typer.echo(f"Grid activations (last prompt) saved to {results_path}")
+
+
 @app.command("train-multiclass-probe", help="Train a multi-class probing classifier on grid cell activations")
 def train_multiclass_probe(
     activations_dir: Annotated[
