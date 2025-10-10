@@ -4,7 +4,7 @@ from typing import Annotated
 import nnsight
 import torch
 import typer
-from telos_interp import activations, data_generation, probing, steering
+from telos_interp import activations, cellwise_activations, data_generation, probing, steering
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -38,6 +38,63 @@ def gather_activations(
 ):
     results_path = activations.gather_activations_from_csv_data(model_name_or_path, csv_path, token_position)
     typer.echo(f"Activations saved to {results_path}")
+
+
+@app.command(
+    "gather-grid-activations-cellwise",
+    help="Gather model activations at cell token positions from grid CSV data, organized by cell type.",
+)
+def gather_grid_activations_cellwise(
+    model_name_or_path: str,
+    csv_path: Annotated[
+        str,
+        typer.Argument(
+            ...,
+            help="Path to a grid CSV file with columns: env_idx, observation, x, y, cell_type, symbol, classes_map, optimal_trajectory_length",
+        ),
+    ],
+    layer: Annotated[int, typer.Option(..., help="Which layer to extract activations from")],
+):
+    results_path = cellwise_activations.gather_activations_from_grid_at_cell_token_positions(
+        model_name_or_path, csv_path, layer
+    )
+    typer.echo(f"Grid activations saved to {results_path}")
+
+
+@app.command(
+    "gather-grid-activations-last-prompt",
+    help="Gather model activations using only the last prompt token for all cell types.",
+)
+def gather_grid_activations_last_prompt(
+    model_name_or_path: str,
+    csv_path: Annotated[
+        str,
+        typer.Argument(
+            ...,
+            help="Path to a grid CSV file with columns: env_idx, observation, x, y, cell_type, symbol, classes_map, optimal_trajectory_length",
+        ),
+    ],
+    layer: Annotated[int, typer.Option(help="Which layer to extract activations from")],
+):
+    results_path = activations.gather_activations_from_grid_at_last_prompt_token(model_name_or_path, csv_path, layer)
+    typer.echo(f"Grid activations (last prompt) saved to {results_path}")
+
+
+@app.command("train-multiclass-probe", help="Train a multi-class probing classifier on grid cell activations")
+def train_multiclass_probe(
+    activations_dir: Annotated[
+        str, typer.Argument(..., help="Directory containing activation files (acts_wall.pt, acts_empty.pt, etc.)")
+    ],
+    layer: Annotated[int, typer.Argument(..., help="Layer number for the probe")],
+    output_dir: Annotated[str, typer.Option(help="Directory to save the probe")] = None,
+    eval_split: Annotated[float, typer.Option(help="Fraction of data to use for evaluation")] = 0.2,
+    reg_coeff: Annotated[float, typer.Option(help="Regularization coefficient")] = 1e3,
+    normalize: Annotated[bool, typer.Option(help="Whether to normalize activations")] = True,
+):
+    saved_probe_path = probing.train_and_save_multiclass_probe(
+        activations_dir, layer, output_dir, eval_split, reg_coeff, normalize
+    )
+    typer.echo(f"Multi-class probe saved to {saved_probe_path}")
 
 
 @app.command("train-probe", help="Train a probing classifier on a dataset of activations.")

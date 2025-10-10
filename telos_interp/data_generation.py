@@ -1,7 +1,6 @@
 import json
 
 import pandas as pd
-import torch
 import vllm
 
 
@@ -36,7 +35,8 @@ def generate_data(model_name_or_path: str, num_rollouts: int, max_new_tokens: in
     model = vllm.LLM(
         model=model_name_or_path,
         trust_remote_code=True,
-        tensor_parallel_size=torch.cuda.device_count(),
+        tensor_parallel_size=1,  # Use 1 instead of 0 for CPU
+        max_num_batched_tokens=2048,  # Set to be larger than max_model_len
     )
 
     sampling_params = vllm.SamplingParams(
