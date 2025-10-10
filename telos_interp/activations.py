@@ -146,7 +146,7 @@ def gather_activations_from_grid_at_last_prompt_token(model_name_or_path: str, c
     df = pd.read_csv(csv_path)
 
     print(f"Loading model: {model_name_or_path}")
-    model = nnsight.LanguageModel(model_name_or_path)
+    model = nnsight.LanguageModel(model_name_or_path, device_map="auto")
 
     # Group by environment
     activations_by_type = defaultdict(list)
