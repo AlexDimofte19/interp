@@ -154,15 +154,14 @@ def run_model_and_gather_activations_all_tokens(nnsight_model, prompt, response)
     return all_layer_outputs
 
 
-def gather_activations_from_grid_csv(
-    model_name_or_path: str, csv_path: str, token_position: TokenPosition = TokenPosition.prompt_last, layer: int = 12
+def gather_activations_from_grid_at_cell_token_positions(
+    model_name_or_path: str, csv_path: str, layer: int = 12
 ) -> str:
-    """Gather activations from grid CSV data, organized by cell type.
+    """Gather activations at cell token positions from grid CSV data, organized by cell type.
 
     Args:
         model_name_or_path: The name or path of the model to run.
         csv_path: Path to the grid CSV file with columns: env_idx, observation, x, y, cell_type, symbol, classes_map, optimal_trajectory_length
-        token_position: Position of the token to gather activations from
         layer: Which layer to extract activations from
 
     Returns:
@@ -186,7 +185,7 @@ def gather_activations_from_grid_csv(
         grid_text = env_data["observation"].iloc[0]
 
         # Extract activations for each cell in this environment
-        cell_activations = extract_activations_for_grid_cells(model, grid_text, env_data, token_position, layer)
+        cell_activations = extract_activations_at_grid_cell_token_positions(model, grid_text, env_data, layer)
 
         # Group activations by cell type
         for _, row in env_data.iterrows():
@@ -199,7 +198,7 @@ def gather_activations_from_grid_csv(
     # Convert lists to tensors and save
     csv_name = os.path.basename(csv_path)
     output_dir_name = csv_name.replace(".csv", "")
-    output_dir = f"data/activations/{output_dir_name}/grid_{token_position.value}_layer_{layer}"
+    output_dir = f"data/activations/{output_dir_name}/grid_cellwise_layer_{layer}"
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -215,8 +214,8 @@ def gather_activations_from_grid_csv(
     return output_dir
 
 
-def gather_activations_from_grid_csv_last_prompt(model_name_or_path: str, csv_path: str, layer: int = 12) -> str:
-    """Gather activations from grid CSV using only the last prompt token for all cell types.
+def gather_activations_from_grid_at_last_prompt_token(model_name_or_path: str, csv_path: str, layer: int = 12) -> str:
+    """Gather activations using only the last prompt token for all cell types from grid CSV data.
 
     This function extracts activations only at the last prompt token position and groups
     them by cell type. Each activation represents the model's "summary" of the entire grid.
@@ -224,7 +223,7 @@ def gather_activations_from_grid_csv_last_prompt(model_name_or_path: str, csv_pa
     Args:
         model_name_or_path: The name or path of the model to use
         csv_path: Path to the CSV file containing grid data
-        layer: Layer number to extract activations from
+        layer: Which layer to extract activations from
 
     Returns:
         Path to the output directory containing saved activations
@@ -319,8 +318,8 @@ def extract_last_prompt_activation_for_grid(model, grid_text: str, layer: int) -
         return None
 
 
-def extract_activations_for_grid_cells(
-    model, grid_text: str, env_data: pd.DataFrame, token_position: TokenPosition, layer: int
+def extract_activations_at_grid_cell_token_positions(
+    model, grid_text: str, env_data: pd.DataFrame, layer: int
 ) -> dict:
     """Extract activations for each grid cell in an environment.
 

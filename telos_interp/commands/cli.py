@@ -40,8 +40,11 @@ def gather_activations(
     typer.echo(f"Activations saved to {results_path}")
 
 
-@app.command("gather-grid-activations", help="Gather model activations from grid CSV data, organized by cell type")
-def gather_grid_activations(
+@app.command(
+    "gather-grid-activations-cellwise",
+    help="Gather model activations at cell token positions from grid CSV data, organized by cell type.",
+)
+def gather_grid_activations_cellwise(
     model_name_or_path: str,
     csv_path: Annotated[
         str,
@@ -50,18 +53,17 @@ def gather_grid_activations(
             help="Path to a grid CSV file with columns: env_idx, observation, x, y, cell_type, symbol, classes_map, optimal_trajectory_length",
         ),
     ],
-    token_position: Annotated[
-        activations.TokenPosition, typer.Argument(..., help="Position of the token to gather activations from")
-    ] = activations.TokenPosition.prompt_last,
-    layer: Annotated[int, typer.Option(help="Which layer to extract activations from")] = 12,
+    layer: Annotated[int, typer.Argument(..., help="Which layer to extract activations from")],
 ):
-    results_path = activations.gather_activations_from_grid_csv(model_name_or_path, csv_path, token_position, layer)
+    results_path = activations.gather_activations_from_grid_at_cell_token_positions(
+        model_name_or_path, csv_path, layer
+    )
     typer.echo(f"Grid activations saved to {results_path}")
 
 
 @app.command(
     "gather-grid-activations-last-prompt",
-    help="Gather model activations using only the last prompt token for all cell types",
+    help="Gather model activations using only the last prompt token for all cell types.",
 )
 def gather_grid_activations_last_prompt(
     model_name_or_path: str,
@@ -74,7 +76,7 @@ def gather_grid_activations_last_prompt(
     ],
     layer: Annotated[int, typer.Option(help="Which layer to extract activations from")] = 12,
 ):
-    results_path = activations.gather_activations_from_grid_csv_last_prompt(model_name_or_path, csv_path, layer)
+    results_path = activations.gather_activations_from_grid_at_last_prompt_token(model_name_or_path, csv_path, layer)
     typer.echo(f"Grid activations (last prompt) saved to {results_path}")
 
 
