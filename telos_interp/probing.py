@@ -3,6 +3,7 @@ from pathlib import Path
 
 import nnsight
 import numpy as np
+import pandas as pd
 import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -18,6 +19,137 @@ from sklearn.preprocessing import StandardScaler
 from telos_interp import activations as act_module
 
 ArrayLike = np.ndarray | torch.Tensor
+
+
+# ----------------------------- Common utilities ----------------------------- #
+def _prepare_multiclass_data(
+    activations_dict: dict[str, ArrayLike],
+    dtype: torch.dtype = torch.float32,
+) -> tuple[np.ndarray, np.ndarray, list[str], dict[str, int]]:
+    """Prepare multi-class data from activations dictionary.
+
+    Returns:
+        X: (n_samples, hidden_dim) numpy array
+        y: (n_samples,) numpy array of class indices
+        class_names: list of class names
+        class_name_to_class_idx: mapping from class name to index
+    """
+    if not activations_dict:
+        raise ValueError("activations_dict cannot be empty")
+
+    X_list = []
+    y_list = []
+    class_names = list(activations_dict.keys())
+    class_name_to_class_idx = {}
+
+    for class_idx, (class_name, acts) in enumerate(activations_dict.items()):
+        class_name_to_class_idx[class_name] = class_idx
+        X_class = _to_numpy(acts, dtype)
+
+        # Handle both 1D and 2D activations
+        if X_class.ndim == 1:
+            X_class = X_class.reshape(1, -1)
+        elif X_class.ndim == 2:
+            pass
+        else:
+            raise ValueError(f"Activations must be 1-D or 2-D. Got {X_class.shape} for class {class_name}.")
+
+        X_list.append(X_class)
+        y_list.append(np.full(X_class.shape[0], class_idx, dtype=np.int64))
+
+    X = np.vstack(X_list)
+    y = np.concatenate(y_list)
+
+    return X, y, class_names, class_name_to_class_idx
+
+
+def _compute_metrics(
+    y_test: np.ndarray,
+    y_pred: np.ndarray,
+    class_names: list[str],
+    class_name_to_class_idx: dict[str, int],
+) -> dict[str, float]:
+    """Compute evaluation metrics for multi-class classification.
+
+    Returns:
+        Dictionary containing overall and per-class metrics
+    """
+    # Calculate metrics
+    accuracy = accuracy_score(y_test, y_pred)
+
+    # Calculate per-class metrics
+    report = classification_report(y_test, y_pred, target_names=class_names, output_dict=True)
+
+    # Calculate predicted counts for each class
+    predicted_counts = {}
+    for class_name in class_names:
+        class_idx = class_name_to_class_idx[class_name]
+        predicted_counts[class_name] = int(np.sum(y_pred == class_idx))
+
+    # Extract per-class metrics
+    per_class_metrics = {}
+    for class_name in class_names:
+        if class_name in report:
+            per_class_metrics[f"{class_name}_precision"] = report[class_name]["precision"]
+            per_class_metrics[f"{class_name}_recall"] = report[class_name]["recall"]
+            per_class_metrics[f"{class_name}_f1"] = report[class_name]["f1-score"]
+            per_class_metrics[f"{class_name}_support"] = report[class_name]["support"]
+            per_class_metrics[f"{class_name}_predicted"] = predicted_counts[class_name]
+
+    # Calculate macro averages
+    macro_precision = report["macro avg"]["precision"]
+    macro_recall = report["macro avg"]["recall"]
+    macro_f1 = report["macro avg"]["f1-score"]
+
+    # Calculate weighted averages
+    weighted_precision = report["weighted avg"]["precision"]
+    weighted_recall = report["weighted avg"]["recall"]
+    weighted_f1 = report["weighted avg"]["f1-score"]
+
+    metrics = {
+        "accuracy": accuracy,
+        "macro_precision": macro_precision,
+        "macro_recall": macro_recall,
+        "macro_f1": macro_f1,
+        "weighted_precision": weighted_precision,
+        "weighted_recall": weighted_recall,
+        "weighted_f1": weighted_f1,
+        **per_class_metrics,
+    }
+
+    return metrics
+
+
+def _print_evaluation_results(eval_metrics: dict[str, float], class_names: list[str]) -> None:
+    """Print evaluation results in a formatted way."""
+    print("\n📊 Evaluation Results:")
+
+    # Print overall metrics first
+    print(f"  Accuracy: {eval_metrics['accuracy']:.4f}")
+    print(
+        f"  Macro avg    - Precision: {eval_metrics['macro_precision']:.4f}, Recall: {eval_metrics['macro_recall']:.4f}, F1: {eval_metrics['macro_f1']:.4f}"
+    )
+    print(
+        f"  Weighted avg - Precision: {eval_metrics['weighted_precision']:.4f}, Recall: {eval_metrics['weighted_recall']:.4f}, F1: {eval_metrics['weighted_f1']:.4f}"
+    )
+
+    # Print per-class metrics as a DataFrame
+    print("\n  Per-Class Metrics:")
+    per_class_data = []
+    for class_name in class_names:
+        per_class_data.append(
+            {
+                "Class": class_name,
+                "Precision": eval_metrics.get(f"{class_name}_precision", 0),
+                "Recall": eval_metrics.get(f"{class_name}_recall", 0),
+                "F1-Score": eval_metrics.get(f"{class_name}_f1", 0),
+                "GT Support": int(eval_metrics.get(f"{class_name}_support", 0)),
+                "Predicted": int(eval_metrics.get(f"{class_name}_predicted", 0)),
+            }
+        )
+
+    df = pd.DataFrame(per_class_data)
+    print(df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
 
 class ProbingClassifier:
@@ -184,17 +316,25 @@ class MultiClassProbingClassifier:
     def __init__(
         self,
         reg_coeff: float = 1e3,
-        normalize: bool = True,
+        normalize: bool = False,
+        fit_intercept: bool = True,
         dtype: torch.dtype = torch.float32,
+        verbose: int = 0,
+        class_weight: str | dict[str, float] | None = None,
     ) -> None:
         self.reg_coeff = float(reg_coeff)
         self.normalize = bool(normalize)
+        self.fit_intercept = bool(fit_intercept)
         self.dtype = dtype
+        self.verbose = int(verbose)
+        self.class_weight = class_weight
 
         self.classifier: LogisticRegression | None = None
         self.scaler_mean: torch.Tensor | None = None
         self.scaler_std: torch.Tensor | None = None
         self.class_names: list[str] | None = None
+
+        self.class_name_to_class_idx: dict[str, int] = {}
 
     # ----------------------------- training -------------------------------- #
     def fit(self, activations_dict: dict[str, ArrayLike]) -> "MultiClassProbingClassifier":
@@ -207,33 +347,8 @@ class MultiClassProbingClassifier:
         Returns:
         self
         """
-        if not activations_dict:
-            raise ValueError("activations_dict cannot be empty")
-
-        # Prepare data
-        X_list = []
-        y_list = []
-        self.class_names = list(activations_dict.keys())
-
-        for class_idx, (class_name, acts) in enumerate(activations_dict.items()):
-            X_class = _to_numpy(acts, self.dtype)
-
-            # Handle both 1D and 2D activations
-            if X_class.ndim == 1:
-                # For 1D activations, each element is a sample
-                # Reshape to (n_samples, hidden_dim) where n_samples = 1
-                X_class = X_class.reshape(1, -1)
-            elif X_class.ndim == 2:
-                # For 2D activations, assume (n_samples, hidden_dim)
-                pass
-            else:
-                raise ValueError(f"Activations must be 1-D or 2-D. Got {X_class.shape} for class {class_name}.")
-
-            X_list.append(X_class)
-            y_list.append(np.full(X_class.shape[0], class_idx, dtype=np.int64))
-
-        X = np.vstack(X_list)
-        y = np.concatenate(y_list)
+        # Prepare data using common utility
+        X, y, self.class_names, self.class_name_to_class_idx = _prepare_multiclass_data(activations_dict, self.dtype)
 
         # Normalisation ---------------------------------------------------- #
         if self.normalize:
@@ -250,10 +365,11 @@ class MultiClassProbingClassifier:
         # Multi-class logistic regression ---------------------------------- #
         self.classifier = LogisticRegression(
             C=1.0 / self.reg_coeff,
-            fit_intercept=False,
+            fit_intercept=self.fit_intercept,
             random_state=42,
-            solver="liblinear",
-            multi_class="ovr",  # One-vs-Rest for multi-class
+            solver="lbfgs",
+            verbose=self.verbose,
+            class_weight=self.class_weight,
         )
         self.classifier.fit(X, y)  # type: ignore[arg-type]
 
@@ -290,7 +406,7 @@ class MultiClassProbingClassifier:
         return torch.tensor(probabilities, dtype=self.dtype)
 
     @torch.no_grad()
-    def predict(self, hidden_states: ArrayLike) -> torch.Tensor:
+    def predict(self, hidden_states: ArrayLike) -> np.ndarray:
         """
         Get predicted class labels for a single sequence.
 
@@ -298,7 +414,7 @@ class MultiClassProbingClassifier:
         hidden_states : (seq_len, hidden_dim)
 
         Returns:
-        torch.Tensor
+        np.ndarray
             1-D tensor of shape (seq_len,) with predicted class indices.
         """
         if self.classifier is None:
@@ -316,7 +432,7 @@ class MultiClassProbingClassifier:
         hs_np = hs.cpu().numpy()
         predictions = self.classifier.predict(hs_np)  # type: ignore[arg-type]
 
-        return torch.tensor(predictions, dtype=torch.long)
+        return predictions
 
     def evaluate(self, activations_dict: dict[str, ArrayLike]) -> dict[str, float]:
         """
@@ -332,60 +448,16 @@ class MultiClassProbingClassifier:
         if self.classifier is None:
             raise RuntimeError("Probe not trained – call .fit(...) first.")
 
-        # Prepare test data
-        X_list = []
-        y_list = []
-
-        for class_idx, (class_name, acts) in enumerate(activations_dict.items()):
-            X_class = _to_numpy(acts, self.dtype)
-
-            # Handle both 1D and 2D activations
-            if X_class.ndim == 1:
-                # For 1D activations, each element is a sample
-                # Reshape to (n_samples, hidden_dim) where n_samples = 1
-                X_class = X_class.reshape(1, -1)
-            elif X_class.ndim == 2:
-                # For 2D activations, assume (n_samples, hidden_dim)
-                pass
-            else:
-                raise ValueError(f"Activations must be 1-D or 2-D. Got {X_class.shape} for class {class_name}.")
-
-            X_list.append(X_class)
-            y_list.append(np.full(X_class.shape[0], class_idx, dtype=np.int64))
-
-        X_test = np.vstack(X_list)
-        y_test = np.concatenate(y_list)
+        # Prepare test data using common utility
+        # We pass the class names in the same order they were learned
+        test_dict_ordered = {name: activations_dict[name] for name in self.class_names}
+        X_test, y_test, _, _ = _prepare_multiclass_data(test_dict_ordered, self.dtype)
 
         # Get predictions
-        y_pred = self.classifier.predict(X_test)  # type: ignore[arg-type]
+        y_pred = self.predict(X_test)
 
-        # Calculate metrics
-        accuracy = accuracy_score(y_test, y_pred)
-
-        # Calculate per-class metrics
-        report = classification_report(y_test, y_pred, target_names=self.class_names, output_dict=True)
-
-        # Calculate macro averages
-        macro_precision = report["macro avg"]["precision"]
-        macro_recall = report["macro avg"]["recall"]
-        macro_f1 = report["macro avg"]["f1-score"]
-
-        # Calculate weighted averages
-        weighted_precision = report["weighted avg"]["precision"]
-        weighted_recall = report["weighted avg"]["recall"]
-        weighted_f1 = report["weighted avg"]["f1-score"]
-
-        metrics = {
-            "accuracy": accuracy,
-            "macro_precision": macro_precision,
-            "macro_recall": macro_recall,
-            "macro_f1": macro_f1,
-            "weighted_precision": weighted_precision,
-            "weighted_recall": weighted_recall,
-            "weighted_f1": weighted_f1,
-        }
-
-        return metrics
+        # Compute metrics using common utility
+        return _compute_metrics(y_test, y_pred, self.class_names, self.class_name_to_class_idx)
 
     # ----------------------------- I/O helpers ---------------------------- #
     def save(self, file: str | Path) -> None:
@@ -396,8 +468,12 @@ class MultiClassProbingClassifier:
             "scaler_std": self.scaler_std.cpu() if self.scaler_std is not None else None,
             "reg_coeff": self.reg_coeff,
             "normalize": self.normalize,
+            "fit_intercept": self.fit_intercept,
             "dtype": self.dtype,
+            "verbose": self.verbose,
+            "class_weight": self.class_weight,
             "class_names": self.class_names,
+            "class_name_to_class_idx": self.class_name_to_class_idx,
         }
         with open(file, "wb") as f:
             pickle.dump(payload, f)
@@ -411,12 +487,16 @@ class MultiClassProbingClassifier:
         obj = cls(
             reg_coeff=payload["reg_coeff"],
             normalize=payload["normalize"],
+            fit_intercept=payload["fit_intercept"],
             dtype=payload["dtype"],
+            verbose=payload.get("verbose", 0),  # Default to 0 for backward compatibility
+            class_weight=payload.get("class_weight", None),  # Default to None for backward compatibility
         )
         obj.classifier = payload["classifier"]
         obj.scaler_mean = payload["scaler_mean"]
         obj.scaler_std = payload["scaler_std"]
         obj.class_names = payload["class_names"]
+        obj.class_name_to_class_idx = payload["class_name_to_class_idx"]
         return obj
 
 
@@ -542,7 +622,10 @@ def train_and_save_multiclass_probe(
     output_dir: str = None,
     eval_split: float = 0.2,
     reg_coeff: float = 1e3,
-    normalize: bool = True,
+    normalize: bool = False,
+    fit_intercept: bool = True,
+    verbose: int = 0,
+    class_weight: str | dict[str, float] | None = None,
 ) -> str:
     """Train a multi-class probing classifier on grid cell activations.
 
@@ -553,6 +636,9 @@ def train_and_save_multiclass_probe(
         eval_split: Fraction of data to use for evaluation
         reg_coeff: Regularization coefficient
         normalize: Whether to normalize activations
+        fit_intercept: Whether to fit an intercept term in the logistic regression
+        verbose: Verbosity level for the logistic regression solver (0 = silent, 1+ = verbose)
+        class_weight: Class weights for handling class imbalance ('balanced' or dict mapping class names to weights)
 
     Returns:
         Path to the saved probe
@@ -598,14 +684,15 @@ def train_and_save_multiclass_probe(
     probe = MultiClassProbingClassifier(
         reg_coeff=reg_coeff,
         normalize=normalize,
+        fit_intercept=fit_intercept,
+        verbose=verbose,
+        class_weight=class_weight,
     ).fit(train_dict)
 
     # Evaluate the probe
     if any(eval_dict[class_name].shape[0] > 0 for class_name in eval_dict.keys()):
         eval_metrics = probe.evaluate(eval_dict)
-        print("\n📊 Evaluation Results:")
-        for metric, value in eval_metrics.items():
-            print(f"  {metric}: {value:.4f}")
+        _print_evaluation_results(eval_metrics, probe.class_names)
     else:
         print("\n⚠️  No evaluation data available (eval_split too small)")
 
@@ -616,7 +703,15 @@ def train_and_save_multiclass_probe(
     output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True)
 
-    output_path = output_dir / f"multiclass_probe_layer_{layer}.pkl"
+    # Only add suffix if not using defaults (no intercept or normalizing)
+    suffix_parts = []
+    if not fit_intercept:
+        suffix_parts.append("no_intercept")
+    if normalize:
+        suffix_parts.append("normalized")
+
+    suffix = "_" + "_".join(suffix_parts) if suffix_parts else ""
+    output_path = output_dir / f"multiclass_probe_layer_{layer}{suffix}.pkl"
     probe.save(output_path)
 
     print(f"\n💾 Probe saved to {output_path}")

@@ -89,11 +89,47 @@ def train_multiclass_probe(
     output_dir: Annotated[str, typer.Option(help="Directory to save the probe")] = None,
     eval_split: Annotated[float, typer.Option(help="Fraction of data to use for evaluation")] = 0.2,
     reg_coeff: Annotated[float, typer.Option(help="Regularization coefficient")] = 1e3,
-    normalize: Annotated[bool, typer.Option(help="Whether to normalize activations")] = True,
+    normalize: Annotated[bool, typer.Option(help="Whether to normalize activations")] = False,
+    fit_intercept: Annotated[bool, typer.Option(help="Whether to fit an intercept term")] = True,
+    verbose: Annotated[int, typer.Option(help="Verbosity level (0=silent, 1+=show progress)")] = 0,
+    use_gpu: Annotated[bool, typer.Option("--gpu/--cpu", help="Use GPU-accelerated PyTorch implementation")] = False,
+    learning_rate: Annotated[float, typer.Option(help="Learning rate for GPU training")] = 0.1,
+    max_iter: Annotated[int, typer.Option(help="Maximum iterations for GPU training")] = 1000,
+    balanced_weights: Annotated[
+        bool, typer.Option("--balanced/--no-balanced", help="Use balanced class weights to handle class imbalance")
+    ] = False,
 ):
-    saved_probe_path = probing.train_and_save_multiclass_probe(
-        activations_dir, layer, output_dir, eval_split, reg_coeff, normalize
-    )
+    class_weight = "balanced" if balanced_weights else None
+
+    if use_gpu:
+        from telos_interp import probing_gpu
+
+        saved_probe_path = probing_gpu.train_and_save_multiclass_probe_gpu(
+            activations_dir,
+            layer,
+            output_dir,
+            eval_split,
+            reg_coeff,
+            normalize,
+            fit_intercept,
+            verbose,
+            device=None,
+            learning_rate=learning_rate,
+            max_iter=max_iter,
+            class_weight=class_weight,
+        )
+    else:
+        saved_probe_path = probing.train_and_save_multiclass_probe(
+            activations_dir,
+            layer,
+            output_dir,
+            eval_split,
+            reg_coeff,
+            normalize,
+            fit_intercept,
+            verbose,
+            class_weight=class_weight,
+        )
     typer.echo(f"Multi-class probe saved to {saved_probe_path}")
 
 
