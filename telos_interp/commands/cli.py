@@ -75,8 +75,16 @@ def gather_grid_activations_last_prompt(
         ),
     ],
     layer: Annotated[int, typer.Option(help="Which layer to extract activations from")],
+    observability: Annotated[
+        activations.Observability, typer.Option(help="Observability of the grid")
+    ] = activations.Observability.full,
+    observation_type: Annotated[
+        activations.ObservationType, typer.Option(help="Type of observation")
+    ] = activations.ObservationType.grid_only,
 ):
-    results_path = activations.gather_activations_from_grid_at_last_prompt_token(model_name_or_path, csv_path, layer)
+    results_path = activations.gather_activations_from_grid_at_last_prompt_token(
+        model_name_or_path, csv_path, layer, observability, observation_type
+    )
     typer.echo(f"Grid activations (last prompt) saved to {results_path}")
 
 
