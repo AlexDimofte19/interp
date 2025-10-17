@@ -203,7 +203,7 @@ def gather_activations_from_grid_at_last_prompt_token(
     csv_name = os.path.basename(csv_path)
     output_dir_name = csv_name.replace(".csv", "")
     short_model_name = model_name_or_path.split("/")[-1]
-    output_dir = f"data/activations/{short_model_name}/{output_dir_name}/grid_last_prompt_layer_{layer}"
+    output_dir = f"data/activations/{short_model_name}/{output_dir_name}/observability_{observability.value}_{observation_type.value}/grid_last_prompt_layer_{layer}"
 
     os.makedirs(output_dir, exist_ok=True)
 
