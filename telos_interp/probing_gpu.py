@@ -289,6 +289,18 @@ class MultiClassProbingClassifierGPU:
         return obj
 
 
+def balance_classes_by_downsampling(train_dict: dict[str, ArrayLike]) -> dict[str, ArrayLike]:
+    """Balance classes by downsampling the majority classes."""
+    min_samples = min(acts.shape[0] for acts in train_dict.values())
+    balanced_train_dict = {}
+    for class_name, acts in train_dict.items():
+        shuffled_indices = torch.randperm(acts.shape[0])
+        balanced_acts = acts[shuffled_indices[:min_samples]]
+        balanced_train_dict[class_name] = balanced_acts
+
+    return balanced_train_dict
+
+
 def train_and_save_multiclass_probe_gpu(
     activations_dir: str,
     layer: int,
@@ -302,6 +314,7 @@ def train_and_save_multiclass_probe_gpu(
     learning_rate: float = 0.1,
     max_iter: int = 1000,
     class_weight: str | dict[str, float] | None = None,
+    balance_classes: bool = False,
 ) -> str:
     """Train a multi-class probing classifier on grid cell activations using GPU.
 
@@ -318,6 +331,7 @@ def train_and_save_multiclass_probe_gpu(
         learning_rate: Learning rate for optimization
         max_iter: Maximum number of iterations
         class_weight: Class weights for handling class imbalance ('balanced' or dict mapping class names to weights)
+        balance_classes: Whether to balance classes by downsampling the majority classes
 
     Returns:
         Path to the saved probe
@@ -354,6 +368,9 @@ def train_and_save_multiclass_probe_gpu(
 
         train_dict[class_name] = acts[:-n_eval] if n_eval > 0 else acts
         eval_dict[class_name] = acts[-n_eval:] if n_eval > 0 else acts[:0]
+
+    if balance_classes:
+        train_dict = balance_classes_by_downsampling(train_dict)
 
     print("\n🔢 Data split:")
     for class_name in activations_dict.keys():

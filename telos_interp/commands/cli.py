@@ -104,7 +104,16 @@ def train_multiclass_probe(
     learning_rate: Annotated[float, typer.Option(help="Learning rate for GPU training")] = 0.1,
     max_iter: Annotated[int, typer.Option(help="Maximum iterations for GPU training")] = 1000,
     balanced_weights: Annotated[
-        bool, typer.Option("--balanced/--no-balanced", help="Use balanced class weights to handle class imbalance")
+        bool,
+        typer.Option(
+            "--balanced-weights/--no-balanced-weights", help="Use balanced class weights to handle class imbalance"
+        ),
+    ] = False,
+    balance_classes: Annotated[
+        bool,
+        typer.Option(
+            "--balance-classes/--no-balance-classes", help="Balance classes by downsampling the majority classes"
+        ),
     ] = False,
 ):
     class_weight = "balanced" if balanced_weights else None
@@ -125,6 +134,7 @@ def train_multiclass_probe(
             learning_rate=learning_rate,
             max_iter=max_iter,
             class_weight=class_weight,
+            balance_classes=balance_classes,
         )
     else:
         saved_probe_path = probing.train_and_save_multiclass_probe(
