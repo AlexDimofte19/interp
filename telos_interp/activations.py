@@ -5,12 +5,16 @@ from collections import defaultdict
 import nnsight
 import pandas as pd
 import torch
+from huggingface_hub import HfApi
 from tqdm import tqdm
+
+from telos_interp import prompt_utils
 
 
 class TokenPosition(str, enum.Enum):
     response_avg = "response_avg"
     response_last = "response_last"
+    response_all = "response_all"
     prompt_avg = "prompt_avg"
     prompt_last = "prompt_last"
     all_tokens = "all_tokens"
@@ -84,7 +88,7 @@ def run_model_and_gather_activations_at_token_position(
     """Input the prompt and response into the model and gather activations at the token position.
 
     Returns:
-        if token_position == TokenPosition.all_tokens:
+        if token_position in [TokenPosition.all_tokens, TokenPosition.response_all]:
             A torch.Tensor of shape (num_layers, seq_len, hidden_size)
         else:
             A torch.Tensor of shape (num_layers, hidden_size)
@@ -127,6 +131,8 @@ def run_model_and_gather_activations_at_token_position(
                     layer_output = full_layer_output[0, -1, :]
                 elif token_position == TokenPosition.all_tokens:
                     layer_output = full_layer_output[0, :, :]
+                elif token_position == TokenPosition.response_all:
+                    layer_output = full_layer_output[0, prompt_length:, :]
                 else:
                     raise ValueError(f"Invalid token position: {token_position}")
 
@@ -215,5 +221,53 @@ def gather_activations_from_grid_at_last_prompt_token(
             print(f"Saved {len(activations_list)} {cell_type} activations to {output_path}")
         else:
             print(f"No activations found for cell type: {cell_type}")
+
+    return output_dir
+
+
+def gather_full_activations_from_jsonl(
+    model_name_or_path: str, jsonl_path: str, layers: int, hf_directory: str
+) -> str:
+    hf_api = HfApi()
+
+    print(f"Loading JSONL data from {jsonl_path}")
+    df = pd.read_json(jsonl_path, lines=True)
+
+    jsonl_name = os.path.basename(jsonl_path)
+
+    print(f"Loading model: {model_name_or_path}")
+    model = nnsight.LanguageModel(model_name_or_path, device_map="auto", dispatch=True)
+
+    short_model_name = model_name_or_path.split("/")[-1]
+    output_dir = f"data/activations/{short_model_name}/{jsonl_name}"
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"Gathering activations for layers {layers} and saving to {output_dir}")
+    for idx, row in df.iterrows():
+        print(f"Processing grid {idx}")
+        observation = row["observation"]
+        metadata = row["metadata"]
+
+        reasoning_and_answer = "".join([t["token"] for t in metadata["logprobs"]])
+        prompt = prompt_utils.full_observability_prompt.format(grid_state=observation)
+
+        all_layer_activations = run_model_and_gather_activations_at_token_position(
+            model, prompt, reasoning_and_answer, TokenPosition.response_all
+        )  # (num_layers, response_len, hidden_dim)
+        for layer in layers:
+            layer_activations = all_layer_activations[layer]  # (seq_len, hidden_dim)
+
+            row_dir = os.path.join(output_dir, f"grid_{idx}")
+            activations_dir = os.path.join(row_dir, f"layer_{layer}")
+            activations_path = os.path.join(activations_dir, "activations.pt")
+            os.makedirs(activations_dir, exist_ok=True)
+            torch.save(layer_activations, activations_path)
+
+    hf_api.upload_folder(
+        repo_id="project-telos/interp",
+        repo_type="model",
+        folder_path=output_dir,
+        path_in_repo=hf_directory,
+    )
 
     return output_dir
