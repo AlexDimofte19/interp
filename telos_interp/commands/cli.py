@@ -88,6 +88,28 @@ def gather_grid_activations_last_prompt(
     typer.echo(f"Grid activations (last prompt) saved to {results_path}")
 
 
+def parse_list_of_integers(value: str) -> list[int]:
+    return [int(x) for x in value.split(",")]
+
+
+@app.command("gather-full-acts-jsonl", help="Gather full activations from a JSONL file")
+def gather_full_activations_from_jsonl(
+    model_name_or_path: str,
+    jsonl_path: str,
+    layers: Annotated[str, typer.Option(help="Comma-separated list of layer numbers for the probe")],
+    hf_directory: Annotated[str, typer.Option(help="Directory to save the HF path")] = None,
+):
+    layers = parse_list_of_integers(layers)
+    if hf_directory is None:
+        hf_directory = os.path.basename(jsonl_path)
+    results_path, hf_path = activations.gather_full_activations_from_jsonl(
+        model_name_or_path, jsonl_path, layers, hf_directory
+    )
+
+    typer.echo(f"Full activations saved to {results_path}")
+    typer.echo(f"HF path: {hf_path}")
+
+
 @app.command("train-multiclass-probe", help="Train a multi-class probing classifier on grid cell activations")
 def train_multiclass_probe(
     activations_dir: Annotated[
