@@ -16,6 +16,16 @@ class TokenPosition(str, enum.Enum):
     all_tokens = "all_tokens"
 
 
+class Observability(str, enum.Enum):
+    full = "full"
+    partial = "partial"
+
+
+class ObservationType(str, enum.Enum):
+    grid_only = "grid_only"
+    full_prompt = "full_prompt"
+
+
 def gather_activations_from_csv_data(model_name_or_path: str, csv_path: str, token_position: TokenPosition) -> str:
     """Run the model on a number of prompts and gather activations.
 
@@ -128,7 +138,13 @@ def run_model_and_gather_activations_at_token_position(
     return all_layer_outputs
 
 
-def gather_activations_from_grid_at_last_prompt_token(model_name_or_path: str, csv_path: str, layer: int = 12) -> str:
+def gather_activations_from_grid_at_last_prompt_token(
+    model_name_or_path: str,
+    csv_path: str,
+    layer: int = 12,
+    observability: Observability = Observability.full,
+    observation_type: ObservationType = ObservationType.grid_only,
+) -> str:
     """Gather activations using only the last prompt token for all cell types from grid CSV data.
 
     This function extracts activations only at the last prompt token position and groups
@@ -152,37 +168,42 @@ def gather_activations_from_grid_at_last_prompt_token(model_name_or_path: str, c
     activations_by_type = defaultdict(list)
 
     print(f"Processing {df['env_idx'].nunique()} environments...")
-
-    for env_idx in df["env_idx"].unique():
+    for env_idx in tqdm(df["env_idx"].unique(), desc="Processing environments"):
         env_data = df[df["env_idx"] == env_idx]
-        grid_text = env_data.iloc[0]["observation"]
+        # Each env_idx is a single environment. The csv has multiple trajectory steps for each environment.
+        for _idx, env_row in env_data.iterrows():
+            if observability == Observability.full:
+                prefix = "fo_"
+            elif observability == Observability.partial:
+                prefix = "po_"
 
-        print(f"Processing environment {env_idx}...")
+            observation = env_row[f"{prefix}observation"]
+            prompt = env_row[f"{prefix}prompt"]
+            cell_types = eval(env_row[f"{prefix}cell_types"])
 
-        # Get activation at last prompt token for this environment
-        empty_response = ""  # Empty response since we're only interested in the input
-        all_layer_activations = run_model_and_gather_activations_at_token_position(
-            model, grid_text, empty_response, TokenPosition.prompt_last
-        )  # (num_layers, hidden_dim)
-        last_prompt_activation = all_layer_activations[layer]  # Shape: (hidden_dim,)
-        hidden_size = last_prompt_activation.shape[0]
+            grid_text = observation if observation_type == ObservationType.grid_only else prompt
+            # Get activation at last prompt token for this trajectory_step
+            empty_response = ""  # Empty response since we're only interested in the input
+            all_layer_activations = run_model_and_gather_activations_at_token_position(
+                model, grid_text, empty_response, TokenPosition.prompt_last
+            )  # (num_layers, hidden_dim)
+            last_prompt_activation = all_layer_activations[layer]  # Shape: (hidden_dim,)
+            hidden_size = last_prompt_activation.shape[0]
 
-        for _, env_row in env_data.iterrows():
-            # Each row in env_data corresponds to a single cell. We save the activation together with x,y coordinates to the class specific data.
-            x = env_row["x"]
-            y = env_row["y"]
-            cell_type = env_row["cell_type"]
-            full_probe_input = torch.zeros(hidden_size + 2)
-            full_probe_input[:hidden_size] = last_prompt_activation
-            full_probe_input[hidden_size] = x
-            full_probe_input[hidden_size + 1] = y
-            activations_by_type[cell_type].append(full_probe_input)
+            # We save activations together with x,y coordinates for each cell of the grid.
+            for cell_type_tuple in cell_types:
+                x, y, cell_type = cell_type_tuple
+                full_probe_input = torch.zeros(hidden_size + 2)
+                full_probe_input[:hidden_size] = last_prompt_activation
+                full_probe_input[hidden_size] = x
+                full_probe_input[hidden_size + 1] = y
+                activations_by_type[cell_type].append(full_probe_input)
 
     # Save activations by type
     csv_name = os.path.basename(csv_path)
     output_dir_name = csv_name.replace(".csv", "")
     short_model_name = model_name_or_path.split("/")[-1]
-    output_dir = f"data/activations/{short_model_name}/{output_dir_name}/grid_last_prompt_layer_{layer}"
+    output_dir = f"data/activations/{short_model_name}/{output_dir_name}/observability_{observability.value}_{observation_type.value}/grid_last_prompt_layer_{layer}"
 
     os.makedirs(output_dir, exist_ok=True)
 

@@ -75,8 +75,16 @@ def gather_grid_activations_last_prompt(
         ),
     ],
     layer: Annotated[int, typer.Option(help="Which layer to extract activations from")],
+    observability: Annotated[
+        activations.Observability, typer.Option(help="Observability of the grid")
+    ] = activations.Observability.full,
+    observation_type: Annotated[
+        activations.ObservationType, typer.Option(help="Type of observation")
+    ] = activations.ObservationType.grid_only,
 ):
-    results_path = activations.gather_activations_from_grid_at_last_prompt_token(model_name_or_path, csv_path, layer)
+    results_path = activations.gather_activations_from_grid_at_last_prompt_token(
+        model_name_or_path, csv_path, layer, observability, observation_type
+    )
     typer.echo(f"Grid activations (last prompt) saved to {results_path}")
 
 
@@ -96,7 +104,16 @@ def train_multiclass_probe(
     learning_rate: Annotated[float, typer.Option(help="Learning rate for GPU training")] = 0.1,
     max_iter: Annotated[int, typer.Option(help="Maximum iterations for GPU training")] = 1000,
     balanced_weights: Annotated[
-        bool, typer.Option("--balanced/--no-balanced", help="Use balanced class weights to handle class imbalance")
+        bool,
+        typer.Option(
+            "--balanced-weights/--no-balanced-weights", help="Use balanced class weights to handle class imbalance"
+        ),
+    ] = False,
+    balance_classes: Annotated[
+        bool,
+        typer.Option(
+            "--balance-classes/--no-balance-classes", help="Balance classes by downsampling the majority classes"
+        ),
     ] = False,
 ):
     class_weight = "balanced" if balanced_weights else None
@@ -117,6 +134,7 @@ def train_multiclass_probe(
             learning_rate=learning_rate,
             max_iter=max_iter,
             class_weight=class_weight,
+            balance_classes=balance_classes,
         )
     else:
         saved_probe_path = probing.train_and_save_multiclass_probe(
