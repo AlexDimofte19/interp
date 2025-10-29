@@ -144,6 +144,111 @@ def run_model_and_gather_activations_at_token_position(
     return all_layer_outputs
 
 
+def _process_grid_row_and_get_activations(
+    model,
+    env_row: pd.Series,
+    layer: int,
+    observability: Observability,
+    observation_type: ObservationType,
+    row_column: bool = False,
+) -> tuple[str, torch.Tensor, list]:
+    """Process a single grid row and return activations for all cells.
+
+    Args:
+        model: The nnsight model to use
+        env_row: A row from the dataframe containing grid data
+        layer: Which layer to extract activations from
+        observability: Full or partial observability
+        observation_type: Grid only or full prompt
+        row_column: If True, use (row, column) ordering; if False, use (x, y) ordering
+
+    Returns:
+        A tuple of (observation, last_prompt_activation, cell_types_list)
+        where:
+            - observation: The observation string
+            - last_prompt_activation: Tensor of shape (hidden_dim,)
+            - cell_types_list: List of (x, y, cell_type) tuples
+    """
+    if observability == Observability.full:
+        prefix = "fo_"
+    elif observability == Observability.partial:
+        prefix = "po_"
+
+    observation = env_row[f"{prefix}observation"]
+    prompt = env_row[f"{prefix}prompt"]
+    cell_types = eval(env_row[f"{prefix}cell_types"])
+
+    grid_text = observation if observation_type == ObservationType.grid_only else prompt
+    # Get activation at last prompt token for this trajectory_step
+    empty_response = ""  # Empty response since we're only interested in the input
+    all_layer_activations = run_model_and_gather_activations_at_token_position(
+        model, grid_text, empty_response, TokenPosition.prompt_last
+    )  # (num_layers, hidden_dim)
+    last_prompt_activation = all_layer_activations[layer]  # Shape: (hidden_dim,)
+
+    return observation, last_prompt_activation, cell_types
+
+
+def _create_probe_inputs_from_activation(
+    last_prompt_activation: torch.Tensor,
+    cell_types: list,
+    row_column: bool = False,
+) -> dict[str, torch.Tensor]:
+    """Create probe inputs with coordinates for each cell type.
+
+    Args:
+        last_prompt_activation: Tensor of shape (hidden_dim,)
+        cell_types: List of (x, y, cell_type) tuples
+        row_column: If True, use (row, column) ordering; if False, use (x, y) ordering
+
+    Returns:
+        Dictionary mapping cell_type to probe input tensor of shape (hidden_dim + 2,)
+    """
+    hidden_size = last_prompt_activation.shape[0]
+    result = {}
+
+    for cell_type_tuple in cell_types:
+        x, y, cell_type = cell_type_tuple
+        full_probe_input = torch.zeros(hidden_size + 2)
+        full_probe_input[:hidden_size] = last_prompt_activation
+        if row_column:
+            full_probe_input[hidden_size] = y
+            full_probe_input[hidden_size + 1] = x
+        else:
+            full_probe_input[hidden_size] = x
+            full_probe_input[hidden_size + 1] = y
+        result[cell_type] = full_probe_input
+
+    return result
+
+
+def _create_probe_inputs_by_coordinates(
+    last_prompt_activation: torch.Tensor,
+    cell_types: list,
+) -> dict[tuple[int, int], torch.Tensor]:
+    """Create probe inputs keyed by (x, y) coordinates.
+
+    Args:
+        last_prompt_activation: Tensor of shape (hidden_dim,)
+        cell_types: List of (x, y, cell_type) tuples
+
+    Returns:
+        Dictionary mapping (x, y) coordinates to probe input tensor of shape (hidden_dim + 2,)
+    """
+    hidden_size = last_prompt_activation.shape[0]
+    result = {}
+
+    for cell_type_tuple in cell_types:
+        x, y, cell_type = cell_type_tuple
+        full_probe_input = torch.zeros(hidden_size + 2)
+        full_probe_input[:hidden_size] = last_prompt_activation
+        full_probe_input[hidden_size] = x
+        full_probe_input[hidden_size + 1] = y
+        result[(x, y)] = full_probe_input
+
+    return result
+
+
 def gather_activations_from_grid_at_last_prompt_token(
     model_name_or_path: str,
     csv_path: str,
@@ -179,35 +284,13 @@ def gather_activations_from_grid_at_last_prompt_token(
         env_data = df[df["env_idx"] == env_idx]
         # Each env_idx is a single environment. The csv has multiple trajectory steps for each environment.
         for _idx, env_row in env_data.iterrows():
-            if observability == Observability.full:
-                prefix = "fo_"
-            elif observability == Observability.partial:
-                prefix = "po_"
+            _observation, last_prompt_activation, cell_types = _process_grid_row_and_get_activations(
+                model, env_row, layer, observability, observation_type, row_column
+            )
 
-            observation = env_row[f"{prefix}observation"]
-            prompt = env_row[f"{prefix}prompt"]
-            cell_types = eval(env_row[f"{prefix}cell_types"])
-
-            grid_text = observation if observation_type == ObservationType.grid_only else prompt
-            # Get activation at last prompt token for this trajectory_step
-            empty_response = ""  # Empty response since we're only interested in the input
-            all_layer_activations = run_model_and_gather_activations_at_token_position(
-                model, grid_text, empty_response, TokenPosition.prompt_last
-            )  # (num_layers, hidden_dim)
-            last_prompt_activation = all_layer_activations[layer]  # Shape: (hidden_dim,)
-            hidden_size = last_prompt_activation.shape[0]
-
-            # We save activations together with x,y coordinates for each cell of the grid.
-            for cell_type_tuple in cell_types:
-                x, y, cell_type = cell_type_tuple
-                full_probe_input = torch.zeros(hidden_size + 2)
-                full_probe_input[:hidden_size] = last_prompt_activation
-                if row_column:
-                    full_probe_input[hidden_size] = y
-                    full_probe_input[hidden_size + 1] = x
-                else:
-                    full_probe_input[hidden_size] = x
-                    full_probe_input[hidden_size + 1] = y
+            # Create probe inputs and group by cell type
+            probe_inputs = _create_probe_inputs_from_activation(last_prompt_activation, cell_types, row_column)
+            for cell_type, full_probe_input in probe_inputs.items():
                 activations_by_type[cell_type].append(full_probe_input)
 
     # Save activations by type
@@ -276,3 +359,43 @@ def gather_full_activations_from_jsonl(
     )
 
     return output_dir
+
+
+def get_activations_for_each_row_in_csv(
+    model_name_or_path: str,
+    csv_path: str,
+    layer: int,
+    observability: Observability = Observability.full,
+    observation_type: ObservationType = ObservationType.grid_only,
+) -> list[dict]:
+    """Get the activations for each row in the csv file.
+
+    The results have the following structure:
+    [
+        {
+            "observation": str,
+            "activations": {(x,y): torch.Tensor, (x,y): torch.Tensor, ...},
+        },
+        ...
+    ]
+    Each entry = one grid, with the activations for each cell in the grid.
+    """
+    print(f"Loading grid data from {csv_path}")
+    df = pd.read_csv(csv_path)
+
+    print(f"Loading model: {model_name_or_path}")
+    model = nnsight.LanguageModel(model_name_or_path, device_map="auto")
+
+    results = []
+
+    print(f"Processing {df['env_idx'].nunique()} environments...")
+    for _idx, row in tqdm(df.iterrows(), desc="Processing environments"):
+        observation, last_prompt_activation, cell_types = _process_grid_row_and_get_activations(
+            model, row, layer, observability, observation_type, row_column=False
+        )
+
+        # Create probe inputs keyed by (x, y) coordinates
+        activations_dict = _create_probe_inputs_by_coordinates(last_prompt_activation, cell_types)
+        results.append({"observation": observation, "activations": activations_dict})
+
+    return results
