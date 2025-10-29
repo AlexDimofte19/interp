@@ -2,9 +2,11 @@ import pickle
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 from torch import nn, optim
 
+from telos_interp.activations import Observability, ObservationType
 from telos_interp.probing import (
     ArrayLike,
     _compute_metrics,
@@ -515,3 +517,66 @@ def train_and_save_multiclass_probe_gpu(
 
     print(f"\n💾 Probe saved to {output_path}")
     return str(output_path)
+
+
+def predict_from_csv(
+    probe_path: str,
+    activations_list: list[dict],
+    input_csv_path: str,
+    observability: Observability,
+    observation_type: ObservationType,
+) -> list[dict]:
+    """Predict using the multiclass probe on a list of activations.
+    Activations list has the following structure:
+    [
+        {
+            "observation": str,
+            "activations": {(x,y): torch.Tensor, ...},
+        },
+        ...
+    ]
+    Each entry = one grid, with the activations for each cell in the grid.
+    Resulting list has the following structure:
+    [
+        {
+            "observation": str,
+            "predictions": {(x,y): {class_name: probability, class_name: probability, ...}, ...},
+        },
+        ...
+    ]
+    """
+    probe = MultiClassProbingClassifierGPU.load(probe_path)
+
+    df = pd.read_csv(input_csv_path)
+    results = []
+    for activations_dict, (_idx, row) in zip(activations_list, df.iterrows(), strict=False):
+        saved_observation = activations_dict["observation"]
+        if observability == Observability.full:
+            prefix = "fo_"
+        elif observability == Observability.partial:
+            prefix = "po_"
+        if observation_type == ObservationType.grid_only:
+            row_observation = row[f"{prefix}observation"]
+        elif observation_type == ObservationType.full_prompt:
+            row_observation = row[f"{prefix}prompt"]
+
+        assert saved_observation == row_observation, "Observations do not match"
+        row_predictions = {}
+        for coordinates, activation in activations_dict["activations"].items():
+            x, y = coordinates
+
+            cell_predictions = {}
+            probabilities = probe.predict_proba(activation.unsqueeze(0))
+            for class_name, class_idx in probe.class_name_to_class_idx.items():
+                cell_predictions[class_name] = probabilities[0, class_idx].item()
+            # Predictions are stored in (row, column) order.
+            row_predictions[str((y, x))] = cell_predictions
+
+        results.append(
+            {
+                "observation": saved_observation,
+                "predictions": row_predictions,
+            }
+        )
+
+    return results

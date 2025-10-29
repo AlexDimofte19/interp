@@ -1,10 +1,11 @@
+import json
 import os
 from typing import Annotated
 
 import nnsight
 import torch
 import typer
-from telos_interp import activations, cellwise_activations, data_generation, probing, steering
+from telos_interp import activations, cellwise_activations, data_generation, probing, probing_gpu, steering
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -147,8 +148,6 @@ def train_multiclass_probe(
     class_weight = "balanced" if balanced_weights else None
 
     if use_gpu:
-        from telos_interp import probing_gpu
-
         saved_probe_path = probing_gpu.train_and_save_multiclass_probe_gpu(
             activations_dir,
             layer,
@@ -182,6 +181,38 @@ def train_multiclass_probe(
             class_weight=class_weight,
         )
     typer.echo(f"Multi-class probe saved to {saved_probe_path}")
+
+
+@app.command("probe-predict", help="Predict using the multiclass probe on a csv dataset of trajectories.")
+def probe_predict(
+    model_name_or_path: str,
+    probe_path: str,
+    csv_path: str,
+    layer: int,
+    results_path: Annotated[str, typer.Option(help="Path to save the resulting json file")] = None,
+    observability: Annotated[
+        activations.Observability, typer.Option(help="Observability of the grid")
+    ] = activations.Observability.full,
+    observation_type: Annotated[
+        activations.ObservationType, typer.Option(help="Type of observation")
+    ] = activations.ObservationType.grid_only,
+):
+    if results_path is None:
+        output_dir = csv_path.replace(".csv", "")
+        os.makedirs(output_dir, exist_ok=True)
+        results_path = os.path.join(
+            output_dir, f"predictions_l{layer}_{observability.value}_{observation_type.value}.json"
+        )
+
+    # 1. For each row in the csv file, get the corresponding activations for the probe
+    activations_list = activations.get_activations_for_each_row_in_csv(
+        model_name_or_path, csv_path, layer, observability, observation_type
+    )
+
+    results = probing_gpu.predict_from_csv(probe_path, activations_list, csv_path, observability, observation_type)
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=4)
+    print(f"Predictions saved to {results_path}")
 
 
 @app.command("train-probe", help="Train a probing classifier on a dataset of activations.")
