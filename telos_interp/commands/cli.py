@@ -81,9 +81,10 @@ def gather_grid_activations_last_prompt(
     observation_type: Annotated[
         activations.ObservationType, typer.Option(help="Type of observation")
     ] = activations.ObservationType.grid_only,
+    row_column: Annotated[bool, typer.Option(help="Whether to use row-column coordinates")] = False,
 ):
     results_path = activations.gather_activations_from_grid_at_last_prompt_token(
-        model_name_or_path, csv_path, layer, observability, observation_type
+        model_name_or_path, csv_path, layer, observability, observation_type, row_column
     )
     typer.echo(f"Grid activations (last prompt) saved to {results_path}")
 
@@ -120,6 +121,7 @@ def train_multiclass_probe(
     eval_split: Annotated[float, typer.Option(help="Fraction of data to use for evaluation")] = 0.2,
     reg_coeff: Annotated[float, typer.Option(help="Regularization coefficient")] = 1e3,
     normalize: Annotated[bool, typer.Option(help="Whether to normalize activations")] = False,
+    interaction_features: Annotated[bool, typer.Option(help="Whether to use interaction features")] = False,
     fit_intercept: Annotated[bool, typer.Option(help="Whether to fit an intercept term")] = True,
     verbose: Annotated[int, typer.Option(help="Verbosity level (0=silent, 1+=show progress)")] = 0,
     use_gpu: Annotated[bool, typer.Option("--gpu/--cpu", help="Use GPU-accelerated PyTorch implementation")] = False,
@@ -137,6 +139,10 @@ def train_multiclass_probe(
             "--balance-classes/--no-balance-classes", help="Balance classes by downsampling the majority classes"
         ),
     ] = False,
+    use_mlp: Annotated[
+        bool, typer.Option("--use-mlp/--no-mlp", help="Use MLP architecture instead of linear (GPU only)")
+    ] = False,
+    mlp_hidden_size: Annotated[int, typer.Option(help="Hidden size for MLP architecture (GPU only)")] = 1024,
 ):
     class_weight = "balanced" if balanced_weights else None
 
@@ -150,6 +156,7 @@ def train_multiclass_probe(
             eval_split,
             reg_coeff,
             normalize,
+            interaction_features,
             fit_intercept,
             verbose,
             device=None,
@@ -157,8 +164,12 @@ def train_multiclass_probe(
             max_iter=max_iter,
             class_weight=class_weight,
             balance_classes=balance_classes,
+            use_mlp=use_mlp,
+            mlp_hidden_size=mlp_hidden_size,
         )
     else:
+        if use_mlp:
+            typer.echo("Warning: --use-mlp is only supported with --gpu flag. Ignoring MLP option.")
         saved_probe_path = probing.train_and_save_multiclass_probe(
             activations_dir,
             layer,

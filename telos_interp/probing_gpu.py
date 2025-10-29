@@ -21,6 +21,7 @@ class MultiClassProbingClassifierGPU:
         self,
         reg_coeff: float = 1e3,
         normalize: bool = False,
+        interaction_features: bool = False,
         fit_intercept: bool = True,
         dtype: torch.dtype = torch.float32,
         verbose: int = 0,
@@ -29,16 +30,21 @@ class MultiClassProbingClassifierGPU:
         max_iter: int = 1000,
         batch_size: int | None = None,
         class_weight: str | dict[str, float] | None = None,
+        use_mlp: bool = False,
+        mlp_hidden_size: int = 1024,
     ) -> None:
         self.reg_coeff = float(reg_coeff)
         self.normalize = bool(normalize)
         self.fit_intercept = bool(fit_intercept)
+        self.interaction_features = bool(interaction_features)
         self.dtype = dtype
         self.verbose = int(verbose)
         self.learning_rate = float(learning_rate)
         self.max_iter = int(max_iter)
         self.batch_size = batch_size
         self.class_weight = class_weight
+        self.use_mlp = bool(use_mlp)
+        self.mlp_hidden_size = int(mlp_hidden_size)
 
         # Auto-detect device if not provided
         if device is None:
@@ -47,6 +53,7 @@ class MultiClassProbingClassifierGPU:
             self.device = torch.device(device)
 
         self.linear: nn.Linear | None = None
+        self.model: nn.Module | None = None  # For MLP architecture
         self.scaler_mean: torch.Tensor | None = None
         self.scaler_std: torch.Tensor | None = None
         self.class_names: list[str] | None = None
@@ -70,6 +77,16 @@ class MultiClassProbingClassifierGPU:
         X_tensor = torch.from_numpy(X).to(dtype=self.dtype, device=self.device)
         y_tensor = torch.from_numpy(y).to(device=self.device)
 
+        if self.interaction_features:
+            H = X_tensor.shape[1] - 2
+            h = X_tensor[:, :H]
+            xy = X_tensor[:, H:]  # (N, 2)
+
+            # Build interaction features (N, 2H): [h * x, h * y]
+            hx = h * xy[:, 0:1]  # broadcast
+            hy = h * xy[:, 1:2]
+            X_tensor = torch.cat([h, xy, hx, hy], dim=1)
+
         # Normalisation ---------------------------------------------------- #
         if self.normalize:
             self.scaler_mean = X_tensor.mean(dim=0)
@@ -81,13 +98,25 @@ class MultiClassProbingClassifierGPU:
             self.scaler_mean = torch.zeros(X_tensor.shape[1], dtype=self.dtype, device=self.device)
             self.scaler_std = torch.ones(X_tensor.shape[1], dtype=self.dtype, device=self.device)
 
-        # Initialize linear layer ------------------------------------------ #
+        # Initialize linear layer or MLP ----------------------------------- #
         n_features = X_tensor.shape[1]
         n_classes = len(self.class_names)
 
-        self.linear = nn.Linear(n_features, n_classes, bias=self.fit_intercept).to(
-            dtype=self.dtype, device=self.device
-        )
+        if self.use_mlp:
+            # Build MLP: input -> hidden -> ReLU -> output
+            self.model = nn.Sequential(
+                nn.Linear(n_features, self.mlp_hidden_size, bias=self.fit_intercept),
+                nn.ReLU(),
+                nn.Linear(self.mlp_hidden_size, n_classes, bias=self.fit_intercept),
+            ).to(dtype=self.dtype, device=self.device)
+            # Keep linear as None for MLP mode
+            self.linear = None
+        else:
+            self.linear = nn.Linear(n_features, n_classes, bias=self.fit_intercept).to(
+                dtype=self.dtype, device=self.device
+            )
+            # Keep model as None for linear mode
+            self.model = None
 
         # Compute class weights if requested ------------------------------ #
         class_weights_tensor = None
@@ -113,38 +142,43 @@ class MultiClassProbingClassifierGPU:
 
         # Training loop ---------------------------------------------------- #
         criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
+        # Get the appropriate model for training
+        train_model = self.model if self.use_mlp else self.linear
+
         # L2 regularization strength (sklearn's C=1/reg_coeff maps to weight_decay=reg_coeff in PyTorch)
-        optimizer = optim.LBFGS(
-            self.linear.parameters(),
-            lr=self.learning_rate,
-            max_iter=20,
-        )
+        # optimizer = optim.LBFGS(
+        #     train_model.parameters(),
+        #     lr=self.learning_rate,
+        #     max_iter=20,
+        # )
+        optimizer = optim.Adam(train_model.parameters(), lr=self.learning_rate)
 
         # For LBFGS optimizer
         def closure():
             optimizer.zero_grad()
-            outputs = self.linear(X_tensor)
+            outputs = train_model(X_tensor)
             loss = criterion(outputs, y_tensor)
 
             # L2 regularization
             if self.reg_coeff > 0:
                 l2_reg = torch.tensor(0.0, device=self.device)
-                for param in self.linear.parameters():
-                    l2_reg = l2_reg + torch.norm(param, 2) ** 2
+                for name, param in train_model.named_parameters():
+                    if "weight" in name:  # do not penalize bias
+                        l2_reg = l2_reg + torch.norm(param, 2) ** 2
                 loss = loss + 0.5 * self.reg_coeff * l2_reg
 
             loss.backward()
             return loss
 
         # Training
-        self.linear.train()
+        train_model.train()
         for i in range(self.max_iter // 20):  # LBFGS takes ~20 iterations per step
             loss = optimizer.step(closure)
 
             if self.verbose > 0 and i % 10 == 0:
                 print(f"  Iteration {i * 20}, Loss: {loss.item():.4f}")
 
-        self.linear.eval()
+        train_model.eval()
 
         return self
 
@@ -161,7 +195,7 @@ class MultiClassProbingClassifierGPU:
         torch.Tensor
             2-D tensor of shape (seq_len, n_classes) with class probabilities.
         """
-        if self.linear is None:
+        if self.linear is None and self.model is None:
             raise RuntimeError("Probe not trained – call .fit(...) first.")
 
         hs = _to_torch(hidden_states, self.dtype).to(self.device)
@@ -169,10 +203,22 @@ class MultiClassProbingClassifierGPU:
         if hs.ndim != 2:
             raise ValueError(f"hidden_states must be (seq_len, hidden_dim); got {hs.shape}.")
 
+        if self.interaction_features:
+            H = hs.shape[1] - 2
+            h = hs[:, :H]
+            xy = hs[:, H:]  # (N, 2)
+
+            # Build interaction features (N, 2H): [h * x, h * y]
+            hx = h * xy[:, 0:1]  # broadcast
+            hy = h * xy[:, 1:2]
+            hs = torch.cat([h, xy, hx, hy], dim=1)
+
         if self.normalize:
             hs = (hs - self.scaler_mean) / self.scaler_std
 
-        logits = self.linear(hs)
+        # Use the appropriate model
+        predict_model = self.model if self.use_mlp else self.linear
+        logits = predict_model(hs)
         probabilities = torch.softmax(logits, dim=-1)
 
         return probabilities.cpu()
@@ -189,7 +235,7 @@ class MultiClassProbingClassifierGPU:
         np.ndarray
             1-D tensor of shape (seq_len,) with predicted class indices.
         """
-        if self.linear is None:
+        if self.linear is None and self.model is None:
             raise RuntimeError("Probe not trained – call .fit(...) first.")
 
         probabilities = self.predict_proba(hidden_states)
@@ -208,7 +254,7 @@ class MultiClassProbingClassifierGPU:
         Dict[str, float]
             Dictionary containing evaluation metrics
         """
-        if self.linear is None:
+        if self.linear is None and self.model is None:
             raise RuntimeError("Probe not trained – call .fit(...) first.")
 
         # Prepare test data using common utility
@@ -227,10 +273,12 @@ class MultiClassProbingClassifierGPU:
         """Pickle the probe to *file*."""
         payload = {
             "linear_state_dict": self.linear.state_dict() if self.linear is not None else None,
+            "model_state_dict": self.model.state_dict() if self.model is not None else None,
             "scaler_mean": self.scaler_mean.cpu() if self.scaler_mean is not None else None,
             "scaler_std": self.scaler_std.cpu() if self.scaler_std is not None else None,
             "reg_coeff": self.reg_coeff,
             "normalize": self.normalize,
+            "interaction_features": self.interaction_features,
             "fit_intercept": self.fit_intercept,
             "dtype": self.dtype,
             "verbose": self.verbose,
@@ -240,6 +288,8 @@ class MultiClassProbingClassifierGPU:
             "max_iter": self.max_iter,
             "batch_size": self.batch_size,
             "class_weight": self.class_weight,
+            "use_mlp": self.use_mlp,
+            "mlp_hidden_size": self.mlp_hidden_size,
         }
         with open(file, "wb") as f:
             pickle.dump(payload, f)
@@ -253,6 +303,7 @@ class MultiClassProbingClassifierGPU:
         obj = cls(
             reg_coeff=payload["reg_coeff"],
             normalize=payload["normalize"],
+            interaction_features=payload.get("interaction_features", False),
             fit_intercept=payload["fit_intercept"],
             dtype=payload["dtype"],
             verbose=payload.get("verbose", 0),
@@ -261,10 +312,28 @@ class MultiClassProbingClassifierGPU:
             max_iter=payload.get("max_iter", 1000),
             batch_size=payload.get("batch_size", None),
             class_weight=payload.get("class_weight", None),
+            use_mlp=payload.get("use_mlp", False),
+            mlp_hidden_size=payload.get("mlp_hidden_size", 1024),
         )
 
-        # Restore linear layer
-        if payload["linear_state_dict"] is not None:
+        # Restore linear layer or MLP model
+        if payload.get("model_state_dict") is not None:
+            # Load MLP model
+            # Infer dimensions from state dict
+            first_layer_weight = payload["model_state_dict"]["0.weight"]
+            last_layer_weight = payload["model_state_dict"]["2.weight"]
+            n_classes, hidden_size = last_layer_weight.shape
+            hidden_size_in, n_features = first_layer_weight.shape
+
+            obj.model = nn.Sequential(
+                nn.Linear(n_features, hidden_size_in, bias=obj.fit_intercept),
+                nn.ReLU(),
+                nn.Linear(hidden_size_in, n_classes, bias=obj.fit_intercept),
+            ).to(dtype=obj.dtype, device=obj.device)
+            obj.model.load_state_dict(payload["model_state_dict"])
+            obj.model.eval()
+        elif payload.get("linear_state_dict") is not None:
+            # Load linear layer
             # Infer dimensions from state dict
             weight_shape = payload["linear_state_dict"]["weight"].shape
             n_classes, n_features = weight_shape
@@ -289,14 +358,27 @@ class MultiClassProbingClassifierGPU:
         return obj
 
 
-def balance_classes_by_downsampling(train_dict: dict[str, ArrayLike]) -> dict[str, ArrayLike]:
+def balance_classes_by_downsampling(train_dict: dict[str, ArrayLike], seed: int = 42) -> dict[str, ArrayLike]:
     """Balance classes by downsampling the majority classes."""
     min_samples = min(acts.shape[0] for acts in train_dict.values())
     balanced_train_dict = {}
     for class_name, acts in train_dict.items():
-        shuffled_indices = torch.randperm(acts.shape[0])
+        shuffled_indices = torch.randperm(acts.shape[0], generator=torch.Generator().manual_seed(seed))
         balanced_acts = acts[shuffled_indices[:min_samples]]
         balanced_train_dict[class_name] = balanced_acts
+
+    return balanced_train_dict
+
+
+def balance_classes_by_upsampling(train_dict: dict[str, ArrayLike], seed: int = 42) -> dict[str, ArrayLike]:
+    """Balance classes by upsampling the minority classes."""
+    max_samples = max(acts.shape[0] for acts in train_dict.values())
+    balanced_train_dict = {}
+    for class_name, acts in train_dict.items():
+        generator = torch.Generator().manual_seed(seed)
+        shuffled_indices = torch.randint(0, acts.shape[0], (max_samples,), generator=generator)
+        upsampled_acts = acts[shuffled_indices]
+        balanced_train_dict[class_name] = upsampled_acts
 
     return balanced_train_dict
 
@@ -308,6 +390,7 @@ def train_and_save_multiclass_probe_gpu(
     eval_split: float = 0.2,
     reg_coeff: float = 1e3,
     normalize: bool = False,
+    interaction_features: bool = False,
     fit_intercept: bool = True,
     verbose: int = 0,
     device: str | torch.device | None = None,
@@ -315,6 +398,9 @@ def train_and_save_multiclass_probe_gpu(
     max_iter: int = 1000,
     class_weight: str | dict[str, float] | None = None,
     balance_classes: bool = False,
+    seed: int = 42,
+    use_mlp: bool = False,
+    mlp_hidden_size: int = 1024,
 ) -> str:
     """Train a multi-class probing classifier on grid cell activations using GPU.
 
@@ -325,6 +411,7 @@ def train_and_save_multiclass_probe_gpu(
         eval_split: Fraction of data to use for evaluation
         reg_coeff: Regularization coefficient
         normalize: Whether to normalize activations
+        interaction_features: Whether to use interaction features
         fit_intercept: Whether to fit an intercept term in the logistic regression
         verbose: Verbosity level for the logistic regression solver (0 = silent, 1+ = verbose)
         device: Device to use for training ('cuda', 'cpu', or None for auto-detect)
@@ -332,6 +419,8 @@ def train_and_save_multiclass_probe_gpu(
         max_iter: Maximum number of iterations
         class_weight: Class weights for handling class imbalance ('balanced' or dict mapping class names to weights)
         balance_classes: Whether to balance classes by downsampling the majority classes
+        use_mlp: Whether to use an MLP architecture instead of linear
+        mlp_hidden_size: Hidden size for the MLP (only used if use_mlp=True)
 
     Returns:
         Path to the saved probe
@@ -362,15 +451,16 @@ def train_and_save_multiclass_probe_gpu(
     train_dict = {}
     eval_dict = {}
 
+    if balance_classes:
+        activations_dict = balance_classes_by_downsampling(activations_dict, seed=seed)
+        # activations_dict = balance_classes_by_upsampling(activations_dict, seed=seed)
+
     for class_name, acts in activations_dict.items():
         n_samples = acts.shape[0]
         n_eval = int(n_samples * eval_split)
 
         train_dict[class_name] = acts[:-n_eval] if n_eval > 0 else acts
         eval_dict[class_name] = acts[-n_eval:] if n_eval > 0 else acts[:0]
-
-    if balance_classes:
-        train_dict = balance_classes_by_downsampling(train_dict)
 
     print("\n🔢 Data split:")
     for class_name in activations_dict.keys():
@@ -382,12 +472,15 @@ def train_and_save_multiclass_probe_gpu(
     probe = MultiClassProbingClassifierGPU(
         reg_coeff=reg_coeff,
         normalize=normalize,
+        interaction_features=interaction_features,
         fit_intercept=fit_intercept,
         verbose=verbose,
         device=device,
         learning_rate=learning_rate,
         max_iter=max_iter,
         class_weight=class_weight,
+        use_mlp=use_mlp,
+        mlp_hidden_size=mlp_hidden_size,
     )
 
     print(f"\n🚀 Training on device: {probe.device}")
@@ -409,6 +502,8 @@ def train_and_save_multiclass_probe_gpu(
 
     # Only add suffix if not using defaults (no intercept or normalizing)
     suffix_parts = ["gpu"]
+    if use_mlp:
+        suffix_parts.append(f"mlp{mlp_hidden_size}")
     if not fit_intercept:
         suffix_parts.append("no_intercept")
     if normalize:

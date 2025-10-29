@@ -150,6 +150,7 @@ def gather_activations_from_grid_at_last_prompt_token(
     layer: int = 12,
     observability: Observability = Observability.full,
     observation_type: ObservationType = ObservationType.grid_only,
+    row_column: bool = False,
 ) -> str:
     """Gather activations using only the last prompt token for all cell types from grid CSV data.
 
@@ -201,15 +202,19 @@ def gather_activations_from_grid_at_last_prompt_token(
                 x, y, cell_type = cell_type_tuple
                 full_probe_input = torch.zeros(hidden_size + 2)
                 full_probe_input[:hidden_size] = last_prompt_activation
-                full_probe_input[hidden_size] = x
-                full_probe_input[hidden_size + 1] = y
+                if row_column:
+                    full_probe_input[hidden_size] = y
+                    full_probe_input[hidden_size + 1] = x
+                else:
+                    full_probe_input[hidden_size] = x
+                    full_probe_input[hidden_size + 1] = y
                 activations_by_type[cell_type].append(full_probe_input)
 
     # Save activations by type
     csv_name = os.path.basename(csv_path)
     output_dir_name = csv_name.replace(".csv", "")
     short_model_name = model_name_or_path.split("/")[-1]
-    output_dir = f"data/activations/{short_model_name}/{output_dir_name}/observability_{observability.value}_{observation_type.value}/grid_last_prompt_layer_{layer}"
+    output_dir = f"data/activations/{short_model_name}/{output_dir_name}/observability_{observability.value}_{observation_type.value}/grid_last_prompt_layer_{layer}_{'row_column' if row_column else 'x_y'}"
 
     os.makedirs(output_dir, exist_ok=True)
 
