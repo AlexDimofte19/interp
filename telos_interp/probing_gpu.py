@@ -1,12 +1,11 @@
 import pickle
 from pathlib import Path
+from typing import Any
 
 import numpy as np
-import pandas as pd
 import torch
 from torch import nn, optim
 
-from telos_interp.activations import Observability, ObservationType
 from telos_interp.probing import (
     ArrayLike,
     _compute_metrics,
@@ -519,13 +518,10 @@ def train_and_save_multiclass_probe_gpu(
     return str(output_path)
 
 
-def predict_from_csv(
+def predict_from_activations_list(
     probe_path: str,
     activations_list: list[dict],
-    input_csv_path: str,
-    observability: Observability,
-    observation_type: ObservationType,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Predict using the multiclass probe on a list of activations.
     Activations list has the following structure:
     [
@@ -547,20 +543,10 @@ def predict_from_csv(
     """
     probe = MultiClassProbingClassifierGPU.load(probe_path)
 
-    df = pd.read_csv(input_csv_path)
     results = []
-    for activations_dict, (_idx, row) in zip(activations_list, df.iterrows(), strict=False):
+    for activations_dict in activations_list:
         saved_observation = activations_dict["observation"]
-        if observability == Observability.full:
-            prefix = "fo_"
-        elif observability == Observability.partial:
-            prefix = "po_"
-        if observation_type == ObservationType.grid_only:
-            row_observation = row[f"{prefix}observation"]
-        elif observation_type == ObservationType.full_prompt:
-            row_observation = row[f"{prefix}prompt"]
 
-        assert saved_observation == row_observation, "Observations do not match"
         row_predictions = {}
         for coordinates, activation in activations_dict["activations"].items():
             x, y = coordinates

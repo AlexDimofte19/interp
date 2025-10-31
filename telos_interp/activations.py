@@ -189,6 +189,36 @@ def _process_grid_row_and_get_activations(
     return observation, last_prompt_activation, cell_types
 
 
+def _process_jsonl_row_and_get_activations(
+    model,
+    row: dict,
+    layer: int,
+    observability: Observability,
+    observation_type: ObservationType,
+    grid_size: int,
+) -> tuple[str, torch.Tensor, list]:
+    """Process a single jsonl row and return activations for all cells."""
+    grid_only_observation = row["observation"]
+    if observation_type == ObservationType.full_prompt:
+        if observability == Observability.full:
+            prompt = prompt_utils.full_observability_prompt.format(grid_state=grid_only_observation)
+        elif observability == Observability.partial:
+            prompt = prompt_utils.partial_observability_prompt.format(grid_state=grid_only_observation)
+    else:
+        prompt = grid_only_observation
+
+    # TODO: Get the cell types from the json file
+    cell_types = [(x, y, "unknown") for x in range(grid_size) for y in range(grid_size)]
+    empty_response = ""  # Empty response since we're only interested in the input
+
+    all_layer_activations = run_model_and_gather_activations_at_token_position(
+        model, prompt, empty_response, TokenPosition.prompt_last
+    )  # (num_layers, hidden_dim)
+    last_prompt_activation = all_layer_activations[layer]  # Shape: (hidden_dim,)
+
+    return prompt, last_prompt_activation, cell_types
+
+
 def _create_probe_inputs_from_activation(
     last_prompt_activation: torch.Tensor,
     cell_types: list,
@@ -395,6 +425,47 @@ def get_activations_for_each_row_in_csv(
         )
 
         # Create probe inputs keyed by (x, y) coordinates
+        activations_dict = _create_probe_inputs_by_coordinates(last_prompt_activation, cell_types)
+        results.append({"observation": observation, "activations": activations_dict})
+
+    return results
+
+
+def get_activations_for_each_row_in_jsonl(
+    model_name_or_path: str,
+    jsonl_path: str,
+    grid_size: int,
+    layer: int,
+    observability: Observability = Observability.full,
+    observation_type: ObservationType = ObservationType.grid_only,
+) -> list[dict]:
+    """Get the activations for each row in the jsonl file.
+    The results have the following structure:
+    [
+        {
+            "observation": str,
+            "activations": {(x,y): torch.Tensor, (x,y): torch.Tensor, ...},
+        },
+        ...
+    ]
+    Each entry = one grid, with the activations for each cell in the grid.
+    """
+    print(f"Loading JSONL data from {jsonl_path}")
+    df = pd.read_json(jsonl_path, lines=True)
+
+    df = df[df["size"] == grid_size]
+    print(f"Found {len(df)} grids of size {grid_size}")
+
+    print(f"Loading model: {model_name_or_path}")
+    model = nnsight.LanguageModel(model_name_or_path, device_map="auto")
+
+    results = []
+
+    for _idx, row in tqdm(df.iterrows(), desc="Processing grids"):
+        observation, last_prompt_activation, cell_types = _process_jsonl_row_and_get_activations(
+            model, row, layer, observability, observation_type, grid_size
+        )
+
         activations_dict = _create_probe_inputs_by_coordinates(last_prompt_activation, cell_types)
         results.append({"observation": observation, "activations": activations_dict})
 

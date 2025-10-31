@@ -3,6 +3,7 @@ import os
 from typing import Annotated
 
 import nnsight
+import pandas as pd
 import torch
 import typer
 from telos_interp import activations, cellwise_activations, data_generation, probing, probing_gpu, steering
@@ -81,7 +82,7 @@ def gather_grid_activations_last_prompt(
     ] = activations.Observability.full,
     observation_type: Annotated[
         activations.ObservationType, typer.Option(help="Type of observation")
-    ] = activations.ObservationType.grid_only,
+    ] = activations.ObservationType.full_prompt,
     row_column: Annotated[bool, typer.Option(help="Whether to use row-column coordinates")] = False,
 ):
     results_path = activations.gather_activations_from_grid_at_last_prompt_token(
@@ -195,7 +196,7 @@ def probe_predict(
     ] = activations.Observability.full,
     observation_type: Annotated[
         activations.ObservationType, typer.Option(help="Type of observation")
-    ] = activations.ObservationType.grid_only,
+    ] = activations.ObservationType.full_prompt,
 ):
     if results_path is None:
         output_dir = csv_path.replace(".csv", "")
@@ -209,9 +210,51 @@ def probe_predict(
         model_name_or_path, csv_path, layer, observability, observation_type
     )
 
-    results = probing_gpu.predict_from_csv(probe_path, activations_list, csv_path, observability, observation_type)
+    predictions = probing_gpu.predict_from_activations_list(probe_path, activations_list)
+
     with open(results_path, "w") as f:
-        json.dump(results, f, indent=4)
+        json.dump(predictions, f, indent=4)
+    print(f"Predictions saved to {results_path}")
+
+
+@app.command("probe-eval-on-jsonl", help="Evaluate a probe on a JSONL file")
+def probe_eval_on_jsonl(
+    model_name_or_path: str,
+    probe_path: str,
+    layer: int,
+    jsonl_path: str,
+    grid_size: int,
+    observability: Annotated[
+        activations.Observability, typer.Option(help="Observability of the grid")
+    ] = activations.Observability.full,
+    observation_type: Annotated[
+        activations.ObservationType, typer.Option(help="Type of observation")
+    ] = activations.ObservationType.full_prompt,
+    results_path: Annotated[str, typer.Option(help="Path to save the resulting json file")] = None,
+):
+    if results_path is None:
+        output_dir = jsonl_path.replace(".jsonl", "")
+        os.makedirs(output_dir, exist_ok=True)
+        results_path = os.path.join(
+            output_dir,
+            f"predictions_grid_size_{grid_size}_l{layer}_{observability.value}_{observation_type.value}.jsonl",
+        )
+
+    # 1. For each observation of the corresponding size in the jsonl file, get the activations
+    activations_list = activations.get_activations_for_each_row_in_jsonl(
+        model_name_or_path, jsonl_path, grid_size, layer, observability, observation_type
+    )
+
+    predictions = probing_gpu.predict_from_activations_list(probe_path, activations_list)
+
+    df = pd.read_json(jsonl_path, lines=True)
+    grid_size_idx = df[df["size"] == grid_size].index.tolist()
+
+    assert len(grid_size_idx) == len(activations_list), "Number of grids and activations must match"
+    for predictions_dict, idx in zip(predictions, grid_size_idx, strict=False):
+        df.at[idx, "metadata"]["predictions"] = predictions_dict
+
+    df.to_json(results_path, lines=True, orient="records", indent=4)
     print(f"Predictions saved to {results_path}")
 
 
