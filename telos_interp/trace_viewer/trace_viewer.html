@@ -1,0 +1,1701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trace Viewer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            color: white;
+        }
+        
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            width: 100%;
+        }
+        
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .file-input-container {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .file-input-label {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            display: inline-block;
+            transition: all 0.3s ease;
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            color: white;
+            font-size: 16px;
+            min-width: 80px;
+            text-align: center;
+        }
+        
+        .file-input-label:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        
+        .control-separator {
+            width: 2px;
+            height: 30px;
+            background: rgba(255, 255, 255, 0.2);
+            margin-top: 8px;
+        }
+        
+        #fileInput {
+            display: none;
+        }
+        
+        .visualization-container {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            gap: 30px;
+            margin: 20px 0;
+            padding-left: 20px;
+            padding-right: 20px;
+        }
+        
+        .canvas-container {
+            display: flex;
+            justify-content: center;
+        }
+        
+        #gridCanvas {
+            border-radius: 10px;
+        }
+        
+        .action-bars {
+            width: 100%;
+            max-width: 600px;
+            transition: opacity 0.3s ease;
+        }
+
+        .state-tracker-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            width: 100%;
+            justify-content: center;
+        }
+        
+        .action-bars h3 {
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 1.3em;
+            color: rgba(255, 255, 255, 0.9);
+        }
+        
+        .bars-container {
+            display: flex;
+            justify-content: space-around;
+            align-items: flex-end;
+            height: 200px;
+            gap: 20px;
+        }
+        
+        .bar-wrapper {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .bar {
+            width: 100%;
+            max-width: 80px;
+            background: linear-gradient(to top, #4CAF50, #8BC34A);
+            border-radius: 5px 5px 0 0;
+            transition: height 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            padding-top: 8px;
+            min-height: 5px;
+        }
+        
+        .bar-value {
+            color: white;
+            font-weight: bold;
+            font-size: 0.9em;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+        }
+        
+        .bar-label {
+            font-weight: bold;
+            font-size: 1em;
+            color: rgba(255, 255, 255, 0.95);
+            padding-top: 10px;
+        }
+        
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-top: 30px;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s ease;
+            min-width: 80px;
+        }
+        
+        button:hover:not(:disabled) {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        button.active {
+            background: rgba(76, 175, 80, 0.5);
+            border-color: #4CAF50;
+        }
+        
+        .speed-control {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 10px 15px;
+            border-radius: 8px;
+        }
+        
+        #speedSlider {
+            width: 100px;
+            cursor: pointer;
+        }
+
+        .legend {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-top: 20px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .legend-color {
+            width: 30px;
+            height: 30px;
+            border-radius: 5px;
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            text-align: center;
+            line-height: 25px;
+        }
+        
+        .placeholder-message {
+            text-align: center;
+            padding: 40px;
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 1.2em;
+        }
+
+        /* Header section */
+        .header-section {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        #paramsMenuToggle {
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        #paramsMenuToggle:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+        }
+
+        /* Collapsible params menu */
+        .params-menu {
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            max-width: 400px;
+            max-height: 60vh;
+            overflow-y: auto;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+            z-index: 1000;
+            transition: transform 0.3s, opacity 0.3s;
+            color: #333;
+        }
+
+        .params-menu.collapsed {
+            transform: translateY(-20px);
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .params-section {
+            margin-bottom: 20px;
+        }
+
+        .params-section h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        #gridParamsContent,
+        #modelParamsContent {
+            font-size: 0.9em;
+            line-height: 1.6;
+        }
+
+        #gridParamsContent div,
+        #modelParamsContent div {
+            margin: 4px 0;
+        }
+
+        /* Updated visualization container - side by side */
+        .visualization-container {
+            display: flex;
+            gap: 0;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin: 20px 0;
+            min-height: 100%;
+        }
+
+        .canvas-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+        }
+
+        .canvas-container h3 {
+            text-align: center;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .canvas-container h3 #stepInfo {
+            font-size: 0.9em;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        /* Decoded grid container */
+        .decoded-grid-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            transition: opacity 0.3s ease;
+        }
+
+        .decoded-grid-container.hidden {
+            opacity: 0;
+            pointer-events: none;
+            visibility: hidden;
+        }
+
+        .decoded-grid-container h3 {
+            text-align: center;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        #decodedGridCanvas {
+            border-radius: 10px;
+            cursor: pointer;
+        }
+
+        /* Controls and legend section */
+        .controls-legend-section {
+            margin: 30px 0;
+        }
+
+        /* Token displays section */
+        .token-displays-section {
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+        }
+
+        .token-display {
+            margin-bottom: 25px;
+        }
+
+        .token-display h3 {
+            margin-bottom: 10px;
+            font-size: 1.2em;
+            color: rgba(255, 255, 255, 0.95);
+        }
+
+        .collapsible-header {
+            cursor: pointer;
+            user-select: none;
+            transition: color 0.2s;
+        }
+
+        .collapsible-header:hover {
+            color: rgba(255, 255, 255, 1);
+        }
+
+        .collapse-icon {
+            display: inline-block;
+            transition: transform 0.2s;
+            font-size: 0.8em;
+        }
+
+        .token-container {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 15px;
+            border-radius: 8px;
+            line-height: 1.8;
+            min-height: 60px;
+            font-size: 0.85em;
+            transition: max-height 0.3s ease, padding 0.3s ease, opacity 0.3s ease;
+            max-height: 2000px;
+            overflow: hidden;
+        }
+
+        .token-container.collapsed {
+            max-height: 0;
+            padding: 0 15px;
+            opacity: 0;
+            min-height: 0;
+        }
+
+        /* Help section */
+        .help-section {
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .help-content {
+            padding: 15px;
+            line-height: 1.6;
+            font-size: 0.9em;
+            transition: max-height 0.3s ease, padding 0.3s ease, opacity 0.3s ease;
+            max-height: 2000px;
+            overflow: hidden;
+        }
+
+        .help-content.collapsed {
+            max-height: 0;
+            padding: 0 15px;
+            opacity: 0;
+        }
+
+        .help-content h4 {
+            margin-top: 15px;
+            margin-bottom: 10px;
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 1.05em;
+        }
+
+        .help-content h4:first-child {
+            margin-top: 0;
+        }
+
+        .help-content ul {
+            margin: 10px 0;
+            padding-left: 25px;
+        }
+
+        .help-content li {
+            margin: 6px 0;
+        }
+
+        .help-content ul ul {
+            margin: 5px 0;
+        }
+
+        .help-content p {
+            margin: 10px 0;
+        }
+
+        /* Token styling */
+        .token-span {
+            padding: 2px 2px;
+            border-radius: 3px;
+            cursor: pointer;
+            white-space: pre;
+            transition: all 0.2s;
+            display: inline-block;
+            font-size: 1em;
+        }
+
+        .token-span:hover {
+            transform: scale(1.05);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        }
+
+        /* Token group underlines (no background) */
+        .token-span.group-analysis {
+            border-bottom: 2px solid rgba(33, 150, 243, 0.8);
+        }
+
+        .token-span.group-final {
+            border-bottom: 2px solid rgba(255, 152, 0, 0.8);
+        }
+
+        .token-span.group-action {
+            border-bottom: 2px solid rgba(76, 175, 80, 0.8);
+        }
+
+        .token-span.group-template {
+            border-bottom: 2px solid rgba(158, 158, 158, 0.8);
+        }
+
+        /* Highlight for tokens with probabilities */
+        .token-span.has-probabilities {
+            box-shadow: inset 0 0 0 1px rgba(255, 193, 7, 0.5);
+            background: rgba(255, 235, 59, 0.15);
+        }
+
+        /* Highlight for tokens with probes */
+        .token-span.has-probe {
+            box-shadow: inset 0 0 0 2px rgba(102, 126, 234, 0.5);
+            background: rgba(102, 126, 234, 0.15);
+        }
+
+        /* Combined: token with both group and probabilities */
+        .token-span.group-analysis.has-probabilities,
+        .token-span.group-final.has-probabilities,
+        .token-span.group-action.has-probabilities,
+        .token-span.group-template.has-probabilities {
+            box-shadow: inset 0 0 0 1px rgba(255, 193, 7, 0.7);
+        }
+
+        /* Combined: token with both group and probes */
+        .token-span.group-analysis.has-probe,
+        .token-span.group-final.has-probe,
+        .token-span.group-action.has-probe,
+        .token-span.group-template.has-probe {
+            box-shadow: inset 0 0 0 2px rgba(102, 126, 234, 0.7);
+        }
+
+        .token-span.pinned {
+            border: 2px solid #667eea !important;
+            box-shadow: 0 0 8px rgba(102, 126, 234, 0.5) !important;
+        }
+
+        /* Tooltips */
+        .token-tooltip {
+            position: fixed;
+            background: rgba(40, 40, 40, 0.95);
+            color: white;
+            padding: 12px;
+            border-radius: 8px;
+            z-index: 2000;
+            max-width: 300px;
+            font-size: 0.9em;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            pointer-events: none;
+        }
+
+        .token-tooltip .tooltip-section {
+            margin: 8px 0;
+        }
+
+        .token-tooltip .tooltip-label {
+            font-weight: bold;
+            margin-bottom: 4px;
+            color: #a0c4ff;
+        }
+
+        .token-tooltip select {
+            width: 100%;
+            padding: 4px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.9);
+            color: #333;
+            border: none;
+            pointer-events: auto;
+            cursor: pointer;
+        }
+
+        .tile-tooltip {
+            position: fixed;
+            background: rgba(40, 40, 40, 0.95);
+            color: white;
+            padding: 12px;
+            border-radius: 8px;
+            z-index: 2000;
+            min-width: 200px;
+            font-size: 0.9em;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+        }
+
+        .tile-tooltip .tooltip-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #a0c4ff;
+        }
+
+        /* Mini bar chart */
+        .tile-tooltip .bar-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 6px 0;
+        }
+
+        .tile-tooltip .bar-label {
+            min-width: 60px;
+            font-size: 0.85em;
+        }
+
+        .tile-tooltip .bar-wrapper {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .tile-tooltip .bar-fill {
+            height: 16px;
+            background: linear-gradient(to right, #667eea, #764ba2);
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding-right: 4px;
+            color: white;
+            font-size: 0.75em;
+            font-weight: bold;
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header-section">
+            <h2>Project Telos Trace Viewer</h2>
+            <button id="paramsMenuToggle">⚙️ Grid & Model Params</button>
+        </div>
+
+        <div id="paramsMenu" class="params-menu collapsed">
+            <div class="params-section">
+                <h3>Grid Parameters</h3>
+                <div id="gridParamsContent"></div>
+            </div>
+            <div class="params-section">
+                <h3>Model Parameters</h3>
+                <div id="modelParamsContent"></div>
+            </div>
+        </div>
+
+        <div id="placeholderMessage" class="placeholder-message">
+            Load a JSON file to start the animation
+        </div>
+
+        <div class="visualization-container">
+            <div class="canvas-container" id="canvasContainer" style="display: none;">
+                <h3>Grid State <span id="stepInfo"></span></h3>
+                <canvas id="gridCanvas"></canvas>
+            </div>
+            <div id="decodedGridContainer" class="decoded-grid-container hidden">
+                <h3>Decoded Grid State</h3>
+                <canvas id="decodedGridCanvas"></canvas>
+            </div>
+        </div>
+
+        <div class="controls-legend-section">
+            <div class="controls">
+                <label for="fileInput" class="file-input-label" id="fileInputLabel">
+                    📁 Load JSON
+                </label>
+                <input type="file" id="fileInput" accept=".json" style="display: none;">
+                <div class="control-separator"></div>
+                <button id="playPauseBtn">▶️ Play</button>
+                <button id="backStepBtn">⏮️ Back</button>
+                <button id="stepBtn">⏭️ Step</button>
+                <button id="resetBtn">🔄 Reset</button>
+                <div class="speed-control">
+                    <label>Speed:</label>
+                    <input type="range" id="speedSlider" min="100" max="2000" value="1000" step="100">
+                    <span id="speedValue">1.0s</span>
+                </div>
+            </div>
+            <div class="legend" id="dynamicLegend" style="display: none;"></div>
+        </div>
+
+        <div class="token-displays-section" style="display: none;">
+            <div class="token-display">
+                <h3 class="collapsible-header" id="promptHeader">
+                    <span class="collapse-icon">▶</span> Prompt Template
+                </h3>
+                <div id="promptTokens" class="token-container collapsed"></div>
+            </div>
+
+            <div class="token-display">
+                <h3 class="collapsible-header" id="outputHeader">
+                    <span class="collapse-icon">▼</span> Model Output
+                </h3>
+                <div id="outputTokens" class="token-container"></div>
+            </div>
+
+            <div class="help-section">
+                <h3 class="collapsible-header" id="helpHeader">
+                    <span class="collapse-icon">▶</span> How to Use This Demo
+                </h3>
+                <div id="helpContent" class="help-content collapsed">
+                    <h4>Controls</h4>
+                    <ul>
+                        <li><strong>Load JSON:</strong> Upload a trace file in the format described in the README</li>
+                        <li><strong>Play/Pause/Step:</strong> Control the animation through agent steps</li>
+                        <li><strong>Speed Slider:</strong> Adjust animation speed</li>
+                        <li><strong>⚙️ Grid & Model Params:</strong> View grid and model configuration</li>
+                    </ul>
+
+                    <h4>Token Visual Indicators</h4>
+                    <ul>
+                        <li><strong>Colored Underlines</strong> indicate token groups:
+                            <ul>
+                                <li><span style="color: #2196F3;">Blue</span> = Analysis tokens</li>
+                                <li><span style="color: #FF9800;">Orange</span> = Final answer tokens</li>
+                                <li><span style="color: #4CAF50;">Green</span> = Action tokens</li>
+                                <li><span style="color: #9E9E9E;">Gray</span> = Template tokens</li>
+                            </ul>
+                        </li>
+                        <li><strong>Yellow highlight</strong> = Token has next-token probabilities (hover to view)</li>
+                        <li><strong>Purple highlight</strong> = Token has probe data (hover/click to view decoded grid)</li>
+                    </ul>
+
+                    <h4>Interactive Features</h4>
+                    <ul>
+                        <li><strong>Hover over tokens:</strong> View token ID, probabilities, and probe layer selector</li>
+                        <li><strong>Click tokens with probes:</strong> Pin the decoded grid to keep it visible</li>
+                        <li><strong>Hover over decoded grid tiles:</strong> View probability distributions for each tile type</li>
+                        <li><strong>Layer selector:</strong> Switch between different model layers (in token tooltip)</li>
+                        <li><strong>Collapsible sections:</strong> Click headers to expand/collapse Prompt Template, Model Output, and this Help section</li>
+                    </ul>
+
+                    <h4>Decoded Grid</h4>
+                    <p>When hovering or clicking a token with probe data, the decoded grid shows the model's internal representation of the grid state. Each tile shows the predicted tile type (based on highest probability). Tiles marked with "X" have no probe data available.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // DOM references
+        const canvas = document.getElementById('gridCanvas');
+        const ctx = canvas.getContext('2d');
+        const canvasContainer = document.getElementById('canvasContainer');
+        const decodedCanvas = document.getElementById('decodedGridCanvas');
+        const decodedCtx = decodedCanvas.getContext('2d');
+        const fileInput = document.getElementById('fileInput');
+        const playPauseBtn = document.getElementById('playPauseBtn');
+        const backStepBtn = document.getElementById('backStepBtn');
+        const stepBtn = document.getElementById('stepBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const speedSlider = document.getElementById('speedSlider');
+        const speedValue = document.getElementById('speedValue');
+        const stepInfo = document.getElementById('stepInfo');
+        const placeholderMessage = document.getElementById('placeholderMessage');
+        const paramsMenuToggle = document.getElementById('paramsMenuToggle');
+        const paramsMenu = document.getElementById('paramsMenu');
+        const gridParamsContent = document.getElementById('gridParamsContent');
+        const modelParamsContent = document.getElementById('modelParamsContent');
+        const dynamicLegend = document.getElementById('dynamicLegend');
+        const promptTokens = document.getElementById('promptTokens');
+        const outputTokens = document.getElementById('outputTokens');
+        const decodedGridContainer = document.getElementById('decodedGridContainer');
+        const tokenDisplaysSection = document.querySelector('.token-displays-section');
+        const fileInputLabel = document.getElementById('fileInputLabel');
+        const promptHeader = document.getElementById('promptHeader');
+        const outputHeader = document.getElementById('outputHeader');
+        const helpHeader = document.getElementById('helpHeader');
+        const helpContent = document.getElementById('helpContent');
+
+        // Global state
+        let viewerData = null;
+        let currentStepIndex = 0;
+        let isPlaying = false;
+        let animationTimeout = null;
+
+        let uiState = {
+            currentStepIndex: 0,
+            isPlaying: false,
+            pinnedToken: null,  // { stepIndex, context, tokenIndex, element }
+            hoveredToken: null,
+            selectedLayer: {},  // Map: tokenKey -> layerName
+            paramsMenuCollapsed: true,
+            tokenGroupColors: {
+                "analysis": "rgba(227, 242, 253, 0.6)",
+                "final": "rgba(255, 243, 224, 0.6)",
+                "action": "rgba(241, 248, 233, 0.6)",
+                "template": "rgba(245, 245, 245, 0.6)"
+            }
+        };
+
+        let currentTooltip = null;
+        let decodedGridTileProbes = null;
+        
+        // Tile color mapping (will be dynamically built from legend)
+        let tileColorMap = {};
+
+        // Helper functions
+        function getTileColor(tileType) {
+            // Return color from dynamic legend mapping
+            if (tileColorMap[tileType]) {
+                return tileColorMap[tileType];
+            }
+            return '#CCCCCC';  // Default gray
+        }
+
+        function buildTileColorMap() {
+            if (!viewerData || !viewerData.grid_params || !viewerData.grid_params.legend) {
+                return;
+            }
+
+            const legend = viewerData.grid_params.legend;
+            const colorPalette = {
+                'wall': '#666666',
+                'empty': '#E8F5E9',
+                'agent': '#F44336',
+                'goal': '#4CAF50',
+                'start': '#2196F3',
+                'fog': '#444444',
+                'unknown_obj': '#FF9800'
+            };
+
+            tileColorMap = {};
+            Object.keys(legend).forEach((tileType, index) => {
+                tileColorMap[tileType] = colorPalette[tileType] || `hsl(${index * 45}, 70%, 60%)`;
+            });
+        }
+
+        function validateData(data) {
+            if (!data.grid_params) throw new Error('Missing grid_params');
+            if (!data.model_params) throw new Error('Missing model_params');
+            if (!data.prompt) throw new Error('Missing prompt');
+            if (!data.steps || !Array.isArray(data.steps)) throw new Error('Invalid steps');
+
+            // Validate legend structure
+            if (!data.grid_params.legend) throw new Error('Missing legend');
+            for (const [key, val] of Object.entries(data.grid_params.legend)) {
+                if (!val.symbol || !val.description) {
+                    throw new Error(`Invalid legend entry: ${key}`);
+                }
+            }
+        }
+
+        // Event listeners
+        speedSlider.addEventListener('input', (e) => {
+            speedValue.textContent = (e.target.value / 1000).toFixed(1) + 's';
+        });
+
+        paramsMenuToggle.addEventListener('click', () => {
+            uiState.paramsMenuCollapsed = !uiState.paramsMenuCollapsed;
+            if (uiState.paramsMenuCollapsed) {
+                paramsMenu.classList.add('collapsed');
+            } else {
+                paramsMenu.classList.remove('collapsed');
+            }
+        });
+
+        fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                try {
+                    const text = await file.text();
+                    const data = JSON.parse(text);
+
+                    // Validate data structure
+                    validateData(data);
+
+                    // Store data
+                    viewerData = data;
+                    currentStepIndex = 0;
+                    uiState.currentStepIndex = 0;
+                    uiState.pinnedToken = null;
+                    uiState.selectedLayer = {};
+
+                    // Build color map from legend
+                    buildTileColorMap();
+
+                    // Update file label
+                    const fileName = file.name.length > 20 ? file.name.substring(0, 17) + '...' : file.name;
+                    fileInputLabel.textContent = `📁 ${fileName}`;
+
+                    // Render UI components
+                    renderParamsMenu();
+                    renderLegend();
+                    resetAnimation();
+                    displayStep(0);
+
+                    // Show/hide UI elements
+                    placeholderMessage.style.display = 'none';
+                    canvasContainer.style.display = 'flex';
+                    dynamicLegend.style.display = 'flex';
+                    tokenDisplaysSection.style.display = 'block';
+                } catch (error) {
+                    alert('Error loading JSON file: ' + error.message);
+                    console.error(error);
+                }
+            }
+        });
+
+        function renderParamsMenu() {
+            if (!viewerData) return;
+
+            // Render grid params (exclude legend)
+            gridParamsContent.innerHTML = '';
+            const gridParams = viewerData.grid_params;
+            for (const [key, value] of Object.entries(gridParams)) {
+                if (key !== 'legend') {
+                    const div = document.createElement('div');
+                    div.innerHTML = `<strong>${key}:</strong> ${JSON.stringify(value)}`;
+                    gridParamsContent.appendChild(div);
+                }
+            }
+
+            // Render model params
+            modelParamsContent.innerHTML = '';
+            const modelParams = viewerData.model_params;
+            for (const [key, value] of Object.entries(modelParams)) {
+                const div = document.createElement('div');
+                div.innerHTML = `<strong>${key}:</strong> ${JSON.stringify(value)}`;
+                modelParamsContent.appendChild(div);
+            }
+        }
+
+        function renderLegend() {
+            if (!viewerData || !viewerData.grid_params || !viewerData.grid_params.legend) return;
+
+            dynamicLegend.innerHTML = '';
+            const legend = viewerData.grid_params.legend;
+
+            for (const [tileType, info] of Object.entries(legend)) {
+                const legendItem = document.createElement('div');
+                legendItem.className = 'legend-item';
+
+                const colorBox = document.createElement('div');
+                colorBox.className = 'legend-color';
+                colorBox.style.background = getTileColor(tileType);
+                colorBox.textContent = info.symbol;
+
+                const label = document.createElement('span');
+                label.textContent = info.description;
+
+                legendItem.appendChild(colorBox);
+                legendItem.appendChild(label);
+                dynamicLegend.appendChild(legendItem);
+            }
+        }
+
+        function drawOriginalGrid(gridStateLines) {
+            if (!gridStateLines || gridStateLines.length === 0) return;
+
+            // Grid state is an array of strings, first line is coordinates
+            // Skip the first line (coordinate headers) and parse the rest
+            const gridLines = gridStateLines.slice(1).map(line => line.trim()).filter(line => line.length > 0);
+
+            const cellSize = 30;
+            const padding = 20;
+
+            // Parse grid to extract symbols (skip row number at start of each line)
+            const grid = gridLines.map(line => {
+                const parts = line.split(/\s+/);
+                // First part is row number, rest are symbols
+                return parts.slice(1);
+            });
+
+            if (grid.length === 0 || !grid[0]) return;
+
+            const numRows = grid.length;
+            const numCols = grid[0].length;
+
+            canvas.width = numCols * cellSize + padding * 2;
+            canvas.height = numRows * cellSize + padding * 2;
+
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            grid.forEach((row, y) => {
+                row.forEach((symbol, x) => {
+                    const xPos = x * cellSize + padding;
+                    const yPos = y * cellSize + padding;
+
+                    // Map symbol to tile type from legend
+                    let tileType = null;
+                    if (viewerData && viewerData.grid_params && viewerData.grid_params.legend) {
+                        for (const [type, info] of Object.entries(viewerData.grid_params.legend)) {
+                            if (info.symbol === symbol) {
+                                tileType = type;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Draw cell background
+                    ctx.fillStyle = tileType ? getTileColor(tileType) : '#CCCCCC';
+                    ctx.fillRect(xPos, yPos, cellSize, cellSize);
+
+                    // Draw grid lines
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+                    ctx.strokeRect(xPos, yPos, cellSize, cellSize);
+
+                    // Draw symbol
+                    if (symbol && symbol !== '_') {
+                        ctx.fillStyle = 'white';
+                        ctx.font = 'bold 16px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(symbol, xPos + cellSize/2, yPos + cellSize/2);
+                    }
+                });
+            });
+        }
+
+        // Token rendering functions
+        function renderPromptTokens(step) {
+            promptTokens.innerHTML = '';
+
+            // Assemble full prompt: prefix + grid_state + suffix
+            const allTokens = [
+                ...(viewerData.prompt.prompt_prefix_tokens || []),
+                ...(step.grid_state_tokens || []),
+                ...(step.prompt_suffix_tokens || [])
+            ];
+
+            const fragment = document.createDocumentFragment();
+            allTokens.forEach((token, index) => {
+                const tokenElement = createTokenSpan(token, 'prompt', index);
+                fragment.appendChild(tokenElement);
+            });
+
+            promptTokens.appendChild(fragment);
+        }
+
+        function renderOutputTokens(step) {
+            outputTokens.innerHTML = '';
+
+            if (!step.output_tokens || step.output_tokens.length === 0) {
+                outputTokens.textContent = '(No output)';
+                return;
+            }
+
+            const fragment = document.createDocumentFragment();
+            step.output_tokens.forEach((token, index) => {
+                const tokenElement = createTokenSpan(token, 'output', index);
+                fragment.appendChild(tokenElement);
+            });
+
+            outputTokens.appendChild(fragment);
+        }
+
+        function createTokenSpan(token, context, index) {
+            // Check if token contains newlines (Ċ)
+            if (token.token.includes('Ċ')) {
+                // Split by newline and create multiple elements
+                const parts = token.token.split('Ċ');
+                const fragment = document.createDocumentFragment();
+
+                parts.forEach((part, i) => {
+                    if (part.length > 0) {
+                        // Create span for non-empty part
+                        const span = document.createElement('span');
+                        span.className = 'token-span';
+
+                        // Replace Ġ with space for display
+                        let displayText = part.replace(/Ġ/g, ' ');
+                        span.textContent = displayText;
+
+                        // Apply token group colors
+                        const groupColor = getTokenGroupColor(token.token_groups || []);
+                        if (groupColor) {
+                            const groupName = getTokenGroupName(token.token_groups || []);
+                            span.classList.add(`group-${groupName}`);
+                        }
+
+                        // Check if token has tile_identity_probes
+                        const hasProbes = hasTileIdentityProbes(token);
+                        if (hasProbes) {
+                            span.classList.add('has-probe');
+                        }
+
+                        // Check if token has probabilities
+                        if (token.probabilities && Object.keys(token.probabilities).length > 0) {
+                            span.classList.add('has-probabilities');
+                        }
+
+                        // Store token data in dataset
+                        span.dataset.tokenId = token.token_id;
+                        span.dataset.context = context;
+                        span.dataset.index = index;
+                        span.dataset.tokenData = JSON.stringify(token);
+
+                        // Attach event listeners
+                        span.addEventListener('mouseenter', (e) => handleTokenHover(e, token, context, index, span));
+                        span.addEventListener('mouseleave', () => handleTokenUnhover());
+                        span.addEventListener('click', (e) => handleTokenClick(e, token, context, index, span));
+
+                        fragment.appendChild(span);
+                    }
+
+                    // Add <br> after each part except the last
+                    if (i < parts.length - 1) {
+                        const br = document.createElement('br');
+                        fragment.appendChild(br);
+                    }
+                });
+
+                return fragment;
+            }
+
+            // No newlines - create single span
+            const span = document.createElement('span');
+            span.className = 'token-span';
+
+            // Replace Ġ with space for display
+            let displayText = token.token.replace(/Ġ/g, ' ');
+            span.textContent = displayText;
+
+            // Apply token group colors (priority: action > final > analysis > template)
+            const groupColor = getTokenGroupColor(token.token_groups || []);
+            if (groupColor) {
+                const groupName = getTokenGroupName(token.token_groups || []);
+                span.classList.add(`group-${groupName}`);
+            }
+
+            // Check if token has tile_identity_probes
+            const hasProbes = hasTileIdentityProbes(token);
+            if (hasProbes) {
+                span.classList.add('has-probe');
+            }
+
+            // Check if token has probabilities
+            if (token.probabilities && Object.keys(token.probabilities).length > 0) {
+                span.classList.add('has-probabilities');
+            }
+
+            // Store token data in dataset
+            span.dataset.tokenId = token.token_id;
+            span.dataset.context = context;
+            span.dataset.index = index;
+            span.dataset.tokenData = JSON.stringify(token);
+
+            // Attach event listeners
+            span.addEventListener('mouseenter', (e) => handleTokenHover(e, token, context, index, span));
+            span.addEventListener('mouseleave', () => handleTokenUnhover());
+            span.addEventListener('click', (e) => handleTokenClick(e, token, context, index, span));
+
+            return span;
+        }
+
+        function getTokenGroupColor(tokenGroups) {
+            // Priority order: action > final > analysis > template
+            const priority = ['action', 'final', 'analysis', 'template'];
+
+            for (const group of priority) {
+                if (tokenGroups.includes(group)) {
+                    return uiState.tokenGroupColors[group];
+                }
+            }
+            return null;
+        }
+
+        function getTokenGroupName(tokenGroups) {
+            const priority = ['action', 'final', 'analysis', 'template'];
+            for (const group of priority) {
+                if (tokenGroups.includes(group)) {
+                    return group;
+                }
+            }
+            return null;
+        }
+
+        function hasTileIdentityProbes(token) {
+            if (!token.probes) return false;
+            return Object.keys(token.probes).some(key => key.startsWith('tile_identity_probe'));
+        }
+
+        function getAvailableLayers(token) {
+            if (!token.probes) return [];
+
+            const layers = new Set();
+            for (const probeKey of Object.keys(token.probes)) {
+                if (probeKey.startsWith('tile_identity_probe')) {
+                    const probeData = token.probes[probeKey];
+                    Object.keys(probeData).forEach(layer => layers.add(layer));
+                }
+            }
+            return Array.from(layers);
+        }
+
+        function getTokenKey(tokenRef) {
+            return `${tokenRef.stepIndex}_${tokenRef.context}_${tokenRef.tokenIndex}`;
+        }
+
+        function getPinnedTokenData() {
+            if (!uiState.pinnedToken) return null;
+
+            const step = viewerData.steps[uiState.pinnedToken.stepIndex];
+            if (!step) return null;
+
+            // Get token based on context
+            if (uiState.pinnedToken.context === 'prompt') {
+                const allTokens = [
+                    ...(viewerData.prompt.prompt_prefix_tokens || []),
+                    ...(step.grid_state_tokens || []),
+                    ...(step.prompt_suffix_tokens || [])
+                ];
+                return allTokens[uiState.pinnedToken.tokenIndex];
+            } else if (uiState.pinnedToken.context === 'output') {
+                return step.output_tokens[uiState.pinnedToken.tokenIndex];
+            }
+
+            return null;
+        }
+
+        function unpinToken() {
+            if (uiState.pinnedToken && uiState.pinnedToken.element) {
+                uiState.pinnedToken.element.classList.remove('pinned');
+            }
+            uiState.pinnedToken = null;
+            hideDecodedGrid();
+        }
+
+        function hideDecodedGrid() {
+            decodedGridContainer.classList.add('hidden');
+        }
+
+        function showDecodedGrid() {
+            decodedGridContainer.classList.remove('hidden');
+        }
+
+        // Token interaction handlers
+        function handleTokenHover(event, token, context, index, element) {
+            // Remove existing tooltip
+            if (currentTooltip) {
+                document.body.removeChild(currentTooltip);
+            }
+
+            // Create tooltip
+            const tooltip = document.createElement('div');
+            tooltip.className = 'token-tooltip';
+
+            let tooltipHTML = `<div class="tooltip-section"><div class="tooltip-label">Token ID:</div>${token.token_id}</div>`;
+
+            // Show probabilities if present
+            if (token.probabilities && Object.keys(token.probabilities).length > 0) {
+                tooltipHTML += `<div class="tooltip-section"><div class="tooltip-label">Probabilities:</div>`;
+                for (const [tokenText, prob] of Object.entries(token.probabilities)) {
+                    tooltipHTML += `<div>${tokenText}: ${(prob * 100).toFixed(1)}%</div>`;
+                }
+                tooltipHTML += `</div>`;
+            }
+
+            // Show layer selector if has tile_identity_probes
+            if (hasTileIdentityProbes(token)) {
+                const layers = getAvailableLayers(token);
+                const tokenKey = `${currentStepIndex}_${context}_${index}`;
+                const selectedLayer = uiState.selectedLayer[tokenKey] || layers[0];
+
+                tooltipHTML += `<div class="tooltip-section">
+                    <div class="tooltip-label">Probe Layer:</div>
+                    <select id="layerSelect_${tokenKey}" onchange="handleLayerChange('${tokenKey}', this.value)">`;
+
+                layers.forEach(layer => {
+                    const selected = layer === selectedLayer ? 'selected' : '';
+                    tooltipHTML += `<option value="${layer}" ${selected}>${layer}</option>`;
+                });
+
+                tooltipHTML += `</select></div>`;
+            }
+
+            tooltip.innerHTML = tooltipHTML;
+
+            // Position tooltip near cursor
+            tooltip.style.left = (event.clientX + 10) + 'px';
+            tooltip.style.top = (event.clientY + 10) + 'px';
+
+            document.body.appendChild(tooltip);
+            currentTooltip = tooltip;
+
+            // If token has tile_identity_probes, show decoded grid
+            if (hasTileIdentityProbes(token) && !uiState.pinnedToken) {
+                const tokenKey = `${currentStepIndex}_${context}_${index}`;
+                const selectedLayer = uiState.selectedLayer[tokenKey] || getAvailableLayers(token)[0];
+                updateDecodedGrid(token, selectedLayer);
+            }
+        }
+
+        function handleTokenUnhover() {
+            // Remove tooltip
+            if (currentTooltip) {
+                document.body.removeChild(currentTooltip);
+                currentTooltip = null;
+            }
+
+            // Hide decoded grid if not pinned
+            if (!uiState.pinnedToken) {
+                hideDecodedGrid();
+            }
+        }
+
+        function handleTokenClick(event, token, context, index, element) {
+            event.stopPropagation();
+
+            // Check if this token is already pinned
+            if (uiState.pinnedToken &&
+                uiState.pinnedToken.stepIndex === currentStepIndex &&
+                uiState.pinnedToken.context === context &&
+                uiState.pinnedToken.tokenIndex === index) {
+                // Unpin
+                unpinToken();
+            } else {
+                // Unpin previous token if any
+                if (uiState.pinnedToken && uiState.pinnedToken.element) {
+                    uiState.pinnedToken.element.classList.remove('pinned');
+                }
+
+                // Pin this token
+                uiState.pinnedToken = {
+                    stepIndex: currentStepIndex,
+                    context: context,
+                    tokenIndex: index,
+                    element: element
+                };
+
+                element.classList.add('pinned');
+
+                // Show decoded grid if token has probes
+                if (hasTileIdentityProbes(token)) {
+                    const tokenKey = getTokenKey(uiState.pinnedToken);
+                    const selectedLayer = uiState.selectedLayer[tokenKey] || getAvailableLayers(token)[0];
+                    updateDecodedGrid(token, selectedLayer);
+                    showDecodedGrid();
+                }
+            }
+        }
+
+        function handleLayerChange(tokenKey, newLayer) {
+            uiState.selectedLayer[tokenKey] = newLayer;
+
+            // Get token and update decoded grid
+            const token = getPinnedTokenData();
+            if (!token) {
+                // Token is hovered, not pinned - get from event
+                // For now, just update the state - the tooltip recreation will handle it
+                return;
+            }
+
+            updateDecodedGrid(token, newLayer);
+        }
+
+        // Make handleLayerChange accessible from inline event handlers
+        window.handleLayerChange = handleLayerChange;
+
+        // Decoded grid logic
+        function updateDecodedGrid(token, selectedLayer) {
+            if (!token || !token.probes) {
+                hideDecodedGrid();
+                return;
+            }
+
+            // Extract tile identity probes
+            const tileProbes = extractTileIdentityProbes(token.probes, selectedLayer);
+
+            // Render decoded grid
+            const n_rows = viewerData.grid_params.n_rows;
+            const n_cols = viewerData.grid_params.n_cols;
+            renderDecodedGrid(tileProbes, n_rows, n_cols);
+
+            // Store for hover interactions
+            decodedGridTileProbes = tileProbes;
+
+            showDecodedGrid();
+        }
+
+        function extractTileIdentityProbes(probes, selectedLayer) {
+            const tileProbes = {};
+
+            for (const probeKey of Object.keys(probes)) {
+                if (probeKey.startsWith('tile_identity_probe')) {
+                    // Extract row and column from probe key
+                    const match = probeKey.match(/r(\d+)_c(\d+)/);
+                    if (match) {
+                        const row = parseInt(match[1]);
+                        const col = parseInt(match[2]);
+                        const key = `${row}_${col}`;
+
+                        // Get probabilities for the selected layer
+                        const probeData = probes[probeKey];
+                        if (probeData[selectedLayer]) {
+                            tileProbes[key] = probeData[selectedLayer];
+                        }
+                    }
+                }
+            }
+
+            return tileProbes;
+        }
+
+        function renderDecodedGrid(tileProbes, n_rows, n_cols) {
+            const cellSize = 30;
+            const padding = 20;
+
+            decodedCanvas.width = n_cols * cellSize + padding * 2;
+            decodedCanvas.height = n_rows * cellSize + padding * 2;
+
+            decodedCtx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+            decodedCtx.fillRect(0, 0, decodedCanvas.width, decodedCanvas.height);
+
+            for (let row = 0; row < n_rows; row++) {
+                for (let col = 0; col < n_cols; col++) {
+                    const xPos = col * cellSize + padding;
+                    const yPos = row * cellSize + padding;
+                    const key = `${row}_${col}`;
+
+                    if (tileProbes[key]) {
+                        // Find tile type with highest probability
+                        const probabilities = tileProbes[key];
+                        let maxProb = -1;
+                        let maxTileType = null;
+
+                        for (const [tileType, prob] of Object.entries(probabilities)) {
+                            if (prob > maxProb) {
+                                maxProb = prob;
+                                maxTileType = tileType;
+                            }
+                        }
+
+                        // Draw tile with color and symbol
+                        if (maxTileType) {
+                            decodedCtx.fillStyle = getTileColor(maxTileType);
+                            decodedCtx.fillRect(xPos, yPos, cellSize, cellSize);
+
+                            // Get symbol from legend
+                            const legend = viewerData.grid_params.legend;
+                            const symbol = legend[maxTileType]?.symbol || '?';
+
+                            if (symbol && symbol !== '_') {
+                                decodedCtx.fillStyle = 'white';
+                                decodedCtx.font = 'bold 16px Arial';
+                                decodedCtx.textAlign = 'center';
+                                decodedCtx.textBaseline = 'middle';
+                                decodedCtx.fillText(symbol, xPos + cellSize/2, yPos + cellSize/2);
+                            }
+                        }
+                    } else {
+                        // No probe data - draw X (crossed out)
+                        decodedCtx.fillStyle = '#888888';
+                        decodedCtx.fillRect(xPos, yPos, cellSize, cellSize);
+
+                        // Draw X
+                        decodedCtx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+                        decodedCtx.lineWidth = 2;
+                        decodedCtx.beginPath();
+                        decodedCtx.moveTo(xPos + 5, yPos + 5);
+                        decodedCtx.lineTo(xPos + cellSize - 5, yPos + cellSize - 5);
+                        decodedCtx.moveTo(xPos + cellSize - 5, yPos + 5);
+                        decodedCtx.lineTo(xPos + 5, yPos + cellSize - 5);
+                        decodedCtx.stroke();
+                    }
+
+                    // Draw grid lines
+                    decodedCtx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+                    decodedCtx.lineWidth = 1;
+                    decodedCtx.strokeRect(xPos, yPos, cellSize, cellSize);
+                }
+            }
+        }
+
+        // Add hover interaction for decoded grid
+        decodedCanvas.addEventListener('mousemove', (e) => {
+            if (!decodedGridTileProbes || !uiState.pinnedToken) return;
+
+            handleDecodedGridHover(e, decodedGridTileProbes);
+        });
+
+        decodedCanvas.addEventListener('mouseleave', () => {
+            removeTileTooltip();
+        });
+
+        let currentTileTooltip = null;
+
+        function handleDecodedGridHover(event, tileProbes) {
+            const cellSize = 30;
+            const padding = 20;
+
+            const rect = decodedCanvas.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+
+            // Calculate tile coordinates
+            const col = Math.floor((x - padding) / cellSize);
+            const row = Math.floor((y - padding) / cellSize);
+
+            const n_rows = viewerData.grid_params.n_rows;
+            const n_cols = viewerData.grid_params.n_cols;
+
+            // Check if within grid bounds
+            if (row < 0 || row >= n_rows || col < 0 || col >= n_cols) {
+                removeTileTooltip();
+                return;
+            }
+
+            const key = `${row}_${col}`;
+            const probabilities = tileProbes[key];
+
+            if (probabilities) {
+                createTileTooltip(probabilities, row, col, event.clientX, event.clientY);
+            } else {
+                removeTileTooltip();
+            }
+        }
+
+        function createTileTooltip(probabilities, row, col, x, y) {
+            // Remove existing tooltip
+            removeTileTooltip();
+
+            const tooltip = document.createElement('div');
+            tooltip.className = 'tile-tooltip';
+
+            let tooltipHTML = `<div class="tooltip-title">Tile (${row}, ${col}) Probabilities</div>`;
+
+            // Sort by probability descending
+            const sorted = Object.entries(probabilities).sort((a, b) => b[1] - a[1]);
+
+            for (const [tileType, prob] of sorted) {
+                const percentage = (prob * 100).toFixed(1);
+                const barWidth = Math.max(5, prob * 150); // Max 150px width
+
+                tooltipHTML += `
+                    <div class="bar-item">
+                        <div class="bar-label">${tileType}</div>
+                        <div class="bar-wrapper">
+                            <div class="bar-fill" style="width: ${barWidth}px;">
+                                ${percentage}%
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            tooltip.innerHTML = tooltipHTML;
+
+            // Position tooltip
+            tooltip.style.left = (x + 15) + 'px';
+            tooltip.style.top = (y + 15) + 'px';
+
+            document.body.appendChild(tooltip);
+            currentTileTooltip = tooltip;
+        }
+
+        function removeTileTooltip() {
+            if (currentTileTooltip) {
+                document.body.removeChild(currentTileTooltip);
+                currentTileTooltip = null;
+            }
+        }
+
+        function displayStep(stepIndex) {
+            if (!viewerData || !viewerData.steps || stepIndex >= viewerData.steps.length) return;
+
+            const step = viewerData.steps[stepIndex];
+            currentStepIndex = stepIndex;
+            uiState.currentStepIndex = stepIndex;
+
+            // Draw original grid
+            drawOriginalGrid(step.grid_state);
+
+            // Render token displays
+            renderPromptTokens(step);
+            renderOutputTokens(step);
+
+            // Update step info
+            updateInfo();
+
+            // If token is pinned, update decoded grid
+            if (uiState.pinnedToken && uiState.pinnedToken.stepIndex === stepIndex) {
+                // Re-render decoded grid for pinned token
+                const token = getPinnedTokenData();
+                if (token && hasTileIdentityProbes(token)) {
+                    const tokenKey = getTokenKey(uiState.pinnedToken);
+                    const selectedLayer = uiState.selectedLayer[tokenKey] || getAvailableLayers(token)[0];
+                    updateDecodedGrid(token, selectedLayer);
+                }
+            } else if (uiState.pinnedToken) {
+                // Pinned token is from a different step, unpin it
+                unpinToken();
+            }
+        }
+        
+        function animate() {
+            if (!isPlaying || !viewerData || !viewerData.steps) {
+                return;
+            }
+
+            if (currentStepIndex >= viewerData.steps.length - 1) {
+                stopAnimation();
+                return;
+            }
+
+            currentStepIndex++;
+            displayStep(currentStepIndex);
+
+            const delay = parseInt(speedSlider.value);
+            animationTimeout = setTimeout(animate, delay);
+        }
+
+        function step() {
+            if (!viewerData || !viewerData.steps || currentStepIndex >= viewerData.steps.length - 1) return;
+
+            stopAnimation();
+            currentStepIndex++;
+            displayStep(currentStepIndex);
+        }
+
+        function backStep() {
+            if (!viewerData || !viewerData.steps || currentStepIndex <= 0) return;
+
+            stopAnimation();
+            currentStepIndex--;
+            displayStep(currentStepIndex);
+        }
+
+        function startAnimation() {
+            if (!viewerData || !viewerData.steps || viewerData.steps.length === 0) return;
+
+            isPlaying = true;
+            uiState.isPlaying = true;
+            playPauseBtn.textContent = '⏸️ Pause';
+            playPauseBtn.classList.add('active');
+            animate();
+        }
+
+        function stopAnimation() {
+            isPlaying = false;
+            uiState.isPlaying = false;
+            playPauseBtn.textContent = '▶️ Play';
+            playPauseBtn.classList.remove('active');
+            if (animationTimeout) {
+                clearTimeout(animationTimeout);
+                animationTimeout = null;
+            }
+        }
+
+        function resetAnimation() {
+            stopAnimation();
+            currentStepIndex = 0;
+            uiState.currentStepIndex = 0;
+            if (viewerData && viewerData.steps && viewerData.steps.length > 0) {
+                displayStep(0);
+            }
+        }
+
+        function updateInfo() {
+            if (!viewerData || !viewerData.steps) {
+                stepInfo.innerHTML = '';
+            } else {
+                stepInfo.innerHTML = `(${currentStepIndex + 1} / ${viewerData.steps.length})`;
+            }
+        }
+        
+        playPauseBtn.addEventListener('click', () => {
+            if (!viewerData || !viewerData.steps) return;
+
+            if (isPlaying) {
+                stopAnimation();
+            } else {
+                if (currentStepIndex >= viewerData.steps.length - 1) {
+                    resetAnimation();
+                }
+                startAnimation();
+            }
+        });
+        
+        backStepBtn.addEventListener('click', backStep);
+        stepBtn.addEventListener('click', step);
+        resetBtn.addEventListener('click', resetAnimation);
+
+        // Collapsible sections for prompt template and model output
+        promptHeader.addEventListener('click', () => {
+            promptTokens.classList.toggle('collapsed');
+            const icon = promptHeader.querySelector('.collapse-icon');
+            icon.textContent = promptTokens.classList.contains('collapsed') ? '▶' : '▼';
+        });
+
+        outputHeader.addEventListener('click', () => {
+            outputTokens.classList.toggle('collapsed');
+            const icon = outputHeader.querySelector('.collapse-icon');
+            icon.textContent = outputTokens.classList.contains('collapsed') ? '▶' : '▼';
+        });
+
+        helpHeader.addEventListener('click', () => {
+            helpContent.classList.toggle('collapsed');
+            const icon = helpHeader.querySelector('.collapse-icon');
+            icon.textContent = helpContent.classList.contains('collapsed') ? '▶' : '▼';
+        });
+    </script>
+</body>
+</html>
