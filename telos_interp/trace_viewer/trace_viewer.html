@@ -10,10 +10,10 @@
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: black;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
@@ -21,7 +21,7 @@
             padding: 20px;
             color: white;
         }
-        
+
         .container {
             background: rgba(255, 255, 255, 0.1);
             backdrop-filter: blur(10px);
@@ -31,19 +31,19 @@
             border: 1px solid rgba(255, 255, 255, 0.18);
             width: 100%;
         }
-        
+
         h1 {
             text-align: center;
             margin-bottom: 30px;
             font-size: 2.5em;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
         }
-        
+
         .file-input-container {
             margin-bottom: 20px;
             text-align: center;
         }
-        
+
         .file-input-label {
             background: rgba(255, 255, 255, 0.2);
             padding: 10px 20px;
@@ -57,24 +57,24 @@
             min-width: 80px;
             text-align: center;
         }
-        
+
         .file-input-label:hover {
             background: rgba(255, 255, 255, 0.3);
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(0,0,0,0.2);
         }
-        
+
         .control-separator {
             width: 2px;
             height: 30px;
             background: rgba(255, 255, 255, 0.2);
             margin-top: 8px;
         }
-        
+
         #fileInput {
             display: none;
         }
-        
+
         .visualization-container {
             display: flex;
             flex-direction: row;
@@ -84,16 +84,16 @@
             padding-left: 20px;
             padding-right: 20px;
         }
-        
+
         .canvas-container {
             display: flex;
             justify-content: center;
         }
-        
+
         #gridCanvas {
             border-radius: 10px;
         }
-        
+
         .action-bars {
             width: 100%;
             max-width: 600px;
@@ -108,14 +108,14 @@
             width: 100%;
             justify-content: center;
         }
-        
+
         .action-bars h3 {
             text-align: center;
             margin-bottom: 20px;
             font-size: 1.3em;
             color: rgba(255, 255, 255, 0.9);
         }
-        
+
         .bars-container {
             display: flex;
             justify-content: space-around;
@@ -123,7 +123,7 @@
             height: 200px;
             gap: 20px;
         }
-        
+
         .bar-wrapper {
             flex: 1;
             display: flex;
@@ -131,7 +131,7 @@
             align-items: center;
             gap: 10px;
         }
-        
+
         .bar {
             width: 100%;
             max-width: 80px;
@@ -144,21 +144,21 @@
             padding-top: 8px;
             min-height: 5px;
         }
-        
+
         .bar-value {
             color: white;
             font-weight: bold;
             font-size: 0.9em;
             text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
         }
-        
+
         .bar-label {
             font-weight: bold;
             font-size: 1em;
             color: rgba(255, 255, 255, 0.95);
             padding-top: 10px;
         }
-        
+
         .controls {
             display: flex;
             justify-content: center;
@@ -166,7 +166,7 @@
             margin-top: 30px;
             flex-wrap: wrap;
         }
-        
+
         button {
             background: rgba(255, 255, 255, 0.2);
             border: 2px solid rgba(255, 255, 255, 0.5);
@@ -178,23 +178,23 @@
             transition: all 0.3s ease;
             min-width: 80px;
         }
-        
+
         button:hover:not(:disabled) {
             background: rgba(255, 255, 255, 0.3);
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(0,0,0,0.2);
         }
-        
+
         button:disabled {
             opacity: 0.5;
             cursor: not-allowed;
         }
-        
+
         button.active {
             background: rgba(76, 175, 80, 0.5);
             border-color: #4CAF50;
         }
-        
+
         .speed-control {
             display: flex;
             align-items: center;
@@ -203,7 +203,7 @@
             padding: 10px 15px;
             border-radius: 8px;
         }
-        
+
         #speedSlider {
             width: 100px;
             cursor: pointer;
@@ -215,16 +215,16 @@
             justify-content: center;
             margin-top: 20px;
             padding: 10px;
-            background: rgba(0, 0, 0, 0.2);
+            background: rgba(255, 255, 255,0.2);
             border-radius: 10px;
         }
-        
+
         .legend-item {
             display: flex;
             align-items: center;
             gap: 10px;
         }
-        
+
         .legend-color {
             width: 30px;
             height: 30px;
@@ -233,7 +233,7 @@
             text-align: center;
             line-height: 25px;
         }
-        
+
         .placeholder-message {
             text-align: center;
             padding: 40px;
@@ -330,7 +330,7 @@
 
         .canvas-container h3 {
             text-align: center;
-            margin-bottom: 15px;
+            margin-bottom: 50px;
             font-size: 1.2em;
             color: rgba(255, 255, 255, 0.9);
         }
@@ -366,6 +366,29 @@
         #decodedGridCanvas {
             border-radius: 10px;
             cursor: pointer;
+        }
+
+        .layer-selector-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+            justify-content: center;
+        }
+
+        .layer-selector-container label {
+            font-size: 0.9em;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .layer-selector-container select {
+            padding: 4px 8px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.9);
+            color: #333;
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            cursor: pointer;
+            font-size: 0.85em;
         }
 
         /* Controls and legend section */
@@ -491,7 +514,7 @@
 
         .token-span:hover {
             transform: scale(1.05);
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 2px 8px rgba(255, 255, 255,0.3);
         }
 
         /* Token group underlines (no background) */
@@ -552,19 +575,22 @@
             padding: 12px;
             border-radius: 8px;
             z-index: 2000;
-            max-width: 300px;
+            min-width: 200px;
+            max-width: 350px;
             font-size: 0.9em;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            box-shadow: 0 4px 12px rgba(255, 255, 255,0.5);
             pointer-events: none;
         }
 
         .token-tooltip .tooltip-section {
             margin: 8px 0;
+            display: flex;
+            flex-direction: row;
         }
 
         .token-tooltip .tooltip-label {
             font-weight: bold;
-            margin-bottom: 4px;
+            margin-right: 4px;
             color: #a0c4ff;
         }
 
@@ -588,7 +614,7 @@
             z-index: 2000;
             min-width: 200px;
             font-size: 0.9em;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            box-shadow: 0 4px 12px rgba(255, 255, 255,0.5);
         }
 
         .tile-tooltip .tooltip-title {
@@ -597,37 +623,53 @@
             color: #a0c4ff;
         }
 
-        /* Mini bar chart */
-        .tile-tooltip .bar-item {
+        /* Mini bar chart (for both token and tile tooltips) */
+        .tile-tooltip .bar-item,
+        .token-tooltip .bar-item {
             display: flex;
             align-items: center;
             gap: 8px;
             margin: 6px 0;
         }
 
-        .tile-tooltip .bar-label {
+        .tile-tooltip .bar-label,
+        .token-tooltip .bar-label {
             min-width: 60px;
             font-size: 0.85em;
         }
 
-        .tile-tooltip .bar-wrapper {
+        .tile-tooltip .bar-wrapper,
+        .token-tooltip .bar-wrapper {
             flex: 1;
             background: rgba(255, 255, 255, 0.1);
             border-radius: 3px;
             overflow: hidden;
+            position: relative;
+            height: 16px;
         }
 
-        .tile-tooltip .bar-fill {
-            height: 16px;
-            background: linear-gradient(to right, #667eea, #764ba2);
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
-            padding-right: 4px;
+        .tile-tooltip .bar-fill,
+        .token-tooltip .bar-fill {
+            height: 100%;
+            background: black;
+            border-radius: 3px;
+            transition: width 0.3s ease;
+            position: absolute;
+            left: 0;
+            top: 0;
+        }
+
+        .tile-tooltip .bar-wrapper::after,
+        .token-tooltip .bar-wrapper::after {
+            content: attr(data-percentage);
+            position: absolute;
+            right: 4px;
+            top: 50%;
+            transform: translateY(-50%);
             color: white;
             font-size: 0.75em;
             font-weight: bold;
-            transition: width 0.3s ease;
+            pointer-events: none;
         }
     </style>
 </head>
@@ -635,7 +677,7 @@
     <div class="container">
         <div class="header-section">
             <h2>Project Telos Trace Viewer</h2>
-            <button id="paramsMenuToggle">⚙️ Grid & Model Params</button>
+            <button id="paramsMenuToggle">⚙️ Config</button>
         </div>
 
         <div id="paramsMenu" class="params-menu collapsed">
@@ -660,6 +702,10 @@
             </div>
             <div id="decodedGridContainer" class="decoded-grid-container hidden">
                 <h3>Decoded Grid State</h3>
+                <div class="layer-selector-container">
+                    <label for="layerSelector">Probe Layer:</label>
+                    <select id="layerSelector"></select>
+                </div>
                 <canvas id="decodedGridCanvas"></canvas>
             </div>
         </div>
@@ -672,8 +718,8 @@
                 <input type="file" id="fileInput" accept=".json" style="display: none;">
                 <div class="control-separator"></div>
                 <button id="playPauseBtn">▶️ Play</button>
-                <button id="backStepBtn">⏮️ Back</button>
-                <button id="stepBtn">⏭️ Step</button>
+                <button id="backStepBtn">⏪ Back</button>
+                <button id="stepBtn">⏩ Step</button>
                 <button id="resetBtn">🔄 Reset</button>
                 <div class="speed-control">
                     <label>Speed:</label>
@@ -682,6 +728,37 @@
                 </div>
             </div>
             <div class="legend" id="dynamicLegend" style="display: none;"></div>
+        </div>
+
+        <div class="help-section">
+            <h3 class="collapsible-header" id="helpHeader">
+                <span class="collapse-icon">▶</span> How to Use
+            </h3>
+            <div id="helpContent" class="help-content collapsed">
+                <h4>Getting Started with Trace Viewer</h4>
+
+                <p>To use Trace Viewer, upload a <b>JSON trace file</b> in the format described in the demo README. Once uploaded, the first grid state will become visible, alongside two prompt and model output sections containing input/output tokens for the current trace step.</p>
+                <p>Use the buttons ▶️ Play, ⏸️ Pause, ⏩ Next, ⏪ Back and 🔄 Reset to move across trace steps, and use the slider to control animation speed. A white arrow on the agent tile (A) indicates the predicted action direction from the model. The arrow points in the direction predicted by the agent. A summary of grid and model parameters is available in the ⚙️ Config tab.</p>
+
+                <h4>Token Visual Indicators</h4>
+                <ul>
+                    <li><strong>Colored Underlines</strong> indicate token types:
+                        <ul>
+                            <li><span style="border-bottom: 2px solid rgba(33, 150, 243, 0.8);">Blue</span> = Reasoning tokens</li>
+                            <li><span style="border-bottom: 2px solid rgba(255, 152, 0, 0.8);">Orange</span> = Final answer tokens</li>
+                            <li><span style="border-bottom: 2px solid rgba(76, 175, 80, 0.8);">Green</span> = Tokens matching valid output actions</li>
+                            <li><span style="border-bottom: 2px solid rgba(158, 158, 158, 0.8);">Gray</span> = Special tokens used by the tokenizer</li>
+                        </ul>
+                    </li>
+                    <li><strong>Colored Highlights</strong> indicate the token has additional information visible upon hovering:
+                        <ul>
+                            <li><span style="box-shadow: inset 0 0 0 1px rgba(255, 193, 7, 0.5);">Yellow</span> = Prediction probabilities</li>
+                            <li><span style="box-shadow: inset 0 0 0 2px rgba(102, 126, 234, 0.5);">Purple</span> = Probing results</li>
+                        </ul>
+                    </li>
+                </ul>
+                <p>Tokens can be hovered to show an info tooltip with next-token probabilities displayed as bar charts. Tokens with probe information will also display a decoded grid showing the model's internal representation of tile types. Tiles marked with "X" have no probe data available. Clicking on a token with probe information pins the decoded grid for further inspection. Use the layer selector dropdown above the decoded grid to switch between different model layers. Hovering on decoded grid tiles shows the prediction probabilities for all tile classes as bar charts.</p>
+            </div>
         </div>
 
         <div class="token-displays-section" style="display: none;">
@@ -698,50 +775,10 @@
                 </h3>
                 <div id="outputTokens" class="token-container"></div>
             </div>
-
-            <div class="help-section">
-                <h3 class="collapsible-header" id="helpHeader">
-                    <span class="collapse-icon">▶</span> How to Use This Demo
-                </h3>
-                <div id="helpContent" class="help-content collapsed">
-                    <h4>Controls</h4>
-                    <ul>
-                        <li><strong>Load JSON:</strong> Upload a trace file in the format described in the README</li>
-                        <li><strong>Play/Pause/Step:</strong> Control the animation through agent steps</li>
-                        <li><strong>Speed Slider:</strong> Adjust animation speed</li>
-                        <li><strong>⚙️ Grid & Model Params:</strong> View grid and model configuration</li>
-                    </ul>
-
-                    <h4>Token Visual Indicators</h4>
-                    <ul>
-                        <li><strong>Colored Underlines</strong> indicate token groups:
-                            <ul>
-                                <li><span style="color: #2196F3;">Blue</span> = Analysis tokens</li>
-                                <li><span style="color: #FF9800;">Orange</span> = Final answer tokens</li>
-                                <li><span style="color: #4CAF50;">Green</span> = Action tokens</li>
-                                <li><span style="color: #9E9E9E;">Gray</span> = Template tokens</li>
-                            </ul>
-                        </li>
-                        <li><strong>Yellow highlight</strong> = Token has next-token probabilities (hover to view)</li>
-                        <li><strong>Purple highlight</strong> = Token has probe data (hover/click to view decoded grid)</li>
-                    </ul>
-
-                    <h4>Interactive Features</h4>
-                    <ul>
-                        <li><strong>Hover over tokens:</strong> View token ID, probabilities, and probe layer selector</li>
-                        <li><strong>Click tokens with probes:</strong> Pin the decoded grid to keep it visible</li>
-                        <li><strong>Hover over decoded grid tiles:</strong> View probability distributions for each tile type</li>
-                        <li><strong>Layer selector:</strong> Switch between different model layers (in token tooltip)</li>
-                        <li><strong>Collapsible sections:</strong> Click headers to expand/collapse Prompt Template, Model Output, and this Help section</li>
-                    </ul>
-
-                    <h4>Decoded Grid</h4>
-                    <p>When hovering or clicking a token with probe data, the decoded grid shows the model's internal representation of the grid state. Each tile shows the predicted tile type (based on highest probability). Tiles marked with "X" have no probe data available.</p>
-                </div>
-            </div>
         </div>
+        <div style="height: 200px"></div>
     </div>
-    
+
     <script>
         // DOM references
         const canvas = document.getElementById('gridCanvas');
@@ -772,6 +809,7 @@
         const outputHeader = document.getElementById('outputHeader');
         const helpHeader = document.getElementById('helpHeader');
         const helpContent = document.getElementById('helpContent');
+        const layerSelector = document.getElementById('layerSelector');
 
         // Global state
         let viewerData = null;
@@ -796,7 +834,7 @@
 
         let currentTooltip = null;
         let decodedGridTileProbes = null;
-        
+
         // Tile color mapping (will be dynamically built from legend)
         let tileColorMap = {};
 
@@ -948,9 +986,40 @@
                 legendItem.appendChild(label);
                 dynamicLegend.appendChild(legendItem);
             }
+
+            // Add special legend item for missing probe data
+            const missingItem = document.createElement('div');
+            missingItem.className = 'legend-item';
+
+            const missingBox = document.createElement('canvas');
+            missingBox.className = 'legend-color';
+            missingBox.width = 30;
+            missingBox.height = 30;
+            const ctx = missingBox.getContext('2d');
+
+            // Draw gray background
+            ctx.fillStyle = '#888888';
+            ctx.fillRect(0, 0, 30, 30);
+
+            // Draw X
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(5, 5);
+            ctx.lineTo(25, 25);
+            ctx.moveTo(25, 5);
+            ctx.lineTo(5, 25);
+            ctx.stroke();
+
+            const missingLabel = document.createElement('span');
+            missingLabel.textContent = 'Missing Info';
+
+            missingItem.appendChild(missingBox);
+            missingItem.appendChild(missingLabel);
+            dynamicLegend.appendChild(missingItem);
         }
 
-        function drawOriginalGrid(gridStateLines) {
+        function drawOriginalGrid(gridStateLines, agentAction = null) {
             if (!gridStateLines || gridStateLines.length === 0) return;
 
             // Grid state is an array of strings, first line is coordinates
@@ -978,10 +1047,17 @@
             ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+            let agentPosition = null;
+
             grid.forEach((row, y) => {
                 row.forEach((symbol, x) => {
                     const xPos = x * cellSize + padding;
                     const yPos = y * cellSize + padding;
+
+                    // Track agent position
+                    if (symbol === 'A') {
+                        agentPosition = { row: y, col: x, xPos, yPos };
+                    }
 
                     // Map symbol to tile type from legend
                     let tileType = null;
@@ -999,7 +1075,7 @@
                     ctx.fillRect(xPos, yPos, cellSize, cellSize);
 
                     // Draw grid lines
-                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+                    ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
                     ctx.strokeRect(xPos, yPos, cellSize, cellSize);
 
                     // Draw symbol
@@ -1012,6 +1088,55 @@
                     }
                 });
             });
+
+            // Draw arrow on agent tile if agent_action is provided
+            if (agentAction && agentPosition) {
+                drawActionArrow(agentPosition, agentAction, cellSize);
+            }
+        }
+
+        function drawActionArrow(agentPosition, agentAction, cellSize) {
+            const centerX = agentPosition.xPos + cellSize / 2;
+            const centerY = agentPosition.yPos + cellSize / 2;
+            const arrowLength = cellSize * 0.50;
+            const arrowHeadSize = 7;
+
+            // Calculate arrow end point based on direction
+            let endX = centerX;
+            let endY = centerY;
+
+            switch (agentAction) {
+                case 'UP':
+                    endY -= arrowLength;
+                    break;
+                case 'DOWN':
+                    endY += arrowLength;
+                    break;
+                case 'LEFT':
+                    endX -= arrowLength;
+                    break;
+                case 'RIGHT':
+                    endX += arrowLength;
+                    break;
+                default:
+                    return; // Unknown action, don't draw
+            }
+
+            // Calculate arrowhead points
+            const angle = Math.atan2(endY - centerY, endX - centerX);
+            const arrowHead1X = endX - arrowHeadSize * Math.cos(angle - Math.PI / 6);
+            const arrowHead1Y = endY - arrowHeadSize * Math.sin(angle - Math.PI / 6);
+            const arrowHead2X = endX - arrowHeadSize * Math.cos(angle + Math.PI / 6);
+            const arrowHead2Y = endY - arrowHeadSize * Math.sin(angle + Math.PI / 6);
+
+            // Draw arrowhead
+            ctx.fillStyle = 'rgba(255, 255, 255, 1)';
+            ctx.beginPath();
+            ctx.moveTo(endX, endY);
+            ctx.lineTo(arrowHead1X, arrowHead1Y);
+            ctx.lineTo(arrowHead2X, arrowHead2Y);
+            ctx.closePath();
+            ctx.fill();
         }
 
         // Token rendering functions
@@ -1242,33 +1367,29 @@
             const tooltip = document.createElement('div');
             tooltip.className = 'token-tooltip';
 
-            let tooltipHTML = `<div class="tooltip-section"><div class="tooltip-label">Token ID:</div>${token.token_id}</div>`;
+            let tooltipHTML = `<div class="tooltip-section"><div class="tooltip-label">ID:</div>${token.token_id}</div>`;
 
-            // Show probabilities if present
+            // Show probabilities if present (using bar chart format like tile tooltip)
             if (token.probabilities && Object.keys(token.probabilities).length > 0) {
-                tooltipHTML += `<div class="tooltip-section"><div class="tooltip-label">Probabilities:</div>`;
-                for (const [tokenText, prob] of Object.entries(token.probabilities)) {
-                    tooltipHTML += `<div>${tokenText}: ${(prob * 100).toFixed(1)}%</div>`;
+                tooltipHTML += `<div style="margin-top: 10px;"><div class="tooltip-label" style="margin-bottom: 8px;">Next Token Probabilities:</div>`;
+
+                // Sort by probability descending
+                const sorted = Object.entries(token.probabilities).sort((a, b) => b[1] - a[1]);
+
+                for (const [tokenText, prob] of sorted) {
+                    const percentage = (prob * 100).toFixed(1);
+                    const barWidthPercent = Math.max(1, prob * 100); // Percentage width
+
+                    tooltipHTML += `
+                        <div class="bar-item">
+                            <div class="bar-label">${tokenText}</div>
+                            <div class="bar-wrapper" data-percentage="${percentage}%">
+                                <div class="bar-fill" style="width: ${barWidthPercent}%;"></div>
+                            </div>
+                        </div>
+                    `;
                 }
                 tooltipHTML += `</div>`;
-            }
-
-            // Show layer selector if has tile_identity_probes
-            if (hasTileIdentityProbes(token)) {
-                const layers = getAvailableLayers(token);
-                const tokenKey = `${currentStepIndex}_${context}_${index}`;
-                const selectedLayer = uiState.selectedLayer[tokenKey] || layers[0];
-
-                tooltipHTML += `<div class="tooltip-section">
-                    <div class="tooltip-label">Probe Layer:</div>
-                    <select id="layerSelect_${tokenKey}" onchange="handleLayerChange('${tokenKey}', this.value)">`;
-
-                layers.forEach(layer => {
-                    const selected = layer === selectedLayer ? 'selected' : '';
-                    tooltipHTML += `<option value="${layer}" ${selected}>${layer}</option>`;
-                });
-
-                tooltipHTML += `</select></div>`;
             }
 
             tooltip.innerHTML = tooltipHTML;
@@ -1337,22 +1458,23 @@
             }
         }
 
-        function handleLayerChange(tokenKey, newLayer) {
+        function handleLayerChange(newLayer) {
+            if (!uiState.pinnedToken) return;
+
+            const tokenKey = getTokenKey(uiState.pinnedToken);
             uiState.selectedLayer[tokenKey] = newLayer;
 
             // Get token and update decoded grid
             const token = getPinnedTokenData();
-            if (!token) {
-                // Token is hovered, not pinned - get from event
-                // For now, just update the state - the tooltip recreation will handle it
-                return;
+            if (token) {
+                updateDecodedGrid(token, newLayer);
             }
-
-            updateDecodedGrid(token, newLayer);
         }
 
-        // Make handleLayerChange accessible from inline event handlers
-        window.handleLayerChange = handleLayerChange;
+        // Add event listener for layer selector
+        layerSelector.addEventListener('change', (e) => {
+            handleLayerChange(e.target.value);
+        });
 
         // Decoded grid logic
         function updateDecodedGrid(token, selectedLayer) {
@@ -1360,6 +1482,19 @@
                 hideDecodedGrid();
                 return;
             }
+
+            // Populate layer selector
+            const layers = getAvailableLayers(token);
+            layerSelector.innerHTML = '';
+            layers.forEach(layer => {
+                const option = document.createElement('option');
+                option.value = layer;
+                option.textContent = layer;
+                if (layer === selectedLayer) {
+                    option.selected = true;
+                }
+                layerSelector.appendChild(option);
+            });
 
             // Extract tile identity probes
             const tileProbes = extractTileIdentityProbes(token.probes, selectedLayer);
@@ -1462,7 +1597,7 @@
                     }
 
                     // Draw grid lines
-                    decodedCtx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+                    decodedCtx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
                     decodedCtx.lineWidth = 1;
                     decodedCtx.strokeRect(xPos, yPos, cellSize, cellSize);
                 }
@@ -1522,20 +1657,21 @@
 
             let tooltipHTML = `<div class="tooltip-title">Tile (${row}, ${col}) Probabilities</div>`;
 
-            // Sort by probability descending
-            const sorted = Object.entries(probabilities).sort((a, b) => b[1] - a[1]);
+            // Keep consistent order (same as legend order)
+            const legendOrder = viewerData.grid_params.legend;
+            const entries = Object.keys(legendOrder).map(tileType => {
+                return [tileType, probabilities[tileType] || 0];
+            });
 
-            for (const [tileType, prob] of sorted) {
+            for (const [tileType, prob] of entries) {
                 const percentage = (prob * 100).toFixed(1);
-                const barWidth = Math.max(5, prob * 150); // Max 150px width
+                const barWidthPercent = Math.max(1, prob * 100); // Percentage width
 
                 tooltipHTML += `
                     <div class="bar-item">
                         <div class="bar-label">${tileType}</div>
-                        <div class="bar-wrapper">
-                            <div class="bar-fill" style="width: ${barWidth}px;">
-                                ${percentage}%
-                            </div>
+                        <div class="bar-wrapper" data-percentage="${percentage}%">
+                            <div class="bar-fill" style="width: ${barWidthPercent}%;"></div>
                         </div>
                     </div>
                 `;
@@ -1565,8 +1701,8 @@
             currentStepIndex = stepIndex;
             uiState.currentStepIndex = stepIndex;
 
-            // Draw original grid
-            drawOriginalGrid(step.grid_state);
+            // Draw original grid with agent action arrow
+            drawOriginalGrid(step.grid_state, step.agent_action);
 
             // Render token displays
             renderPromptTokens(step);
@@ -1589,7 +1725,7 @@
                 unpinToken();
             }
         }
-        
+
         function animate() {
             if (!isPlaying || !viewerData || !viewerData.steps) {
                 return;
@@ -1660,7 +1796,7 @@
                 stepInfo.innerHTML = `(${currentStepIndex + 1} / ${viewerData.steps.length})`;
             }
         }
-        
+
         playPauseBtn.addEventListener('click', () => {
             if (!viewerData || !viewerData.steps) return;
 
@@ -1673,7 +1809,7 @@
                 startAnimation();
             }
         });
-        
+
         backStepBtn.addEventListener('click', backStep);
         stepBtn.addEventListener('click', step);
         resetBtn.addEventListener('click', resetAnimation);
