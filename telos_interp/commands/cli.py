@@ -76,7 +76,7 @@ def gather_grid_activations_last_prompt(
             help="Path to a grid CSV file with columns: env_idx, observation, x, y, cell_type, symbol, classes_map, optimal_trajectory_length",
         ),
     ],
-    layer: Annotated[int, typer.Option(help="Which layer to extract activations from")],
+    layer: Annotated[int, typer.Argument(help="Which layer to extract activations from")],
     observability: Annotated[
         activations.Observability, typer.Option(help="Observability of the grid")
     ] = activations.Observability.full,
@@ -212,9 +212,30 @@ def probe_predict(
 
     predictions = probing_gpu.predict_from_activations_list(probe_path, activations_list)
 
+    evaluation_results = probing_gpu.evaluate_predictions(csv_path, predictions)
+
+    print(f"Total accuracy: {evaluation_results['total_accuracy']}")
+    print(f"Total per class accuracies: {evaluation_results['total_per_class_accuracies']}")
+
     with open(results_path, "w") as f:
         json.dump(predictions, f, indent=4)
+
     print(f"Predictions saved to {results_path}")
+
+
+@app.command("probe-evaluate-predictions", help="Evaluate probe predictions saved in probe-predict output file")
+def probe_evaluate_predictions(
+    predictions_path: str,
+    original_csv_path: str,
+):
+    predictions = json.load(open(predictions_path))
+    evaluation_results = probing_gpu.evaluate_predictions(original_csv_path, predictions)
+    print(f"Total accuracy: {evaluation_results['total_accuracy']}")
+    print(f"Total per class accuracies: {evaluation_results['total_per_class_accuracies']}")
+
+    eval_results_path = predictions_path.replace(".json", "_evaluation.json")
+    with open(eval_results_path, "w") as f:
+        json.dump(evaluation_results, f, indent=4)
 
 
 @app.command("probe-eval-on-jsonl", help="Evaluate a probe on a JSONL file")

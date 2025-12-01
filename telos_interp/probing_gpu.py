@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import torch
 from torch import nn, optim
 
@@ -12,6 +13,7 @@ from telos_interp.probing import (
     _prepare_multiclass_data,
     _print_evaluation_results,
     _to_torch,
+    load_activations,
 )
 
 
@@ -426,7 +428,6 @@ def train_and_save_multiclass_probe_gpu(
     Returns:
         Path to the saved probe
     """
-    from telos_interp.probing import load_activations
 
     activations_dir = Path(activations_dir)
 
@@ -453,8 +454,8 @@ def train_and_save_multiclass_probe_gpu(
     eval_dict = {}
 
     if balance_classes:
-        activations_dict = balance_classes_by_downsampling(activations_dict, seed=seed)
-        # activations_dict = balance_classes_by_upsampling(activations_dict, seed=seed)
+        # activations_dict = balance_classes_by_downsampling(activations_dict, seed=seed)
+        activations_dict = balance_classes_by_upsampling(activations_dict, seed=seed)
 
     for class_name, acts in activations_dict.items():
         n_samples = acts.shape[0]
@@ -509,6 +510,8 @@ def train_and_save_multiclass_probe_gpu(
         suffix_parts.append("no_intercept")
     if normalize:
         suffix_parts.append("normalized")
+    if balance_classes:
+        suffix_parts.append("balanced")
 
     suffix = "_" + "_".join(suffix_parts)
     output_path = output_dir / f"multiclass_probe_layer_{layer}{suffix}.pkl"
@@ -536,7 +539,7 @@ def predict_from_activations_list(
     [
         {
             "observation": str,
-            "predictions": {(x,y): {class_name: probability, class_name: probability, ...}, ...},
+            "predictions": {'(x,y)': {class_name: probability, class_name: probability, ...}, ...},
         },
         ...
     ]
@@ -555,8 +558,8 @@ def predict_from_activations_list(
             probabilities = probe.predict_proba(activation.unsqueeze(0))
             for class_name, class_idx in probe.class_name_to_class_idx.items():
                 cell_predictions[class_name] = probabilities[0, class_idx].item()
-            # Predictions are stored in (row, column) order.
-            row_predictions[str((y, x))] = cell_predictions
+            # Predictions are stored in (column, row) order.
+            row_predictions[str((x, y))] = cell_predictions
 
         results.append(
             {
@@ -566,3 +569,77 @@ def predict_from_activations_list(
         )
 
     return results
+
+
+def get_predicted_class(per_cell_predictions: dict[str, Any]) -> str:
+    """Get the predicted class from the predictions dictionary."""
+    max_probability = 0
+    predicted_class = None
+    for class_name, probability in per_cell_predictions.items():
+        if probability > max_probability:
+            max_probability = probability
+            predicted_class = class_name
+    return predicted_class, max_probability
+
+
+def evaluate_predictions(csv_path: str, predictions: list[dict[str, Any]]) -> dict[str, float]:
+    """Evaluate the predictions against the ground truth in the csv file.
+
+    predictions has the following structure:
+    [
+        {
+            "observation": str,
+            "predictions": {'(x,y)': {class_name: probability, class_name: probability, ...}, ...},
+        },
+        ...
+    ]
+    """
+
+    df = pd.read_csv(csv_path)
+
+    if len(df) != len(predictions):
+        print(f"Number of rows in csv and predictions must match. {len(df)} != {len(predictions)}")
+        return {}
+
+    per_row_accuracies = []
+    per_class_accuracies = {}
+
+    all_class_names = predictions[0]["predictions"]["(0, 0)"].keys()
+    per_class_accuracies = {class_name: [] for class_name in all_class_names}
+
+    for row_idx, row in df.iterrows():
+        true_fo_cell_types = eval(row.fo_cell_types)
+        correct_predictions = 0
+        total_predictions = 0
+        class_counts = dict.fromkeys(all_class_names, 0)
+        class_correct_predictions = dict.fromkeys(all_class_names, 0)
+        for x, y, true_cell_type in true_fo_cell_types:
+            xy_key = f"({x}, {y})"
+            pred_xy_probabilities = predictions[row_idx]["predictions"][xy_key]
+            predicted_class, max_probability = get_predicted_class(pred_xy_probabilities)
+            if predicted_class == true_cell_type:
+                correct_predictions += 1
+                class_correct_predictions[predicted_class] += 1
+
+            total_predictions += 1
+            class_counts[true_cell_type] += 1
+
+        per_row_accuracies.append(correct_predictions / (total_predictions or 1))
+        for class_name in all_class_names:
+            per_class_accuracies[class_name].append(
+                class_correct_predictions[class_name] / (class_counts[class_name] or 1)
+            )
+
+    total_accuracy = sum(per_row_accuracies) / len(per_row_accuracies)
+    total_per_class_accuracies = {}
+    for class_name in all_class_names:
+        total_per_class_accuracies[class_name] = sum(per_class_accuracies[class_name]) / len(
+            per_class_accuracies[class_name]
+        )
+
+    return {
+        "total_accuracy": total_accuracy,
+        "total_per_class_accuracies": total_per_class_accuracies,
+        "per_row_accuracies": per_row_accuracies,
+        "per_class_accuracies": per_class_accuracies,
+    }
