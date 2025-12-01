@@ -139,6 +139,7 @@ def run_model_and_gather_activations_at_token_position(
                 all_layer_outputs.append(layer_output)
 
     # Move to CPU first, then stack
+    torch.cuda.synchronize()
     all_layer_outputs = [output.detach().clone().cpu() for output in all_layer_outputs]
     all_layer_outputs = torch.stack(all_layer_outputs)
     return all_layer_outputs
@@ -223,7 +224,7 @@ def _create_probe_inputs_from_activation(
     last_prompt_activation: torch.Tensor,
     cell_types: list,
     row_column: bool = False,
-) -> dict[str, torch.Tensor]:
+) -> dict[str, list[torch.Tensor]]:
     """Create probe inputs with coordinates for each cell type.
 
     Args:
@@ -232,10 +233,11 @@ def _create_probe_inputs_from_activation(
         row_column: If True, use (row, column) ordering; if False, use (x, y) ordering
 
     Returns:
-        Dictionary mapping cell_type to probe input tensor of shape (hidden_dim + 2,)
+        Dictionary mapping cell_type to list of probe input tensors of shape (hidden_dim + 2,)
     """
     hidden_size = last_prompt_activation.shape[0]
-    result = {}
+    existing_class_names = {cell_type for _, _, cell_type in cell_types}
+    result = {cell_type: [] for cell_type in existing_class_names}
 
     for cell_type_tuple in cell_types:
         x, y, cell_type = cell_type_tuple
@@ -247,7 +249,7 @@ def _create_probe_inputs_from_activation(
         else:
             full_probe_input[hidden_size] = x
             full_probe_input[hidden_size + 1] = y
-        result[cell_type] = full_probe_input
+        result[cell_type].append(full_probe_input)
 
     return result
 
@@ -282,7 +284,7 @@ def _create_probe_inputs_by_coordinates(
 def gather_activations_from_grid_at_last_prompt_token(
     model_name_or_path: str,
     csv_path: str,
-    layer: int = 12,
+    layer: int,
     observability: Observability = Observability.full,
     observation_type: ObservationType = ObservationType.grid_only,
     row_column: bool = False,
@@ -320,8 +322,8 @@ def gather_activations_from_grid_at_last_prompt_token(
 
             # Create probe inputs and group by cell type
             probe_inputs = _create_probe_inputs_from_activation(last_prompt_activation, cell_types, row_column)
-            for cell_type, full_probe_input in probe_inputs.items():
-                activations_by_type[cell_type].append(full_probe_input)
+            for cell_type, all_probe_inputs_for_cell_type in probe_inputs.items():
+                activations_by_type[cell_type].extend(all_probe_inputs_for_cell_type)
 
     # Save activations by type
     csv_name = os.path.basename(csv_path)
@@ -427,6 +429,9 @@ def get_activations_for_each_row_in_csv(
         # Create probe inputs keyed by (x, y) coordinates
         activations_dict = _create_probe_inputs_by_coordinates(last_prompt_activation, cell_types)
         results.append({"observation": observation, "activations": activations_dict})
+
+    del model
+    torch.cuda.empty_cache()
 
     return results
 
