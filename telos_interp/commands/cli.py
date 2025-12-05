@@ -76,7 +76,7 @@ def gather_grid_activations_last_prompt(
             help="Path to a grid CSV file with columns: env_idx, observation, x, y, cell_type, symbol, classes_map, optimal_trajectory_length",
         ),
     ],
-    layer: Annotated[int, typer.Argument(help="Which layer to extract activations from")],
+    layer: Annotated[int, typer.Option(help="Which layer to extract activations from")],
     observability: Annotated[
         activations.Observability, typer.Option(help="Observability of the grid")
     ] = activations.Observability.full,
@@ -118,7 +118,7 @@ def train_multiclass_probe(
     activations_dir: Annotated[
         str, typer.Argument(..., help="Directory containing activation files (acts_wall.pt, acts_empty.pt, etc.)")
     ],
-    layer: Annotated[int, typer.Argument(..., help="Layer number for the probe")],
+    layer: Annotated[int, typer.Option(..., help="Layer number for the probe")],
     output_dir: Annotated[str, typer.Option(help="Directory to save the probe")] = None,
     eval_split: Annotated[float, typer.Option(help="Fraction of data to use for evaluation")] = 0.2,
     reg_coeff: Annotated[float, typer.Option(help="Regularization coefficient")] = 1e3,
@@ -128,7 +128,7 @@ def train_multiclass_probe(
     verbose: Annotated[int, typer.Option(help="Verbosity level (0=silent, 1+=show progress)")] = 0,
     use_gpu: Annotated[bool, typer.Option("--gpu/--cpu", help="Use GPU-accelerated PyTorch implementation")] = False,
     learning_rate: Annotated[float, typer.Option(help="Learning rate for GPU training")] = 0.1,
-    max_iter: Annotated[int, typer.Option(help="Maximum iterations for GPU training")] = 1000,
+    num_epochs: Annotated[int, typer.Option(help="Number of epochs for GPU training")] = 100,
     balanced_weights: Annotated[
         bool,
         typer.Option(
@@ -145,8 +145,11 @@ def train_multiclass_probe(
         bool, typer.Option("--use-mlp/--no-mlp", help="Use MLP architecture instead of linear (GPU only)")
     ] = False,
     mlp_hidden_size: Annotated[int, typer.Option(help="Hidden size for MLP architecture (GPU only)")] = 1024,
+    batch_size: Annotated[int, typer.Option(help="Batch size for GPU training")] = 16384,
 ):
     class_weight = "balanced" if balanced_weights else None
+
+    assert layer is not None, "Layer must be provided"
 
     if use_gpu:
         saved_probe_path = probing_gpu.train_and_save_multiclass_probe_gpu(
@@ -161,11 +164,12 @@ def train_multiclass_probe(
             verbose,
             device=None,
             learning_rate=learning_rate,
-            max_iter=max_iter,
+            num_epochs=num_epochs,
             class_weight=class_weight,
             balance_classes=balance_classes,
             use_mlp=use_mlp,
             mlp_hidden_size=mlp_hidden_size,
+            batch_size=batch_size,
         )
     else:
         if use_mlp:
@@ -198,6 +202,9 @@ def probe_predict(
         activations.ObservationType, typer.Option(help="Type of observation")
     ] = activations.ObservationType.full_prompt,
 ):
+    assert os.path.exists(probe_path), f"Probe path {probe_path} does not exist"
+    assert os.path.exists(csv_path), f"CSV path {csv_path} does not exist"
+
     if results_path is None:
         output_dir = csv_path.replace(".csv", "")
         os.makedirs(output_dir, exist_ok=True)
@@ -221,6 +228,10 @@ def probe_predict(
         json.dump(predictions, f, indent=4)
 
     print(f"Predictions saved to {results_path}")
+
+    eval_results_path = results_path.replace(".json", "_evaluation.json")
+    with open(eval_results_path, "w") as f:
+        json.dump(evaluation_results, f, indent=4)
 
 
 @app.command("probe-evaluate-predictions", help="Evaluate probe predictions saved in probe-predict output file")
