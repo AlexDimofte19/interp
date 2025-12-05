@@ -167,7 +167,7 @@ def _process_grid_row_and_get_activations(
         A tuple of (observation, last_prompt_activation, cell_types_list)
         where:
             - observation: The observation string
-            - last_prompt_activation: Tensor of shape (hidden_dim,)
+            - last_prompt_activation: Tensor of shape (hidden_dim,) or (num_layers, hidden_dim) in case layer == -1
             - cell_types_list: List of (x, y, cell_type) tuples
     """
     if observability == Observability.full:
@@ -185,7 +185,14 @@ def _process_grid_row_and_get_activations(
     all_layer_activations = run_model_and_gather_activations_at_token_position(
         model, grid_text, empty_response, TokenPosition.prompt_last
     )  # (num_layers, hidden_dim)
-    last_prompt_activation = all_layer_activations[layer]  # Shape: (hidden_dim,)
+    if layer == -1:
+        # Take all layer activations
+        last_prompt_activation = all_layer_activations
+    else:
+        last_prompt_activation = all_layer_activations[layer]  # Shape: (hidden_dim,)
+
+    if torch.isnan(last_prompt_activation).any():
+        raise ValueError(f"NaN in activations for env_row {env_row} layer {layer}")
 
     return observation, last_prompt_activation, cell_types
 
@@ -233,22 +240,27 @@ def _create_probe_inputs_from_activation(
         row_column: If True, use (row, column) ordering; if False, use (x, y) ordering
 
     Returns:
-        Dictionary mapping cell_type to list of probe input tensors of shape (hidden_dim + 2,)
+        Dictionary mapping cell_type to list of probe input tensors of shape (num_layers, hidden_dim + 2,)
     """
-    hidden_size = last_prompt_activation.shape[0]
+    if len(last_prompt_activation.shape) == 1:
+        num_layers = 1
+        hidden_size = last_prompt_activation.shape[0]
+    else:
+        num_layers, hidden_size = last_prompt_activation.shape
+
     existing_class_names = {cell_type for _, _, cell_type in cell_types}
     result = {cell_type: [] for cell_type in existing_class_names}
 
     for cell_type_tuple in cell_types:
         x, y, cell_type = cell_type_tuple
-        full_probe_input = torch.zeros(hidden_size + 2)
-        full_probe_input[:hidden_size] = last_prompt_activation
+        full_probe_input = torch.zeros(num_layers, hidden_size + 2)
+        full_probe_input[:, :hidden_size] = last_prompt_activation
         if row_column:
-            full_probe_input[hidden_size] = y
-            full_probe_input[hidden_size + 1] = x
+            full_probe_input[:, hidden_size] = y
+            full_probe_input[:, hidden_size + 1] = x
         else:
-            full_probe_input[hidden_size] = x
-            full_probe_input[hidden_size + 1] = y
+            full_probe_input[:, hidden_size] = x
+            full_probe_input[:, hidden_size + 1] = y
         result[cell_type].append(full_probe_input)
 
     return result
@@ -306,7 +318,9 @@ def gather_activations_from_grid_at_last_prompt_token(
     df = pd.read_csv(csv_path)
 
     print(f"Loading model: {model_name_or_path}")
-    model = nnsight.LanguageModel(model_name_or_path, device_map="auto")
+    torch_dtype = "bfloat16" if "gpt-oss-20b" in model_name_or_path else "auto"
+    print(f"Using torch_dtype: {torch_dtype}")
+    model = nnsight.LanguageModel(model_name_or_path, device_map="auto", torch_dtype=torch_dtype)
 
     # Group by environment
     activations_by_type = defaultdict(list)

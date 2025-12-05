@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch import nn, optim
+from tqdm import tqdm
 
 from telos_interp.probing import (
     ArrayLike,
@@ -30,7 +31,7 @@ class MultiClassProbingClassifierGPU:
         verbose: int = 0,
         device: str | torch.device | None = None,
         learning_rate: float = 0.1,
-        max_iter: int = 1000,
+        num_epochs: int = 100,
         batch_size: int | None = None,
         class_weight: str | dict[str, float] | None = None,
         use_mlp: bool = False,
@@ -43,7 +44,7 @@ class MultiClassProbingClassifierGPU:
         self.dtype = dtype
         self.verbose = int(verbose)
         self.learning_rate = float(learning_rate)
-        self.max_iter = int(max_iter)
+        self.num_epochs = int(num_epochs)
         self.batch_size = batch_size
         self.class_weight = class_weight
         self.use_mlp = bool(use_mlp)
@@ -55,7 +56,6 @@ class MultiClassProbingClassifierGPU:
         else:
             self.device = torch.device(device)
 
-        self.linear: nn.Linear | None = None
         self.model: nn.Module | None = None  # For MLP architecture
         self.scaler_mean: torch.Tensor | None = None
         self.scaler_std: torch.Tensor | None = None
@@ -76,9 +76,9 @@ class MultiClassProbingClassifierGPU:
         # Prepare data using common utility
         X, y, self.class_names, self.class_name_to_class_idx = _prepare_multiclass_data(activations_dict, self.dtype)
 
-        # Convert to torch tensors and move to device
-        X_tensor = torch.from_numpy(X).to(dtype=self.dtype, device=self.device)
-        y_tensor = torch.from_numpy(y).to(device=self.device)
+        # Convert to torch tensors (keep on CPU, move per-batch later)
+        X_tensor = torch.from_numpy(X).to(dtype=self.dtype)
+        y_tensor = torch.from_numpy(y).long()
 
         if self.interaction_features:
             H = X_tensor.shape[1] - 2
@@ -92,11 +92,13 @@ class MultiClassProbingClassifierGPU:
 
         # Normalisation ---------------------------------------------------- #
         if self.normalize:
-            self.scaler_mean = X_tensor.mean(dim=0)
-            self.scaler_std = X_tensor.std(dim=0)
+            scaler_mean = X_tensor.mean(dim=0)
+            scaler_std = X_tensor.std(dim=0)
             # Avoid division by zero
-            self.scaler_std = torch.where(self.scaler_std > 1e-8, self.scaler_std, torch.ones_like(self.scaler_std))
-            X_tensor = (X_tensor - self.scaler_mean) / self.scaler_std
+            scaler_std = torch.where(scaler_std > 1e-8, scaler_std, torch.ones_like(scaler_std))
+            X_tensor = (X_tensor - scaler_mean) / scaler_std
+            self.scaler_mean = scaler_mean.to(self.device)
+            self.scaler_std = scaler_std.to(self.device)
         else:
             self.scaler_mean = torch.zeros(X_tensor.shape[1], dtype=self.dtype, device=self.device)
             self.scaler_std = torch.ones(X_tensor.shape[1], dtype=self.dtype, device=self.device)
@@ -112,14 +114,10 @@ class MultiClassProbingClassifierGPU:
                 nn.ReLU(),
                 nn.Linear(self.mlp_hidden_size, n_classes, bias=self.fit_intercept),
             ).to(dtype=self.dtype, device=self.device)
-            # Keep linear as None for MLP mode
-            self.linear = None
         else:
-            self.linear = nn.Linear(n_features, n_classes, bias=self.fit_intercept).to(
+            self.model = nn.Linear(n_features, n_classes, bias=self.fit_intercept).to(
                 dtype=self.dtype, device=self.device
             )
-            # Keep model as None for linear mode
-            self.model = None
 
         # Compute class weights if requested ------------------------------ #
         class_weights_tensor = None
@@ -144,44 +142,52 @@ class MultiClassProbingClassifierGPU:
             class_weights_tensor = class_weights
 
         # Training loop ---------------------------------------------------- #
-        criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
-        # Get the appropriate model for training
-        train_model = self.model if self.use_mlp else self.linear
+        criterion = nn.CrossEntropyLoss(weight=class_weights_tensor).to(self.device)
 
-        # L2 regularization strength (sklearn's C=1/reg_coeff maps to weight_decay=reg_coeff in PyTorch)
-        # optimizer = optim.LBFGS(
-        #     train_model.parameters(),
-        #     lr=self.learning_rate,
-        #     max_iter=20,
-        # )
-        optimizer = optim.Adam(train_model.parameters(), lr=self.learning_rate)
+        optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
-        # For LBFGS optimizer
-        def closure():
-            optimizer.zero_grad()
-            outputs = train_model(X_tensor)
-            loss = criterion(outputs, y_tensor)
+        n_samples = X_tensor.shape[0]
+        if n_samples == 0:
+            raise ValueError("Training data is empty.")
 
-            # L2 regularization
-            if self.reg_coeff > 0:
-                l2_reg = torch.tensor(0.0, device=self.device)
-                for name, param in train_model.named_parameters():
-                    if "weight" in name:  # do not penalize bias
-                        l2_reg = l2_reg + torch.norm(param, 2) ** 2
-                loss = loss + 0.5 * self.reg_coeff * l2_reg
-
-            loss.backward()
-            return loss
+        if self.batch_size is None:
+            batch_size = min(1024, n_samples)
+        else:
+            batch_size = int(self.batch_size)
+        batch_size = max(1, batch_size)
 
         # Training
-        train_model.train()
-        for i in range(self.max_iter // 20):  # LBFGS takes ~20 iterations per step
-            loss = optimizer.step(closure)
+        self.model.train()
+        step = 0
+        last_loss = None
+        for epoch in range(self.num_epochs):
+            permutation = torch.randperm(n_samples)
+            for start_idx in tqdm(range(0, n_samples, batch_size)):
+                idx = permutation[start_idx : start_idx + batch_size]
+                batch_X = X_tensor[idx].to(self.device, non_blocking=True)
+                batch_y = y_tensor[idx].to(self.device, non_blocking=True)
 
-            if self.verbose > 0 and i % 10 == 0:
-                print(f"  Iteration {i * 20}, Loss: {loss.item():.4f}")
+                optimizer.zero_grad()
+                outputs = self.model(batch_X)
+                loss = criterion(outputs, batch_y)
 
-        train_model.eval()
+                if self.reg_coeff > 0:
+                    l2_reg = torch.tensor(0.0, device=self.device)
+                    for name, param in self.model.named_parameters():
+                        if "weight" in name:
+                            l2_reg = l2_reg + torch.norm(param, 2) ** 2
+                    loss = loss + 0.5 * self.reg_coeff * l2_reg
+
+                loss.backward()
+                optimizer.step()
+
+                step += 1
+                last_loss = loss.item()
+
+            if self.verbose > 0:
+                print(f"  Epoch {epoch}, Loss: {last_loss:.4f}")
+
+        self.model.eval()
 
         return self
 
@@ -198,7 +204,7 @@ class MultiClassProbingClassifierGPU:
         torch.Tensor
             2-D tensor of shape (seq_len, n_classes) with class probabilities.
         """
-        if self.linear is None and self.model is None:
+        if self.model is None:
             raise RuntimeError("Probe not trained – call .fit(...) first.")
 
         hs = _to_torch(hidden_states, self.dtype).to(self.device)
@@ -219,9 +225,7 @@ class MultiClassProbingClassifierGPU:
         if self.normalize:
             hs = (hs - self.scaler_mean) / self.scaler_std
 
-        # Use the appropriate model
-        predict_model = self.model if self.use_mlp else self.linear
-        logits = predict_model(hs)
+        logits = self.model(hs)
         probabilities = torch.softmax(logits, dim=-1)
 
         return probabilities.cpu()
@@ -238,7 +242,7 @@ class MultiClassProbingClassifierGPU:
         np.ndarray
             1-D tensor of shape (seq_len,) with predicted class indices.
         """
-        if self.linear is None and self.model is None:
+        if self.model is None:
             raise RuntimeError("Probe not trained – call .fit(...) first.")
 
         probabilities = self.predict_proba(hidden_states)
@@ -257,7 +261,7 @@ class MultiClassProbingClassifierGPU:
         Dict[str, float]
             Dictionary containing evaluation metrics
         """
-        if self.linear is None and self.model is None:
+        if self.model is None:
             raise RuntimeError("Probe not trained – call .fit(...) first.")
 
         # Prepare test data using common utility
@@ -275,7 +279,6 @@ class MultiClassProbingClassifierGPU:
     def save(self, file: str | Path) -> None:
         """Pickle the probe to *file*."""
         payload = {
-            "linear_state_dict": self.linear.state_dict() if self.linear is not None else None,
             "model_state_dict": self.model.state_dict() if self.model is not None else None,
             "scaler_mean": self.scaler_mean.cpu() if self.scaler_mean is not None else None,
             "scaler_std": self.scaler_std.cpu() if self.scaler_std is not None else None,
@@ -288,7 +291,7 @@ class MultiClassProbingClassifierGPU:
             "class_names": self.class_names,
             "class_name_to_class_idx": self.class_name_to_class_idx,
             "learning_rate": self.learning_rate,
-            "max_iter": self.max_iter,
+            "num_epochs": self.num_epochs,
             "batch_size": self.batch_size,
             "class_weight": self.class_weight,
             "use_mlp": self.use_mlp,
@@ -312,7 +315,7 @@ class MultiClassProbingClassifierGPU:
             verbose=payload.get("verbose", 0),
             device=device,
             learning_rate=payload.get("learning_rate", 0.1),
-            max_iter=payload.get("max_iter", 1000),
+            num_epochs=payload.get("num_epochs", 100),
             batch_size=payload.get("batch_size", None),
             class_weight=payload.get("class_weight", None),
             use_mlp=payload.get("use_mlp", False),
@@ -321,31 +324,30 @@ class MultiClassProbingClassifierGPU:
 
         # Restore linear layer or MLP model
         if payload.get("model_state_dict") is not None:
-            # Load MLP model
-            # Infer dimensions from state dict
-            first_layer_weight = payload["model_state_dict"]["0.weight"]
-            last_layer_weight = payload["model_state_dict"]["2.weight"]
-            n_classes, hidden_size = last_layer_weight.shape
-            hidden_size_in, n_features = first_layer_weight.shape
+            if obj.use_mlp:
+                # Load MLP model
+                # Infer dimensions from state dict
+                first_layer_weight = payload["model_state_dict"]["0.weight"]
+                last_layer_weight = payload["model_state_dict"]["2.weight"]
+                n_classes, hidden_size = last_layer_weight.shape
+                hidden_size_in, n_features = first_layer_weight.shape
 
-            obj.model = nn.Sequential(
-                nn.Linear(n_features, hidden_size_in, bias=obj.fit_intercept),
-                nn.ReLU(),
-                nn.Linear(hidden_size_in, n_classes, bias=obj.fit_intercept),
-            ).to(dtype=obj.dtype, device=obj.device)
+                obj.model = nn.Sequential(
+                    nn.Linear(n_features, hidden_size_in, bias=obj.fit_intercept),
+                    nn.ReLU(),
+                    nn.Linear(hidden_size_in, n_classes, bias=obj.fit_intercept),
+                ).to(dtype=obj.dtype, device=obj.device)
+            else:
+                # Load linear layer
+                # Infer dimensions from state dict
+                weight_shape = payload["model_state_dict"]["weight"].shape
+                n_classes, n_features = weight_shape
+
+                obj.model = nn.Linear(n_features, n_classes, bias=obj.fit_intercept).to(
+                    dtype=obj.dtype, device=obj.device
+                )
             obj.model.load_state_dict(payload["model_state_dict"])
             obj.model.eval()
-        elif payload.get("linear_state_dict") is not None:
-            # Load linear layer
-            # Infer dimensions from state dict
-            weight_shape = payload["linear_state_dict"]["weight"].shape
-            n_classes, n_features = weight_shape
-
-            obj.linear = nn.Linear(n_features, n_classes, bias=obj.fit_intercept).to(
-                dtype=obj.dtype, device=obj.device
-            )
-            obj.linear.load_state_dict(payload["linear_state_dict"])
-            obj.linear.eval()
 
         obj.scaler_mean = payload["scaler_mean"]
         obj.scaler_std = payload["scaler_std"]
@@ -398,12 +400,13 @@ def train_and_save_multiclass_probe_gpu(
     verbose: int = 0,
     device: str | torch.device | None = None,
     learning_rate: float = 0.1,
-    max_iter: int = 1000,
+    num_epochs: int = 100,
     class_weight: str | dict[str, float] | None = None,
     balance_classes: bool = False,
     seed: int = 42,
     use_mlp: bool = False,
     mlp_hidden_size: int = 1024,
+    batch_size: int = 1024,
 ) -> str:
     """Train a multi-class probing classifier on grid cell activations using GPU.
 
@@ -419,7 +422,7 @@ def train_and_save_multiclass_probe_gpu(
         verbose: Verbosity level for the logistic regression solver (0 = silent, 1+ = verbose)
         device: Device to use for training ('cuda', 'cpu', or None for auto-detect)
         learning_rate: Learning rate for optimization
-        max_iter: Maximum number of iterations
+        num_epochs: Number of epochs for training
         class_weight: Class weights for handling class imbalance ('balanced' or dict mapping class names to weights)
         balance_classes: Whether to balance classes by downsampling the majority classes
         use_mlp: Whether to use an MLP architecture instead of linear
@@ -448,6 +451,19 @@ def train_and_save_multiclass_probe_gpu(
         acts = load_activations(file_path)
         print(f"   {class_name}: {acts.shape}")
         activations_dict[class_name] = acts
+
+    for class_name, acts in activations_dict.items():
+        if acts.ndim == 3:  # (num_samples, num_layers, hidden_dim)
+            if acts.shape[1] == 1:
+                # We only saved one layer
+                activations_dict[class_name] = acts[:, 0, :]
+            else:
+                activations_dict[class_name] = acts[:, layer, :]
+        elif acts.ndim == 2:  # (num_samples, hidden_dim)
+            # Legacy format
+            activations_dict[class_name] = acts
+        else:
+            raise ValueError(f"Unsupported activation shape: {acts.shape}")
 
     # Split data for training and evaluation
     train_dict = {}
@@ -479,10 +495,11 @@ def train_and_save_multiclass_probe_gpu(
         verbose=verbose,
         device=device,
         learning_rate=learning_rate,
-        max_iter=max_iter,
+        num_epochs=num_epochs,
         class_weight=class_weight,
         use_mlp=use_mlp,
         mlp_hidden_size=mlp_hidden_size,
+        batch_size=batch_size,
     )
 
     print(f"\n🚀 Training on device: {probe.device}")
@@ -640,6 +657,6 @@ def evaluate_predictions(csv_path: str, predictions: list[dict[str, Any]]) -> di
     return {
         "total_accuracy": total_accuracy,
         "total_per_class_accuracies": total_per_class_accuracies,
-        "per_row_accuracies": per_row_accuracies,
-        "per_class_accuracies": per_class_accuracies,
+        # "per_row_accuracies": per_row_accuracies,
+        # "per_class_accuracies": per_class_accuracies,
     }
