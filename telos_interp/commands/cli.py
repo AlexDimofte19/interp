@@ -6,7 +6,15 @@ import nnsight
 import pandas as pd
 import torch
 import typer
-from telos_interp import activations, cellwise_activations, data_generation, probing, probing_gpu, steering
+from telos_interp import (
+    activations,
+    cellwise_activations,
+    data_generation,
+    distance_probing,
+    probing,
+    probing_gpu,
+    steering,
+)
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -293,6 +301,42 @@ def probe_eval_on_jsonl(
 
     df.to_json(results_path, lines=True, orient="records", indent=4)
     print(f"Predictions saved to {results_path}")
+
+
+@app.command("train-distance-probe", help="Train a distance probing classifier on grid cell activations")
+def train_distance_probe(
+    activations_dir: Annotated[
+        str, typer.Argument(..., help="Directory containing raw prompt activations (all_layer_acts.pt)")
+    ],
+    layer: Annotated[int, typer.Option(..., help="Layer number for the probe")],
+    eval_split: Annotated[float, typer.Option(help="Fraction of data to use for evaluation")] = 0.2,
+    reg_coeff: Annotated[float, typer.Option(help="Regularization coefficient")] = 1e3,
+    normalize: Annotated[bool, typer.Option(help="Whether to normalize activations")] = False,
+    learning_rate: Annotated[float, typer.Option(help="Learning rate for GPU training")] = 0.1,
+    num_epochs: Annotated[int, typer.Option(help="Number of epochs for GPU training")] = 100,
+    use_mlp: Annotated[
+        bool, typer.Option("--use-mlp/--no-mlp", help="Use MLP architecture instead of linear (GPU only)")
+    ] = False,
+    mlp_hidden_size: Annotated[int, typer.Option(help="Hidden size for MLP architecture (GPU only)")] = 1024,
+    batch_size: Annotated[int, typer.Option(help="Batch size for GPU training")] = 16384,
+    verbose: Annotated[int, typer.Option(help="Verbosity level (0=silent, 1+=show progress)")] = 0,
+):
+    assert layer is not None, "Layer must be provided"
+
+    saved_distance_probe_path = distance_probing.train_and_save_distance_probe(
+        activations_dir=activations_dir,
+        layer=layer,
+        eval_split=eval_split,
+        reg_coeff=reg_coeff,
+        normalize=normalize,
+        use_mlp=use_mlp,
+        mlp_hidden_size=mlp_hidden_size,
+        batch_size=batch_size,
+        verbose=verbose,
+        learning_rate=learning_rate,
+        num_epochs=num_epochs,
+    )
+    typer.echo(f"Distance probe saved to {saved_distance_probe_path}")
 
 
 @app.command("train-probe", help="Train a probing classifier on a dataset of activations.")
