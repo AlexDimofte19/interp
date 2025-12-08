@@ -293,6 +293,79 @@ def _create_probe_inputs_by_coordinates(
     return result
 
 
+def gather_raw_last_prompt_acts_from_grid_csv(
+    model_name_or_path: str,
+    csv_path: str,
+    layer: int,
+    observability: Observability = Observability.full,
+    observation_type: ObservationType = ObservationType.grid_only,
+) -> str:
+    """Gather raw last prompt activations from grid CSV data (no (x.y) or additional information added)."""
+
+    print(f"Loading model: {model_name_or_path}")
+    torch_dtype = "bfloat16" if "gpt-oss-20b" in model_name_or_path else "auto"
+    print(f"Using torch_dtype: {torch_dtype}")
+    model = nnsight.LanguageModel(model_name_or_path, device_map="auto", torch_dtype=torch_dtype)
+
+    print(f"Loading grid data from {csv_path}")
+    df = pd.read_csv(csv_path)
+
+    all_activations = []
+    for _idx, env_row in tqdm(df.iterrows(), desc="Processing rows", total=len(df)):
+        _observation, last_prompt_activation, cell_types = _process_grid_row_and_get_activations(
+            model, env_row, layer, observability, observation_type, row_column=False
+        )
+        all_activations.append(last_prompt_activation)
+
+    all_activations = torch.stack(all_activations)
+
+    csv_name = os.path.basename(csv_path)
+    output_dir_name = csv_name.replace(".csv", "")
+    short_model_name = model_name_or_path.split("/")[-1]
+    output_dir = f"data/activations/{short_model_name}/{output_dir_name}/observability_{observability.value}_{observation_type.value}/raw_acts_last_prompt"
+    os.makedirs(output_dir, exist_ok=True)
+    if layer == -1:
+        # Saving all acts to the same file
+        output_path = f"{output_dir}/all_layer_acts.pt"
+        torch.save(all_activations, output_path)
+    else:
+        output_path = f"{output_dir}/acts_layer_{layer}.pt"
+        torch.save(all_activations[layer], output_path)
+
+    # Save the original csv to the output directory
+    df.to_csv(f"{output_dir}/{csv_name}", index=False)
+    return output_dir
+
+
+def get_cell_type_activations_from_csv(
+    df: pd.DataFrame, acts: torch.Tensor, observability: Observability
+) -> dict[str, torch.Tensor]:
+    """From a list of last prompt activations and a dataframe with cell type information, create a dictionary of activations by cell type."""
+    activations_by_type = defaultdict(list)
+
+    for _idx, row in df.iterrows():
+        activation = acts[_idx]
+        if observability == Observability.full:
+            prefix = "fo_"
+        elif observability == Observability.partial:
+            prefix = "po_"
+        cell_types = eval(row[f"{prefix}cell_types"])
+
+        probe_inputs = _create_probe_inputs_from_activation(activation, cell_types, row_column=False)
+        for cell_type, all_probe_inputs_for_cell_type in probe_inputs.items():
+            activations_by_type[cell_type].extend(all_probe_inputs_for_cell_type)
+
+    # stack all activations into a tensor
+    for cell_type, activations_list in activations_by_type.items():
+        activations_tensor = torch.stack(activations_list)
+        assert activations_tensor.shape[1] == 1, f"Expected 1 layer, got {activations_tensor.shape[1]}"
+        activations_tensor = activations_tensor[:, 0, :].contiguous()
+        activations_by_type[cell_type] = activations_tensor
+        del activations_list
+
+    return dict(activations_by_type)
+
+
 def gather_activations_from_grid_at_last_prompt_token(
     model_name_or_path: str,
     csv_path: str,
@@ -300,6 +373,7 @@ def gather_activations_from_grid_at_last_prompt_token(
     observability: Observability = Observability.full,
     observation_type: ObservationType = ObservationType.grid_only,
     row_column: bool = False,
+    raw_acts: bool = False,
 ) -> str:
     """Gather activations using only the last prompt token for all cell types from grid CSV data.
 
@@ -314,13 +388,20 @@ def gather_activations_from_grid_at_last_prompt_token(
     Returns:
         Path to the output directory containing saved activations
     """
-    print(f"Loading grid data from {csv_path}")
-    df = pd.read_csv(csv_path)
+
+    if raw_acts:
+        output_dir = gather_raw_last_prompt_acts_from_grid_csv(
+            model_name_or_path, csv_path, layer, observability, observation_type
+        )
+        return output_dir
 
     print(f"Loading model: {model_name_or_path}")
     torch_dtype = "bfloat16" if "gpt-oss-20b" in model_name_or_path else "auto"
     print(f"Using torch_dtype: {torch_dtype}")
     model = nnsight.LanguageModel(model_name_or_path, device_map="auto", torch_dtype=torch_dtype)
+
+    print(f"Loading grid data from {csv_path}")
+    df = pd.read_csv(csv_path)
 
     # Group by environment
     activations_by_type = defaultdict(list)

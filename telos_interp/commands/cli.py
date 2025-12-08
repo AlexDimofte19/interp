@@ -84,9 +84,10 @@ def gather_grid_activations_last_prompt(
         activations.ObservationType, typer.Option(help="Type of observation")
     ] = activations.ObservationType.full_prompt,
     row_column: Annotated[bool, typer.Option(help="Whether to use row-column coordinates")] = False,
+    raw_acts: Annotated[bool, typer.Option(help="Whether to use raw activations")] = False,
 ):
     results_path = activations.gather_activations_from_grid_at_last_prompt_token(
-        model_name_or_path, csv_path, layer, observability, observation_type, row_column
+        model_name_or_path, csv_path, layer, observability, observation_type, row_column, raw_acts
     )
     typer.echo(f"Grid activations (last prompt) saved to {results_path}")
 
@@ -123,7 +124,6 @@ def train_multiclass_probe(
     eval_split: Annotated[float, typer.Option(help="Fraction of data to use for evaluation")] = 0.2,
     reg_coeff: Annotated[float, typer.Option(help="Regularization coefficient")] = 1e3,
     normalize: Annotated[bool, typer.Option(help="Whether to normalize activations")] = False,
-    interaction_features: Annotated[bool, typer.Option(help="Whether to use interaction features")] = False,
     fit_intercept: Annotated[bool, typer.Option(help="Whether to fit an intercept term")] = True,
     verbose: Annotated[int, typer.Option(help="Verbosity level (0=silent, 1+=show progress)")] = 0,
     use_gpu: Annotated[bool, typer.Option("--gpu/--cpu", help="Use GPU-accelerated PyTorch implementation")] = False,
@@ -146,6 +146,9 @@ def train_multiclass_probe(
     ] = False,
     mlp_hidden_size: Annotated[int, typer.Option(help="Hidden size for MLP architecture (GPU only)")] = 1024,
     batch_size: Annotated[int, typer.Option(help="Batch size for GPU training")] = 16384,
+    observability: Annotated[
+        activations.Observability, typer.Option(help="Observability of the grid")
+    ] = activations.Observability.full,
 ):
     class_weight = "balanced" if balanced_weights else None
 
@@ -159,7 +162,6 @@ def train_multiclass_probe(
             eval_split,
             reg_coeff,
             normalize,
-            interaction_features,
             fit_intercept,
             verbose,
             device=None,
@@ -170,6 +172,7 @@ def train_multiclass_probe(
             use_mlp=use_mlp,
             mlp_hidden_size=mlp_hidden_size,
             batch_size=batch_size,
+            observability=observability,
         )
     else:
         if use_mlp:
@@ -204,12 +207,14 @@ def probe_predict(
 ):
     assert os.path.exists(probe_path), f"Probe path {probe_path} does not exist"
     assert os.path.exists(csv_path), f"CSV path {csv_path} does not exist"
+    assert layer is not None, "Layer must be provided"
 
     if results_path is None:
+        probe_name = os.path.basename(probe_path)
         output_dir = csv_path.replace(".csv", "")
         os.makedirs(output_dir, exist_ok=True)
         results_path = os.path.join(
-            output_dir, f"predictions_l{layer}_{observability.value}_{observation_type.value}.json"
+            output_dir, f"predictions_{probe_name}_l{layer}_{observability.value}_{observation_type.value}.json"
         )
 
     # 1. For each row in the csv file, get the corresponding activations for the probe
