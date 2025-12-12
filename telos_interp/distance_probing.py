@@ -522,3 +522,188 @@ def train_and_save_distance_probe(
     print(f"\n💾 Probe saved to {output_path}")
 
     return str(output_path)
+
+
+# ----------------------------- Prediction on new data ----------------------------- #
+def predict_and_evaluate_from_csv(
+    model_name_or_path: str,
+    probe_path: str | Path,
+    csv_path: str | Path,
+    layer: int,
+    label_column: str = "optimal_trajectory_length",
+    output_path: str | Path | None = None,
+) -> tuple[str, str]:
+    """Run distance probe on a CSV by gathering activations from model.
+
+    Args:
+        model_name_or_path: Model to use for gathering activations.
+        probe_path: Path to saved DistanceProbe.
+        csv_path: Path to CSV with grid data and labels.
+        layer: Layer index for activations.
+        label_column: CSV column with ground truth.
+        output_path: Path to save predictions JSON (auto-generated if None).
+
+    Returns:
+        Tuple of (predictions_path, evaluation_path).
+    """
+    import json
+
+    from telos_interp import activations as act_module
+
+    probe_path = Path(probe_path)
+    csv_path = Path(csv_path)
+
+    # Load probe
+    probe = DistanceProbe.load(probe_path)
+
+    # Gather activations from model
+    print("\n🔍 Gathering activations from model...")
+    acts, df = act_module.get_last_prompt_activations_from_csv(model_name_or_path, str(csv_path), layer)
+
+    # Get labels from CSV
+    if label_column not in df.columns:
+        raise ValueError(f"Label column '{label_column}' not found in CSV. Available: {list(df.columns)}")
+    labels = torch.tensor(df[label_column].values, dtype=torch.float32)
+
+    print(f"\n📊 Running predictions on {len(acts)} samples...")
+
+    # Get predictions and evaluate
+    predictions = probe.predict(acts)
+    labels_np = labels.numpy()
+    eval_metrics = probe.evaluate(acts, labels)
+    _print_regression_results(eval_metrics)
+
+    # Prepare output paths
+    if output_path is None:
+        probe_name = probe_path.stem
+        output_dir = csv_path.parent / csv_path.stem
+        output_dir.mkdir(exist_ok=True, parents=True)
+        output_path = output_dir / f"distance_predictions_{probe_name}_layer_{layer}.json"
+    else:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(exist_ok=True, parents=True)
+
+    eval_path = output_path.with_name(output_path.stem + "_evaluation.json")
+
+    # Build predictions output with per-sample details
+    predictions_output = {
+        "probe_path": str(probe_path),
+        "csv_path": str(csv_path),
+        "model": model_name_or_path,
+        "layer": layer,
+        "label_column": label_column,
+        "n_samples": len(predictions),
+        "predictions": [
+            {
+                "index": int(i),
+                "predicted": float(pred),
+                "actual": float(label),
+                "error": float(pred - label),
+            }
+            for i, (pred, label) in enumerate(zip(predictions, labels_np, strict=False))
+        ],
+    }
+
+    # Save predictions
+    with open(output_path, "w") as f:
+        json.dump(predictions_output, f, indent=2)
+    print(f"\n💾 Predictions saved to {output_path}")
+
+    # Save evaluation
+    eval_output = {
+        "probe_path": str(probe_path),
+        "csv_path": str(csv_path),
+        "model": model_name_or_path,
+        "layer": layer,
+        "n_samples": len(predictions),
+        **eval_metrics,
+    }
+    with open(eval_path, "w") as f:
+        json.dump(eval_output, f, indent=2)
+    print(f"💾 Evaluation saved to {eval_path}")
+
+    return str(output_path), str(eval_path)
+
+
+def predict_and_evaluate_from_activations_dir(
+    probe_path: str | Path,
+    activations_dir: str | Path,
+    layer: int,
+    label_column: str = "optimal_trajectory_length",
+    output_path: str | Path | None = None,
+) -> tuple[str, str]:
+    """Run distance probe on pre-computed activations directory.
+
+    Args:
+        probe_path: Path to saved DistanceProbe.
+        activations_dir: Directory with activations and CSV.
+        layer: Layer index for activations.
+        label_column: CSV column with ground truth.
+        output_path: Path to save predictions JSON (auto-generated if None).
+
+    Returns:
+        Tuple of (predictions_path, evaluation_path).
+    """
+    import json
+
+    activations_dir = Path(activations_dir)
+    probe_path = Path(probe_path)
+
+    # Load probe and data
+    probe = DistanceProbe.load(probe_path)
+    acts, labels = load_activations_and_labels(activations_dir, layer, label_column)
+
+    # Get predictions and evaluate using probe's method
+    predictions = probe.predict(acts)
+    labels_np = labels.numpy()
+    eval_metrics = probe.evaluate(acts, labels)
+    _print_regression_results(eval_metrics)
+
+    # Prepare output paths
+    if output_path is None:
+        probe_name = probe_path.stem
+        output_dir = activations_dir / "predictions"
+        output_dir.mkdir(exist_ok=True, parents=True)
+        output_path = output_dir / f"predictions_{probe_name}_layer_{layer}.json"
+    else:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(exist_ok=True, parents=True)
+
+    eval_path = output_path.with_name(output_path.stem + "_evaluation.json")
+
+    # Build predictions output with per-sample details
+    predictions_output = {
+        "probe_path": str(probe_path),
+        "activations_dir": str(activations_dir),
+        "layer": layer,
+        "label_column": label_column,
+        "n_samples": len(predictions),
+        "predictions": [
+            {
+                "index": int(i),
+                "predicted": float(pred),
+                "actual": float(label),
+                "error": float(pred - label),
+            }
+            for i, (pred, label) in enumerate(zip(predictions, labels_np, strict=False))
+        ],
+    }
+
+    # Save predictions
+    with open(output_path, "w") as f:
+        json.dump(predictions_output, f, indent=2)
+    print(f"\n💾 Predictions saved to {output_path}")
+
+    # Save evaluation
+    eval_output = {
+        "probe_path": str(probe_path),
+        "activations_dir": str(activations_dir),
+        "layer": layer,
+        "n_samples": len(predictions),
+        **eval_metrics,
+    }
+    with open(eval_path, "w") as f:
+        json.dump(eval_output, f, indent=2)
+    print(f"💾 Evaluation saved to {eval_path}")
+
+    return str(output_path), str(eval_path)

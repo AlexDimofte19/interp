@@ -68,7 +68,7 @@ def show_prediction_visualization(csv_path: str, predictions_path: str, grid_siz
     original_row = original_df.iloc[index]
     predictions = predictions[index]["predictions"]
 
-    print(f"Ground-truth observation:\n{original_row.fo_observation}")
+    # print(f"Ground-truth observation:\n{original_row.fo_observation}")
 
     tot_width = grid_size + 1
     tot_height = grid_size + 1
@@ -96,7 +96,21 @@ def show_prediction_visualization(csv_path: str, predictions_path: str, grid_siz
 
     predicted_grid_string = "\n".join("".join(row) for row in grid)
 
-    print(f"Predicted observation:\n{predicted_grid_string}")
+    # print(f"Predicted observation:\n{predicted_grid_string}")
+
+    true_obs_lines = original_row.fo_observation.split("\n")
+    predicted_obs_lines = predicted_grid_string.split("\n")
+
+    # Plot them side by side
+    padding = 4
+    one_observation_line_width = max(len(true_obs_lines[0]), len(predicted_obs_lines[0])) + padding
+    print(
+        f"{'True Observation':<{one_observation_line_width}} | {'Predicted Observation':<{one_observation_line_width}}"
+    )
+    filler = "-" * len(true_obs_lines[0])
+    print(f"{filler:<{one_observation_line_width}} | {filler:<{one_observation_line_width}}")
+    for true_obs_line, predicted_obs_line in zip(true_obs_lines, predicted_obs_lines, strict=False):
+        print(f"{true_obs_line:<{one_observation_line_width}} | {predicted_obs_line:<{one_observation_line_width}}")
 
     # Create predictions
 

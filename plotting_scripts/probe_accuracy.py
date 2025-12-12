@@ -103,9 +103,9 @@ def plot_probe_accuracy(results_dir: str):
 
     ax.set_xlabel("Layer", fontsize=22)
     ax.set_ylabel("Accuracy", fontsize=22)
-    legend_title = f"{os.path.basename(results_dir)}"
+    # legend_title = f"{os.path.basename(results_dir)}"
     ax.legend(
-        title=legend_title,
+        # title=legend_title,
         title_fontsize=16,
         loc="upper center",
         fontsize=20,
@@ -116,6 +116,8 @@ def plot_probe_accuracy(results_dir: str):
     plt.tight_layout()
 
     plt.savefig(results_path, dpi=300)
+    svg_path = results_path.replace(".png", ".svg")
+    plt.savefig(svg_path, format="svg")
 
 
 if __name__ == "__main__":

@@ -293,6 +293,53 @@ def _create_probe_inputs_by_coordinates(
     return result
 
 
+def get_last_prompt_activations_from_csv(
+    model_name_or_path: str,
+    csv_path: str,
+    layer: int,
+    observability: Observability = Observability.full,
+    observation_type: ObservationType = ObservationType.grid_only,
+) -> tuple[torch.Tensor, pd.DataFrame]:
+    """Get last prompt activations for each row in CSV (returns data, doesn't save).
+
+    Args:
+        model_name_or_path: Model to use for gathering activations.
+        csv_path: Path to CSV with grid data.
+        layer: Layer to extract activations from.
+        observability: Grid observability setting.
+        observation_type: Type of observation to use.
+
+    Returns:
+        Tuple of (activations tensor of shape (n_rows, hidden_dim), dataframe).
+    """
+    print(f"Loading model: {model_name_or_path}")
+    torch_dtype = "bfloat16" if "gpt-oss-20b" in model_name_or_path else "auto"
+    print(f"Using torch_dtype: {torch_dtype}")
+    model = nnsight.LanguageModel(model_name_or_path, device_map="auto", torch_dtype=torch_dtype)
+
+    print(f"Loading grid data from {csv_path}")
+    df = pd.read_csv(csv_path)
+
+    all_activations = []
+    for _idx, env_row in tqdm(df.iterrows(), desc="Processing rows", total=len(df)):
+        _observation, last_prompt_activation, _cell_types = _process_grid_row_and_get_activations(
+            model, env_row, layer, observability, observation_type, row_column=False
+        )
+        all_activations.append(last_prompt_activation)
+
+    all_activations = torch.stack(all_activations)
+
+    # Clean up
+    del model
+    torch.cuda.empty_cache()
+
+    # Return activations with shape (n_rows, hidden_dim) - squeeze the layer dimension
+    if all_activations.ndim == 3 and all_activations.shape[1] == 1:
+        all_activations = all_activations.squeeze(1)
+
+    return all_activations, df
+
+
 def gather_raw_last_prompt_acts_from_grid_csv(
     model_name_or_path: str,
     csv_path: str,
