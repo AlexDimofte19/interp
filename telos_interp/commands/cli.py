@@ -6,7 +6,15 @@ import nnsight
 import pandas as pd
 import torch
 import typer
-from telos_interp import activations, cellwise_activations, data_generation, probing, probing_gpu, steering
+from telos_interp import (
+    activations,
+    cellwise_activations,
+    data_generation,
+    distance_probing,
+    probing,
+    probing_gpu,
+    steering,
+)
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -84,9 +92,10 @@ def gather_grid_activations_last_prompt(
         activations.ObservationType, typer.Option(help="Type of observation")
     ] = activations.ObservationType.full_prompt,
     row_column: Annotated[bool, typer.Option(help="Whether to use row-column coordinates")] = False,
+    raw_acts: Annotated[bool, typer.Option(help="Whether to use raw activations")] = False,
 ):
     results_path = activations.gather_activations_from_grid_at_last_prompt_token(
-        model_name_or_path, csv_path, layer, observability, observation_type, row_column
+        model_name_or_path, csv_path, layer, observability, observation_type, row_column, raw_acts
     )
     typer.echo(f"Grid activations (last prompt) saved to {results_path}")
 
@@ -123,7 +132,6 @@ def train_multiclass_probe(
     eval_split: Annotated[float, typer.Option(help="Fraction of data to use for evaluation")] = 0.2,
     reg_coeff: Annotated[float, typer.Option(help="Regularization coefficient")] = 1e3,
     normalize: Annotated[bool, typer.Option(help="Whether to normalize activations")] = False,
-    interaction_features: Annotated[bool, typer.Option(help="Whether to use interaction features")] = False,
     fit_intercept: Annotated[bool, typer.Option(help="Whether to fit an intercept term")] = True,
     verbose: Annotated[int, typer.Option(help="Verbosity level (0=silent, 1+=show progress)")] = 0,
     use_gpu: Annotated[bool, typer.Option("--gpu/--cpu", help="Use GPU-accelerated PyTorch implementation")] = False,
@@ -146,6 +154,9 @@ def train_multiclass_probe(
     ] = False,
     mlp_hidden_size: Annotated[int, typer.Option(help="Hidden size for MLP architecture (GPU only)")] = 1024,
     batch_size: Annotated[int, typer.Option(help="Batch size for GPU training")] = 16384,
+    observability: Annotated[
+        activations.Observability, typer.Option(help="Observability of the grid")
+    ] = activations.Observability.full,
 ):
     class_weight = "balanced" if balanced_weights else None
 
@@ -159,7 +170,6 @@ def train_multiclass_probe(
             eval_split,
             reg_coeff,
             normalize,
-            interaction_features,
             fit_intercept,
             verbose,
             device=None,
@@ -170,6 +180,7 @@ def train_multiclass_probe(
             use_mlp=use_mlp,
             mlp_hidden_size=mlp_hidden_size,
             batch_size=batch_size,
+            observability=observability,
         )
     else:
         if use_mlp:
@@ -204,12 +215,14 @@ def probe_predict(
 ):
     assert os.path.exists(probe_path), f"Probe path {probe_path} does not exist"
     assert os.path.exists(csv_path), f"CSV path {csv_path} does not exist"
+    assert layer is not None, "Layer must be provided"
 
     if results_path is None:
+        probe_name = os.path.basename(probe_path)
         output_dir = csv_path.replace(".csv", "")
         os.makedirs(output_dir, exist_ok=True)
         results_path = os.path.join(
-            output_dir, f"predictions_l{layer}_{observability.value}_{observation_type.value}.json"
+            output_dir, f"predictions_{probe_name}_l{layer}_{observability.value}_{observation_type.value}.json"
         )
 
     # 1. For each row in the csv file, get the corresponding activations for the probe
@@ -288,6 +301,73 @@ def probe_eval_on_jsonl(
 
     df.to_json(results_path, lines=True, orient="records", indent=4)
     print(f"Predictions saved to {results_path}")
+
+
+@app.command("train-distance-probe", help="Train a distance regression probe on grid activations")
+def train_distance_probe(
+    activations_dir: Annotated[
+        str, typer.Argument(..., help="Directory containing raw prompt activations (all_layer_acts.pt)")
+    ],
+    layer: Annotated[int, typer.Option(..., help="Layer number for the probe")],
+    eval_split: Annotated[float, typer.Option(help="Fraction of data to use for evaluation")] = 0.2,
+    reg_coeff: Annotated[float, typer.Option(help="Regularization coefficient (weight decay)")] = 1e-4,
+    normalize: Annotated[bool, typer.Option(help="Whether to normalize activations")] = False,
+    learning_rate: Annotated[float, typer.Option(help="Learning rate for training")] = 1e-3,
+    num_epochs: Annotated[int, typer.Option(help="Number of epochs for training")] = 100,
+    use_mlp: Annotated[
+        bool, typer.Option("--use-mlp/--no-mlp", help="Use MLP architecture instead of linear")
+    ] = False,
+    mlp_hidden_size: Annotated[int, typer.Option(help="Hidden size for MLP architecture")] = 256,
+    batch_size: Annotated[int, typer.Option(help="Batch size for training")] = 1024,
+    verbose: Annotated[int, typer.Option(help="Verbosity level (0=silent, 1+=show progress)")] = 0,
+    label_column: Annotated[
+        str, typer.Option(help="CSV column name for regression target")
+    ] = "optimal_trajectory_length",
+):
+    assert layer is not None, "Layer must be provided"
+
+    saved_distance_probe_path = distance_probing.train_and_save_distance_probe(
+        activations_dir=activations_dir,
+        layer=layer,
+        eval_split=eval_split,
+        reg_coeff=reg_coeff,
+        normalize=normalize,
+        use_mlp=use_mlp,
+        mlp_hidden_size=mlp_hidden_size,
+        batch_size=batch_size,
+        verbose=verbose,
+        learning_rate=learning_rate,
+        num_epochs=num_epochs,
+        label_column=label_column,
+    )
+    typer.echo(f"Distance probe saved to {saved_distance_probe_path}")
+
+
+@app.command("distance-probe-predict", help="Predict distances using a trained distance probe on a CSV dataset")
+def distance_probe_predict(
+    model_name_or_path: Annotated[str, typer.Argument(..., help="Model to use for gathering activations")],
+    probe_path: Annotated[str, typer.Argument(..., help="Path to the trained distance probe")],
+    csv_path: Annotated[str, typer.Argument(..., help="Path to CSV file with grid data and labels")],
+    layer: Annotated[int, typer.Option(..., help="Layer number used for the probe")],
+    output_path: Annotated[str, typer.Option(help="Path to save predictions JSON")] = None,
+    label_column: Annotated[str, typer.Option(help="CSV column name for ground truth")] = "optimal_trajectory_length",
+):
+    """Gather activations from model, run distance probe predictions, and evaluate."""
+    assert os.path.exists(probe_path), f"Probe path {probe_path} does not exist"
+    assert os.path.exists(csv_path), f"CSV path {csv_path} does not exist"
+    assert layer is not None, "Layer must be provided"
+
+    predictions_path, eval_path = distance_probing.predict_and_evaluate_from_csv(
+        model_name_or_path=model_name_or_path,
+        probe_path=probe_path,
+        csv_path=csv_path,
+        layer=layer,
+        label_column=label_column,
+        output_path=output_path,
+    )
+
+    typer.echo(f"Predictions saved to {predictions_path}")
+    typer.echo(f"Evaluation saved to {eval_path}")
 
 
 @app.command("train-probe", help="Train a probing classifier on a dataset of activations.")

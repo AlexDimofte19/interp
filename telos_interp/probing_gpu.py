@@ -1,3 +1,4 @@
+import os
 import pickle
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ import torch
 from torch import nn, optim
 from tqdm import tqdm
 
+from telos_interp import activations
 from telos_interp.probing import (
     ArrayLike,
     _compute_metrics,
@@ -25,7 +27,6 @@ class MultiClassProbingClassifierGPU:
         self,
         reg_coeff: float = 1e3,
         normalize: bool = False,
-        interaction_features: bool = False,
         fit_intercept: bool = True,
         dtype: torch.dtype = torch.float32,
         verbose: int = 0,
@@ -40,7 +41,6 @@ class MultiClassProbingClassifierGPU:
         self.reg_coeff = float(reg_coeff)
         self.normalize = bool(normalize)
         self.fit_intercept = bool(fit_intercept)
-        self.interaction_features = bool(interaction_features)
         self.dtype = dtype
         self.verbose = int(verbose)
         self.learning_rate = float(learning_rate)
@@ -74,21 +74,9 @@ class MultiClassProbingClassifierGPU:
         self
         """
         # Prepare data using common utility
-        X, y, self.class_names, self.class_name_to_class_idx = _prepare_multiclass_data(activations_dict, self.dtype)
-
-        # Convert to torch tensors (keep on CPU, move per-batch later)
-        X_tensor = torch.from_numpy(X).to(dtype=self.dtype)
-        y_tensor = torch.from_numpy(y).long()
-
-        if self.interaction_features:
-            H = X_tensor.shape[1] - 2
-            h = X_tensor[:, :H]
-            xy = X_tensor[:, H:]  # (N, 2)
-
-            # Build interaction features (N, 2H): [h * x, h * y]
-            hx = h * xy[:, 0:1]  # broadcast
-            hy = h * xy[:, 1:2]
-            X_tensor = torch.cat([h, xy, hx, hy], dim=1)
+        X_tensor, y_tensor, self.class_names, self.class_name_to_class_idx = _prepare_multiclass_data(
+            activations_dict, self.dtype
+        )
 
         # Normalisation ---------------------------------------------------- #
         if self.normalize:
@@ -212,16 +200,6 @@ class MultiClassProbingClassifierGPU:
         if hs.ndim != 2:
             raise ValueError(f"hidden_states must be (seq_len, hidden_dim); got {hs.shape}.")
 
-        if self.interaction_features:
-            H = hs.shape[1] - 2
-            h = hs[:, :H]
-            xy = hs[:, H:]  # (N, 2)
-
-            # Build interaction features (N, 2H): [h * x, h * y]
-            hx = h * xy[:, 0:1]  # broadcast
-            hy = h * xy[:, 1:2]
-            hs = torch.cat([h, xy, hx, hy], dim=1)
-
         if self.normalize:
             hs = (hs - self.scaler_mean) / self.scaler_std
 
@@ -284,7 +262,6 @@ class MultiClassProbingClassifierGPU:
             "scaler_std": self.scaler_std.cpu() if self.scaler_std is not None else None,
             "reg_coeff": self.reg_coeff,
             "normalize": self.normalize,
-            "interaction_features": self.interaction_features,
             "fit_intercept": self.fit_intercept,
             "dtype": self.dtype,
             "verbose": self.verbose,
@@ -309,7 +286,6 @@ class MultiClassProbingClassifierGPU:
         obj = cls(
             reg_coeff=payload["reg_coeff"],
             normalize=payload["normalize"],
-            interaction_features=payload.get("interaction_features", False),
             fit_intercept=payload["fit_intercept"],
             dtype=payload["dtype"],
             verbose=payload.get("verbose", 0),
@@ -388,51 +364,34 @@ def balance_classes_by_upsampling(train_dict: dict[str, ArrayLike], seed: int = 
     return balanced_train_dict
 
 
-def train_and_save_multiclass_probe_gpu(
-    activations_dir: str,
-    layer: int,
-    output_dir: str = None,
-    eval_split: float = 0.2,
-    reg_coeff: float = 1e3,
-    normalize: bool = False,
-    interaction_features: bool = False,
-    fit_intercept: bool = True,
-    verbose: int = 0,
-    device: str | torch.device | None = None,
-    learning_rate: float = 0.1,
-    num_epochs: int = 100,
-    class_weight: str | dict[str, float] | None = None,
-    balance_classes: bool = False,
-    seed: int = 42,
-    use_mlp: bool = False,
-    mlp_hidden_size: int = 1024,
-    batch_size: int = 1024,
-) -> str:
-    """Train a multi-class probing classifier on grid cell activations using GPU.
+def create_activations_dict(
+    activations_dir: Path, layer: int, observability: activations.Observability
+) -> dict[str, ArrayLike]:
+    if "raw_acts" in activations_dir.name:
+        # First find the csv file
+        csv_file = activations_dir.glob("*.csv").__next__()
+        if not csv_file:
+            raise ValueError(f"No csv file found in {activations_dir}.")
+        else:
+            print(f"Using csv file: {csv_file}")
+            df = pd.read_csv(csv_file)
 
-    Args:
-        activations_dir: Directory containing activation files (acts_wall.pt, acts_empty.pt, etc.)
-        layer: Layer to train the probe on (not used for single-layer activations)
-        output_dir: Directory to save the probe
-        eval_split: Fraction of data to use for evaluation
-        reg_coeff: Regularization coefficient
-        normalize: Whether to normalize activations
-        interaction_features: Whether to use interaction features
-        fit_intercept: Whether to fit an intercept term in the logistic regression
-        verbose: Verbosity level for the logistic regression solver (0 = silent, 1+ = verbose)
-        device: Device to use for training ('cuda', 'cpu', or None for auto-detect)
-        learning_rate: Learning rate for optimization
-        num_epochs: Number of epochs for training
-        class_weight: Class weights for handling class imbalance ('balanced' or dict mapping class names to weights)
-        balance_classes: Whether to balance classes by downsampling the majority classes
-        use_mlp: Whether to use an MLP architecture instead of linear
-        mlp_hidden_size: Hidden size for the MLP (only used if use_mlp=True)
+        if os.path.exists(activations_dir / "all_layer_acts.pt"):
+            all_layer_acts = torch.load(activations_dir / "all_layer_acts.pt")  # (num_samples, num_layers, hidden_dim)
+            acts = all_layer_acts[:, layer, :].clone()
+            del all_layer_acts
+        elif os.path.exists(activations_dir / f"acts_layer_{layer}.pt"):  # (num_samples, 1, hidden_dim)
+            one_layer_acts = torch.load(activations_dir / f"acts_layer_{layer}.pt")
+            acts = one_layer_acts[:, 0, :]
+        else:
+            raise ValueError(f"Neither all_layer_acts.pt nor acts_layer_{layer}.pt found in {activations_dir}.")
 
-    Returns:
-        Path to the saved probe
-    """
+        assert len(df) == acts.shape[0], (
+            f"Number of rows in csv and activations must match. {len(df)} != {acts.shape[0]}"
+        )
 
-    activations_dir = Path(activations_dir)
+        activations_dict = activations.get_cell_type_activations_from_csv(df, acts, observability)
+        return activations_dict
 
     # Find all activation files
     activation_files = {}
@@ -465,6 +424,55 @@ def train_and_save_multiclass_probe_gpu(
         else:
             raise ValueError(f"Unsupported activation shape: {acts.shape}")
 
+    return activations_dict
+
+
+def train_and_save_multiclass_probe_gpu(
+    activations_dir: str,
+    layer: int,
+    output_dir: str = None,
+    eval_split: float = 0.2,
+    reg_coeff: float = 1e3,
+    normalize: bool = False,
+    fit_intercept: bool = True,
+    verbose: int = 0,
+    device: str | torch.device | None = None,
+    learning_rate: float = 0.1,
+    num_epochs: int = 100,
+    class_weight: str | dict[str, float] | None = None,
+    balance_classes: bool = False,
+    seed: int = 42,
+    use_mlp: bool = False,
+    mlp_hidden_size: int = 1024,
+    batch_size: int = 1024,
+    observability: activations.Observability = activations.Observability.full,
+) -> str:
+    """Train a multi-class probing classifier on grid cell activations using GPU.
+
+    Args:
+        activations_dir: Directory containing activation files (acts_wall.pt, acts_empty.pt, etc.)
+        layer: Layer to train the probe on (not used for single-layer activations)
+        output_dir: Directory to save the probe
+        eval_split: Fraction of data to use for evaluation
+        reg_coeff: Regularization coefficient
+        normalize: Whether to normalize activations
+        fit_intercept: Whether to fit an intercept term in the logistic regression
+        verbose: Verbosity level for the logistic regression solver (0 = silent, 1+ = verbose)
+        device: Device to use for training ('cuda', 'cpu', or None for auto-detect)
+        learning_rate: Learning rate for optimization
+        num_epochs: Number of epochs for training
+        class_weight: Class weights for handling class imbalance ('balanced' or dict mapping class names to weights)
+        balance_classes: Whether to balance classes by downsampling the majority classes
+        use_mlp: Whether to use an MLP architecture instead of linear
+        mlp_hidden_size: Hidden size for the MLP (only used if use_mlp=True)
+
+    Returns:
+        Path to the saved probe
+    """
+    activations_dir = Path(activations_dir)
+
+    activations_dict = create_activations_dict(activations_dir, layer, observability)
+
     # Split data for training and evaluation
     train_dict = {}
     eval_dict = {}
@@ -490,7 +498,6 @@ def train_and_save_multiclass_probe_gpu(
     probe = MultiClassProbingClassifierGPU(
         reg_coeff=reg_coeff,
         normalize=normalize,
-        interaction_features=interaction_features,
         fit_intercept=fit_intercept,
         verbose=verbose,
         device=device,
