@@ -1,17 +1,22 @@
+import os
 import pickle
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import torch
 from torch import nn, optim
+from tqdm import tqdm
 
+from telos_interp import activations
 from telos_interp.probing import (
     ArrayLike,
     _compute_metrics,
     _prepare_multiclass_data,
     _print_evaluation_results,
     _to_torch,
+    load_activations,
 )
 
 
@@ -22,13 +27,12 @@ class MultiClassProbingClassifierGPU:
         self,
         reg_coeff: float = 1e3,
         normalize: bool = False,
-        interaction_features: bool = False,
         fit_intercept: bool = True,
         dtype: torch.dtype = torch.float32,
         verbose: int = 0,
         device: str | torch.device | None = None,
         learning_rate: float = 0.1,
-        max_iter: int = 1000,
+        num_epochs: int = 100,
         batch_size: int | None = None,
         class_weight: str | dict[str, float] | None = None,
         use_mlp: bool = False,
@@ -37,11 +41,10 @@ class MultiClassProbingClassifierGPU:
         self.reg_coeff = float(reg_coeff)
         self.normalize = bool(normalize)
         self.fit_intercept = bool(fit_intercept)
-        self.interaction_features = bool(interaction_features)
         self.dtype = dtype
         self.verbose = int(verbose)
         self.learning_rate = float(learning_rate)
-        self.max_iter = int(max_iter)
+        self.num_epochs = int(num_epochs)
         self.batch_size = batch_size
         self.class_weight = class_weight
         self.use_mlp = bool(use_mlp)
@@ -53,7 +56,6 @@ class MultiClassProbingClassifierGPU:
         else:
             self.device = torch.device(device)
 
-        self.linear: nn.Linear | None = None
         self.model: nn.Module | None = None  # For MLP architecture
         self.scaler_mean: torch.Tensor | None = None
         self.scaler_std: torch.Tensor | None = None
@@ -72,29 +74,19 @@ class MultiClassProbingClassifierGPU:
         self
         """
         # Prepare data using common utility
-        X, y, self.class_names, self.class_name_to_class_idx = _prepare_multiclass_data(activations_dict, self.dtype)
-
-        # Convert to torch tensors and move to device
-        X_tensor = torch.from_numpy(X).to(dtype=self.dtype, device=self.device)
-        y_tensor = torch.from_numpy(y).to(device=self.device)
-
-        if self.interaction_features:
-            H = X_tensor.shape[1] - 2
-            h = X_tensor[:, :H]
-            xy = X_tensor[:, H:]  # (N, 2)
-
-            # Build interaction features (N, 2H): [h * x, h * y]
-            hx = h * xy[:, 0:1]  # broadcast
-            hy = h * xy[:, 1:2]
-            X_tensor = torch.cat([h, xy, hx, hy], dim=1)
+        X_tensor, y_tensor, self.class_names, self.class_name_to_class_idx = _prepare_multiclass_data(
+            activations_dict, self.dtype
+        )
 
         # Normalisation ---------------------------------------------------- #
         if self.normalize:
-            self.scaler_mean = X_tensor.mean(dim=0)
-            self.scaler_std = X_tensor.std(dim=0)
+            scaler_mean = X_tensor.mean(dim=0)
+            scaler_std = X_tensor.std(dim=0)
             # Avoid division by zero
-            self.scaler_std = torch.where(self.scaler_std > 1e-8, self.scaler_std, torch.ones_like(self.scaler_std))
-            X_tensor = (X_tensor - self.scaler_mean) / self.scaler_std
+            scaler_std = torch.where(scaler_std > 1e-8, scaler_std, torch.ones_like(scaler_std))
+            X_tensor = (X_tensor - scaler_mean) / scaler_std
+            self.scaler_mean = scaler_mean.to(self.device)
+            self.scaler_std = scaler_std.to(self.device)
         else:
             self.scaler_mean = torch.zeros(X_tensor.shape[1], dtype=self.dtype, device=self.device)
             self.scaler_std = torch.ones(X_tensor.shape[1], dtype=self.dtype, device=self.device)
@@ -110,14 +102,10 @@ class MultiClassProbingClassifierGPU:
                 nn.ReLU(),
                 nn.Linear(self.mlp_hidden_size, n_classes, bias=self.fit_intercept),
             ).to(dtype=self.dtype, device=self.device)
-            # Keep linear as None for MLP mode
-            self.linear = None
         else:
-            self.linear = nn.Linear(n_features, n_classes, bias=self.fit_intercept).to(
+            self.model = nn.Linear(n_features, n_classes, bias=self.fit_intercept).to(
                 dtype=self.dtype, device=self.device
             )
-            # Keep model as None for linear mode
-            self.model = None
 
         # Compute class weights if requested ------------------------------ #
         class_weights_tensor = None
@@ -142,44 +130,52 @@ class MultiClassProbingClassifierGPU:
             class_weights_tensor = class_weights
 
         # Training loop ---------------------------------------------------- #
-        criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
-        # Get the appropriate model for training
-        train_model = self.model if self.use_mlp else self.linear
+        criterion = nn.CrossEntropyLoss(weight=class_weights_tensor).to(self.device)
 
-        # L2 regularization strength (sklearn's C=1/reg_coeff maps to weight_decay=reg_coeff in PyTorch)
-        # optimizer = optim.LBFGS(
-        #     train_model.parameters(),
-        #     lr=self.learning_rate,
-        #     max_iter=20,
-        # )
-        optimizer = optim.Adam(train_model.parameters(), lr=self.learning_rate)
+        optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
 
-        # For LBFGS optimizer
-        def closure():
-            optimizer.zero_grad()
-            outputs = train_model(X_tensor)
-            loss = criterion(outputs, y_tensor)
+        n_samples = X_tensor.shape[0]
+        if n_samples == 0:
+            raise ValueError("Training data is empty.")
 
-            # L2 regularization
-            if self.reg_coeff > 0:
-                l2_reg = torch.tensor(0.0, device=self.device)
-                for name, param in train_model.named_parameters():
-                    if "weight" in name:  # do not penalize bias
-                        l2_reg = l2_reg + torch.norm(param, 2) ** 2
-                loss = loss + 0.5 * self.reg_coeff * l2_reg
-
-            loss.backward()
-            return loss
+        if self.batch_size is None:
+            batch_size = min(1024, n_samples)
+        else:
+            batch_size = int(self.batch_size)
+        batch_size = max(1, batch_size)
 
         # Training
-        train_model.train()
-        for i in range(self.max_iter // 20):  # LBFGS takes ~20 iterations per step
-            loss = optimizer.step(closure)
+        self.model.train()
+        step = 0
+        last_loss = None
+        for epoch in range(self.num_epochs):
+            permutation = torch.randperm(n_samples)
+            for start_idx in tqdm(range(0, n_samples, batch_size)):
+                idx = permutation[start_idx : start_idx + batch_size]
+                batch_X = X_tensor[idx].to(self.device, non_blocking=True)
+                batch_y = y_tensor[idx].to(self.device, non_blocking=True)
 
-            if self.verbose > 0 and i % 10 == 0:
-                print(f"  Iteration {i * 20}, Loss: {loss.item():.4f}")
+                optimizer.zero_grad()
+                outputs = self.model(batch_X)
+                loss = criterion(outputs, batch_y)
 
-        train_model.eval()
+                if self.reg_coeff > 0:
+                    l2_reg = torch.tensor(0.0, device=self.device)
+                    for name, param in self.model.named_parameters():
+                        if "weight" in name:
+                            l2_reg = l2_reg + torch.norm(param, 2) ** 2
+                    loss = loss + 0.5 * self.reg_coeff * l2_reg
+
+                loss.backward()
+                optimizer.step()
+
+                step += 1
+                last_loss = loss.item()
+
+            if self.verbose > 0:
+                print(f"  Epoch {epoch}, Loss: {last_loss:.4f}")
+
+        self.model.eval()
 
         return self
 
@@ -196,7 +192,7 @@ class MultiClassProbingClassifierGPU:
         torch.Tensor
             2-D tensor of shape (seq_len, n_classes) with class probabilities.
         """
-        if self.linear is None and self.model is None:
+        if self.model is None:
             raise RuntimeError("Probe not trained – call .fit(...) first.")
 
         hs = _to_torch(hidden_states, self.dtype).to(self.device)
@@ -204,22 +200,10 @@ class MultiClassProbingClassifierGPU:
         if hs.ndim != 2:
             raise ValueError(f"hidden_states must be (seq_len, hidden_dim); got {hs.shape}.")
 
-        if self.interaction_features:
-            H = hs.shape[1] - 2
-            h = hs[:, :H]
-            xy = hs[:, H:]  # (N, 2)
-
-            # Build interaction features (N, 2H): [h * x, h * y]
-            hx = h * xy[:, 0:1]  # broadcast
-            hy = h * xy[:, 1:2]
-            hs = torch.cat([h, xy, hx, hy], dim=1)
-
         if self.normalize:
             hs = (hs - self.scaler_mean) / self.scaler_std
 
-        # Use the appropriate model
-        predict_model = self.model if self.use_mlp else self.linear
-        logits = predict_model(hs)
+        logits = self.model(hs)
         probabilities = torch.softmax(logits, dim=-1)
 
         return probabilities.cpu()
@@ -236,7 +220,7 @@ class MultiClassProbingClassifierGPU:
         np.ndarray
             1-D tensor of shape (seq_len,) with predicted class indices.
         """
-        if self.linear is None and self.model is None:
+        if self.model is None:
             raise RuntimeError("Probe not trained – call .fit(...) first.")
 
         probabilities = self.predict_proba(hidden_states)
@@ -255,7 +239,7 @@ class MultiClassProbingClassifierGPU:
         Dict[str, float]
             Dictionary containing evaluation metrics
         """
-        if self.linear is None and self.model is None:
+        if self.model is None:
             raise RuntimeError("Probe not trained – call .fit(...) first.")
 
         # Prepare test data using common utility
@@ -273,20 +257,18 @@ class MultiClassProbingClassifierGPU:
     def save(self, file: str | Path) -> None:
         """Pickle the probe to *file*."""
         payload = {
-            "linear_state_dict": self.linear.state_dict() if self.linear is not None else None,
             "model_state_dict": self.model.state_dict() if self.model is not None else None,
             "scaler_mean": self.scaler_mean.cpu() if self.scaler_mean is not None else None,
             "scaler_std": self.scaler_std.cpu() if self.scaler_std is not None else None,
             "reg_coeff": self.reg_coeff,
             "normalize": self.normalize,
-            "interaction_features": self.interaction_features,
             "fit_intercept": self.fit_intercept,
             "dtype": self.dtype,
             "verbose": self.verbose,
             "class_names": self.class_names,
             "class_name_to_class_idx": self.class_name_to_class_idx,
             "learning_rate": self.learning_rate,
-            "max_iter": self.max_iter,
+            "num_epochs": self.num_epochs,
             "batch_size": self.batch_size,
             "class_weight": self.class_weight,
             "use_mlp": self.use_mlp,
@@ -304,13 +286,12 @@ class MultiClassProbingClassifierGPU:
         obj = cls(
             reg_coeff=payload["reg_coeff"],
             normalize=payload["normalize"],
-            interaction_features=payload.get("interaction_features", False),
             fit_intercept=payload["fit_intercept"],
             dtype=payload["dtype"],
             verbose=payload.get("verbose", 0),
             device=device,
             learning_rate=payload.get("learning_rate", 0.1),
-            max_iter=payload.get("max_iter", 1000),
+            num_epochs=payload.get("num_epochs", 100),
             batch_size=payload.get("batch_size", None),
             class_weight=payload.get("class_weight", None),
             use_mlp=payload.get("use_mlp", False),
@@ -319,31 +300,30 @@ class MultiClassProbingClassifierGPU:
 
         # Restore linear layer or MLP model
         if payload.get("model_state_dict") is not None:
-            # Load MLP model
-            # Infer dimensions from state dict
-            first_layer_weight = payload["model_state_dict"]["0.weight"]
-            last_layer_weight = payload["model_state_dict"]["2.weight"]
-            n_classes, hidden_size = last_layer_weight.shape
-            hidden_size_in, n_features = first_layer_weight.shape
+            if obj.use_mlp:
+                # Load MLP model
+                # Infer dimensions from state dict
+                first_layer_weight = payload["model_state_dict"]["0.weight"]
+                last_layer_weight = payload["model_state_dict"]["2.weight"]
+                n_classes, hidden_size = last_layer_weight.shape
+                hidden_size_in, n_features = first_layer_weight.shape
 
-            obj.model = nn.Sequential(
-                nn.Linear(n_features, hidden_size_in, bias=obj.fit_intercept),
-                nn.ReLU(),
-                nn.Linear(hidden_size_in, n_classes, bias=obj.fit_intercept),
-            ).to(dtype=obj.dtype, device=obj.device)
+                obj.model = nn.Sequential(
+                    nn.Linear(n_features, hidden_size_in, bias=obj.fit_intercept),
+                    nn.ReLU(),
+                    nn.Linear(hidden_size_in, n_classes, bias=obj.fit_intercept),
+                ).to(dtype=obj.dtype, device=obj.device)
+            else:
+                # Load linear layer
+                # Infer dimensions from state dict
+                weight_shape = payload["model_state_dict"]["weight"].shape
+                n_classes, n_features = weight_shape
+
+                obj.model = nn.Linear(n_features, n_classes, bias=obj.fit_intercept).to(
+                    dtype=obj.dtype, device=obj.device
+                )
             obj.model.load_state_dict(payload["model_state_dict"])
             obj.model.eval()
-        elif payload.get("linear_state_dict") is not None:
-            # Load linear layer
-            # Infer dimensions from state dict
-            weight_shape = payload["linear_state_dict"]["weight"].shape
-            n_classes, n_features = weight_shape
-
-            obj.linear = nn.Linear(n_features, n_classes, bias=obj.fit_intercept).to(
-                dtype=obj.dtype, device=obj.device
-            )
-            obj.linear.load_state_dict(payload["linear_state_dict"])
-            obj.linear.eval()
 
         obj.scaler_mean = payload["scaler_mean"]
         obj.scaler_std = payload["scaler_std"]
@@ -384,51 +364,34 @@ def balance_classes_by_upsampling(train_dict: dict[str, ArrayLike], seed: int = 
     return balanced_train_dict
 
 
-def train_and_save_multiclass_probe_gpu(
-    activations_dir: str,
-    layer: int,
-    output_dir: str = None,
-    eval_split: float = 0.2,
-    reg_coeff: float = 1e3,
-    normalize: bool = False,
-    interaction_features: bool = False,
-    fit_intercept: bool = True,
-    verbose: int = 0,
-    device: str | torch.device | None = None,
-    learning_rate: float = 0.1,
-    max_iter: int = 1000,
-    class_weight: str | dict[str, float] | None = None,
-    balance_classes: bool = False,
-    seed: int = 42,
-    use_mlp: bool = False,
-    mlp_hidden_size: int = 1024,
-) -> str:
-    """Train a multi-class probing classifier on grid cell activations using GPU.
+def create_activations_dict(
+    activations_dir: Path, layer: int, observability: activations.Observability
+) -> dict[str, ArrayLike]:
+    if "raw_acts" in activations_dir.name:
+        # First find the csv file
+        csv_file = activations_dir.glob("*.csv").__next__()
+        if not csv_file:
+            raise ValueError(f"No csv file found in {activations_dir}.")
+        else:
+            print(f"Using csv file: {csv_file}")
+            df = pd.read_csv(csv_file)
 
-    Args:
-        activations_dir: Directory containing activation files (acts_wall.pt, acts_empty.pt, etc.)
-        layer: Layer to train the probe on (not used for single-layer activations)
-        output_dir: Directory to save the probe
-        eval_split: Fraction of data to use for evaluation
-        reg_coeff: Regularization coefficient
-        normalize: Whether to normalize activations
-        interaction_features: Whether to use interaction features
-        fit_intercept: Whether to fit an intercept term in the logistic regression
-        verbose: Verbosity level for the logistic regression solver (0 = silent, 1+ = verbose)
-        device: Device to use for training ('cuda', 'cpu', or None for auto-detect)
-        learning_rate: Learning rate for optimization
-        max_iter: Maximum number of iterations
-        class_weight: Class weights for handling class imbalance ('balanced' or dict mapping class names to weights)
-        balance_classes: Whether to balance classes by downsampling the majority classes
-        use_mlp: Whether to use an MLP architecture instead of linear
-        mlp_hidden_size: Hidden size for the MLP (only used if use_mlp=True)
+        if os.path.exists(activations_dir / "all_layer_acts.pt"):
+            all_layer_acts = torch.load(activations_dir / "all_layer_acts.pt")  # (num_samples, num_layers, hidden_dim)
+            acts = all_layer_acts[:, layer, :].clone()
+            del all_layer_acts
+        elif os.path.exists(activations_dir / f"acts_layer_{layer}.pt"):  # (num_samples, 1, hidden_dim)
+            one_layer_acts = torch.load(activations_dir / f"acts_layer_{layer}.pt")
+            acts = one_layer_acts[:, 0, :]
+        else:
+            raise ValueError(f"Neither all_layer_acts.pt nor acts_layer_{layer}.pt found in {activations_dir}.")
 
-    Returns:
-        Path to the saved probe
-    """
-    from telos_interp.probing import load_activations
+        assert len(df) == acts.shape[0], (
+            f"Number of rows in csv and activations must match. {len(df)} != {acts.shape[0]}"
+        )
 
-    activations_dir = Path(activations_dir)
+        activations_dict = activations.get_cell_type_activations_from_csv(df, acts, observability)
+        return activations_dict
 
     # Find all activation files
     activation_files = {}
@@ -448,13 +411,75 @@ def train_and_save_multiclass_probe_gpu(
         print(f"   {class_name}: {acts.shape}")
         activations_dict[class_name] = acts
 
+    for class_name, acts in activations_dict.items():
+        if acts.ndim == 3:  # (num_samples, num_layers, hidden_dim)
+            if acts.shape[1] == 1:
+                # We only saved one layer
+                activations_dict[class_name] = acts[:, 0, :]
+            else:
+                activations_dict[class_name] = acts[:, layer, :]
+        elif acts.ndim == 2:  # (num_samples, hidden_dim)
+            # Legacy format
+            activations_dict[class_name] = acts
+        else:
+            raise ValueError(f"Unsupported activation shape: {acts.shape}")
+
+    return activations_dict
+
+
+def train_and_save_multiclass_probe_gpu(
+    activations_dir: str,
+    layer: int,
+    output_dir: str = None,
+    eval_split: float = 0.2,
+    reg_coeff: float = 1e3,
+    normalize: bool = False,
+    fit_intercept: bool = True,
+    verbose: int = 0,
+    device: str | torch.device | None = None,
+    learning_rate: float = 0.1,
+    num_epochs: int = 100,
+    class_weight: str | dict[str, float] | None = None,
+    balance_classes: bool = False,
+    seed: int = 42,
+    use_mlp: bool = False,
+    mlp_hidden_size: int = 1024,
+    batch_size: int = 1024,
+    observability: activations.Observability = activations.Observability.full,
+) -> str:
+    """Train a multi-class probing classifier on grid cell activations using GPU.
+
+    Args:
+        activations_dir: Directory containing activation files (acts_wall.pt, acts_empty.pt, etc.)
+        layer: Layer to train the probe on (not used for single-layer activations)
+        output_dir: Directory to save the probe
+        eval_split: Fraction of data to use for evaluation
+        reg_coeff: Regularization coefficient
+        normalize: Whether to normalize activations
+        fit_intercept: Whether to fit an intercept term in the logistic regression
+        verbose: Verbosity level for the logistic regression solver (0 = silent, 1+ = verbose)
+        device: Device to use for training ('cuda', 'cpu', or None for auto-detect)
+        learning_rate: Learning rate for optimization
+        num_epochs: Number of epochs for training
+        class_weight: Class weights for handling class imbalance ('balanced' or dict mapping class names to weights)
+        balance_classes: Whether to balance classes by downsampling the majority classes
+        use_mlp: Whether to use an MLP architecture instead of linear
+        mlp_hidden_size: Hidden size for the MLP (only used if use_mlp=True)
+
+    Returns:
+        Path to the saved probe
+    """
+    activations_dir = Path(activations_dir)
+
+    activations_dict = create_activations_dict(activations_dir, layer, observability)
+
     # Split data for training and evaluation
     train_dict = {}
     eval_dict = {}
 
     if balance_classes:
-        activations_dict = balance_classes_by_downsampling(activations_dict, seed=seed)
-        # activations_dict = balance_classes_by_upsampling(activations_dict, seed=seed)
+        # activations_dict = balance_classes_by_downsampling(activations_dict, seed=seed)
+        activations_dict = balance_classes_by_upsampling(activations_dict, seed=seed)
 
     for class_name, acts in activations_dict.items():
         n_samples = acts.shape[0]
@@ -473,15 +498,15 @@ def train_and_save_multiclass_probe_gpu(
     probe = MultiClassProbingClassifierGPU(
         reg_coeff=reg_coeff,
         normalize=normalize,
-        interaction_features=interaction_features,
         fit_intercept=fit_intercept,
         verbose=verbose,
         device=device,
         learning_rate=learning_rate,
-        max_iter=max_iter,
+        num_epochs=num_epochs,
         class_weight=class_weight,
         use_mlp=use_mlp,
         mlp_hidden_size=mlp_hidden_size,
+        batch_size=batch_size,
     )
 
     print(f"\n🚀 Training on device: {probe.device}")
@@ -509,6 +534,8 @@ def train_and_save_multiclass_probe_gpu(
         suffix_parts.append("no_intercept")
     if normalize:
         suffix_parts.append("normalized")
+    if balance_classes:
+        suffix_parts.append("balanced")
 
     suffix = "_" + "_".join(suffix_parts)
     output_path = output_dir / f"multiclass_probe_layer_{layer}{suffix}.pkl"
@@ -536,7 +563,7 @@ def predict_from_activations_list(
     [
         {
             "observation": str,
-            "predictions": {(x,y): {class_name: probability, class_name: probability, ...}, ...},
+            "predictions": {'(x,y)': {class_name: probability, class_name: probability, ...}, ...},
         },
         ...
     ]
@@ -555,8 +582,8 @@ def predict_from_activations_list(
             probabilities = probe.predict_proba(activation.unsqueeze(0))
             for class_name, class_idx in probe.class_name_to_class_idx.items():
                 cell_predictions[class_name] = probabilities[0, class_idx].item()
-            # Predictions are stored in (row, column) order.
-            row_predictions[str((y, x))] = cell_predictions
+            # Predictions are stored in (column, row) order.
+            row_predictions[str((x, y))] = cell_predictions
 
         results.append(
             {
@@ -566,3 +593,77 @@ def predict_from_activations_list(
         )
 
     return results
+
+
+def get_predicted_class(per_cell_predictions: dict[str, Any]) -> str:
+    """Get the predicted class from the predictions dictionary."""
+    max_probability = 0
+    predicted_class = None
+    for class_name, probability in per_cell_predictions.items():
+        if probability > max_probability:
+            max_probability = probability
+            predicted_class = class_name
+    return predicted_class, max_probability
+
+
+def evaluate_predictions(csv_path: str, predictions: list[dict[str, Any]]) -> dict[str, float]:
+    """Evaluate the predictions against the ground truth in the csv file.
+
+    predictions has the following structure:
+    [
+        {
+            "observation": str,
+            "predictions": {'(x,y)': {class_name: probability, class_name: probability, ...}, ...},
+        },
+        ...
+    ]
+    """
+
+    df = pd.read_csv(csv_path)
+
+    if len(df) != len(predictions):
+        print(f"Number of rows in csv and predictions must match. {len(df)} != {len(predictions)}")
+        return {}
+
+    per_row_accuracies = []
+    per_class_accuracies = {}
+
+    all_class_names = predictions[0]["predictions"]["(0, 0)"].keys()
+    per_class_accuracies = {class_name: [] for class_name in all_class_names}
+
+    for row_idx, row in df.iterrows():
+        true_fo_cell_types = eval(row.fo_cell_types)
+        correct_predictions = 0
+        total_predictions = 0
+        class_counts = dict.fromkeys(all_class_names, 0)
+        class_correct_predictions = dict.fromkeys(all_class_names, 0)
+        for x, y, true_cell_type in true_fo_cell_types:
+            xy_key = f"({x}, {y})"
+            pred_xy_probabilities = predictions[row_idx]["predictions"][xy_key]
+            predicted_class, max_probability = get_predicted_class(pred_xy_probabilities)
+            if predicted_class == true_cell_type:
+                correct_predictions += 1
+                class_correct_predictions[predicted_class] += 1
+
+            total_predictions += 1
+            class_counts[true_cell_type] += 1
+
+        per_row_accuracies.append(correct_predictions / (total_predictions or 1))
+        for class_name in all_class_names:
+            per_class_accuracies[class_name].append(
+                class_correct_predictions[class_name] / (class_counts[class_name] or 1)
+            )
+
+    total_accuracy = sum(per_row_accuracies) / len(per_row_accuracies)
+    total_per_class_accuracies = {}
+    for class_name in all_class_names:
+        total_per_class_accuracies[class_name] = sum(per_class_accuracies[class_name]) / len(
+            per_class_accuracies[class_name]
+        )
+
+    return {
+        "total_accuracy": total_accuracy,
+        "total_per_class_accuracies": total_per_class_accuracies,
+        # "per_row_accuracies": per_row_accuracies,
+        # "per_class_accuracies": per_class_accuracies,
+    }

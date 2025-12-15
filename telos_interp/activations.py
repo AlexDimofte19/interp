@@ -139,6 +139,7 @@ def run_model_and_gather_activations_at_token_position(
                 all_layer_outputs.append(layer_output)
 
     # Move to CPU first, then stack
+    torch.cuda.synchronize()
     all_layer_outputs = [output.detach().clone().cpu() for output in all_layer_outputs]
     all_layer_outputs = torch.stack(all_layer_outputs)
     return all_layer_outputs
@@ -166,7 +167,7 @@ def _process_grid_row_and_get_activations(
         A tuple of (observation, last_prompt_activation, cell_types_list)
         where:
             - observation: The observation string
-            - last_prompt_activation: Tensor of shape (hidden_dim,)
+            - last_prompt_activation: Tensor of shape (hidden_dim,) or (num_layers, hidden_dim) in case layer == -1
             - cell_types_list: List of (x, y, cell_type) tuples
     """
     if observability == Observability.full:
@@ -184,7 +185,14 @@ def _process_grid_row_and_get_activations(
     all_layer_activations = run_model_and_gather_activations_at_token_position(
         model, grid_text, empty_response, TokenPosition.prompt_last
     )  # (num_layers, hidden_dim)
-    last_prompt_activation = all_layer_activations[layer]  # Shape: (hidden_dim,)
+    if layer == -1:
+        # Take all layer activations
+        last_prompt_activation = all_layer_activations
+    else:
+        last_prompt_activation = all_layer_activations[layer]  # Shape: (hidden_dim,)
+
+    if torch.isnan(last_prompt_activation).any():
+        raise ValueError(f"NaN in activations for env_row {env_row} layer {layer}")
 
     return observation, last_prompt_activation, cell_types
 
@@ -223,7 +231,7 @@ def _create_probe_inputs_from_activation(
     last_prompt_activation: torch.Tensor,
     cell_types: list,
     row_column: bool = False,
-) -> dict[str, torch.Tensor]:
+) -> dict[str, list[torch.Tensor]]:
     """Create probe inputs with coordinates for each cell type.
 
     Args:
@@ -232,22 +240,28 @@ def _create_probe_inputs_from_activation(
         row_column: If True, use (row, column) ordering; if False, use (x, y) ordering
 
     Returns:
-        Dictionary mapping cell_type to probe input tensor of shape (hidden_dim + 2,)
+        Dictionary mapping cell_type to list of probe input tensors of shape (num_layers, hidden_dim + 2,)
     """
-    hidden_size = last_prompt_activation.shape[0]
-    result = {}
+    if len(last_prompt_activation.shape) == 1:
+        num_layers = 1
+        hidden_size = last_prompt_activation.shape[0]
+    else:
+        num_layers, hidden_size = last_prompt_activation.shape
+
+    existing_class_names = {cell_type for _, _, cell_type in cell_types}
+    result = {cell_type: [] for cell_type in existing_class_names}
 
     for cell_type_tuple in cell_types:
         x, y, cell_type = cell_type_tuple
-        full_probe_input = torch.zeros(hidden_size + 2)
-        full_probe_input[:hidden_size] = last_prompt_activation
+        full_probe_input = torch.zeros(num_layers, hidden_size + 2)
+        full_probe_input[:, :hidden_size] = last_prompt_activation
         if row_column:
-            full_probe_input[hidden_size] = y
-            full_probe_input[hidden_size + 1] = x
+            full_probe_input[:, hidden_size] = y
+            full_probe_input[:, hidden_size + 1] = x
         else:
-            full_probe_input[hidden_size] = x
-            full_probe_input[hidden_size + 1] = y
-        result[cell_type] = full_probe_input
+            full_probe_input[:, hidden_size] = x
+            full_probe_input[:, hidden_size + 1] = y
+        result[cell_type].append(full_probe_input)
 
     return result
 
@@ -279,13 +293,134 @@ def _create_probe_inputs_by_coordinates(
     return result
 
 
+def get_last_prompt_activations_from_csv(
+    model_name_or_path: str,
+    csv_path: str,
+    layer: int,
+    observability: Observability = Observability.full,
+    observation_type: ObservationType = ObservationType.grid_only,
+) -> tuple[torch.Tensor, pd.DataFrame]:
+    """Get last prompt activations for each row in CSV (returns data, doesn't save).
+
+    Args:
+        model_name_or_path: Model to use for gathering activations.
+        csv_path: Path to CSV with grid data.
+        layer: Layer to extract activations from.
+        observability: Grid observability setting.
+        observation_type: Type of observation to use.
+
+    Returns:
+        Tuple of (activations tensor of shape (n_rows, hidden_dim), dataframe).
+    """
+    print(f"Loading model: {model_name_or_path}")
+    torch_dtype = "bfloat16" if "gpt-oss-20b" in model_name_or_path else "auto"
+    print(f"Using torch_dtype: {torch_dtype}")
+    model = nnsight.LanguageModel(model_name_or_path, device_map="auto", torch_dtype=torch_dtype)
+
+    print(f"Loading grid data from {csv_path}")
+    df = pd.read_csv(csv_path)
+
+    all_activations = []
+    for _idx, env_row in tqdm(df.iterrows(), desc="Processing rows", total=len(df)):
+        _observation, last_prompt_activation, _cell_types = _process_grid_row_and_get_activations(
+            model, env_row, layer, observability, observation_type, row_column=False
+        )
+        all_activations.append(last_prompt_activation)
+
+    all_activations = torch.stack(all_activations)
+
+    # Clean up
+    del model
+    torch.cuda.empty_cache()
+
+    # Return activations with shape (n_rows, hidden_dim) - squeeze the layer dimension
+    if all_activations.ndim == 3 and all_activations.shape[1] == 1:
+        all_activations = all_activations.squeeze(1)
+
+    return all_activations, df
+
+
+def gather_raw_last_prompt_acts_from_grid_csv(
+    model_name_or_path: str,
+    csv_path: str,
+    layer: int,
+    observability: Observability = Observability.full,
+    observation_type: ObservationType = ObservationType.grid_only,
+) -> str:
+    """Gather raw last prompt activations from grid CSV data (no (x.y) or additional information added)."""
+
+    print(f"Loading model: {model_name_or_path}")
+    torch_dtype = "bfloat16" if "gpt-oss-20b" in model_name_or_path else "auto"
+    print(f"Using torch_dtype: {torch_dtype}")
+    model = nnsight.LanguageModel(model_name_or_path, device_map="auto", torch_dtype=torch_dtype)
+
+    print(f"Loading grid data from {csv_path}")
+    df = pd.read_csv(csv_path)
+
+    all_activations = []
+    for _idx, env_row in tqdm(df.iterrows(), desc="Processing rows", total=len(df)):
+        _observation, last_prompt_activation, cell_types = _process_grid_row_and_get_activations(
+            model, env_row, layer, observability, observation_type, row_column=False
+        )
+        all_activations.append(last_prompt_activation)
+
+    all_activations = torch.stack(all_activations)
+
+    csv_name = os.path.basename(csv_path)
+    output_dir_name = csv_name.replace(".csv", "")
+    short_model_name = model_name_or_path.split("/")[-1]
+    output_dir = f"data/activations/{short_model_name}/{output_dir_name}/observability_{observability.value}_{observation_type.value}/raw_acts_last_prompt"
+    os.makedirs(output_dir, exist_ok=True)
+    if layer == -1:
+        # Saving all acts to the same file
+        output_path = f"{output_dir}/all_layer_acts.pt"
+        torch.save(all_activations, output_path)
+    else:
+        output_path = f"{output_dir}/acts_layer_{layer}.pt"
+        torch.save(all_activations[layer], output_path)
+
+    # Save the original csv to the output directory
+    df.to_csv(f"{output_dir}/{csv_name}", index=False)
+    return output_dir
+
+
+def get_cell_type_activations_from_csv(
+    df: pd.DataFrame, acts: torch.Tensor, observability: Observability
+) -> dict[str, torch.Tensor]:
+    """From a list of last prompt activations and a dataframe with cell type information, create a dictionary of activations by cell type."""
+    activations_by_type = defaultdict(list)
+
+    for _idx, row in df.iterrows():
+        activation = acts[_idx]
+        if observability == Observability.full:
+            prefix = "fo_"
+        elif observability == Observability.partial:
+            prefix = "po_"
+        cell_types = eval(row[f"{prefix}cell_types"])
+
+        probe_inputs = _create_probe_inputs_from_activation(activation, cell_types, row_column=False)
+        for cell_type, all_probe_inputs_for_cell_type in probe_inputs.items():
+            activations_by_type[cell_type].extend(all_probe_inputs_for_cell_type)
+
+    # stack all activations into a tensor
+    for cell_type, activations_list in activations_by_type.items():
+        activations_tensor = torch.stack(activations_list)
+        assert activations_tensor.shape[1] == 1, f"Expected 1 layer, got {activations_tensor.shape[1]}"
+        activations_tensor = activations_tensor[:, 0, :].contiguous()
+        activations_by_type[cell_type] = activations_tensor
+        del activations_list
+
+    return dict(activations_by_type)
+
+
 def gather_activations_from_grid_at_last_prompt_token(
     model_name_or_path: str,
     csv_path: str,
-    layer: int = 12,
+    layer: int,
     observability: Observability = Observability.full,
     observation_type: ObservationType = ObservationType.grid_only,
     row_column: bool = False,
+    raw_acts: bool = False,
 ) -> str:
     """Gather activations using only the last prompt token for all cell types from grid CSV data.
 
@@ -300,11 +435,20 @@ def gather_activations_from_grid_at_last_prompt_token(
     Returns:
         Path to the output directory containing saved activations
     """
-    print(f"Loading grid data from {csv_path}")
-    df = pd.read_csv(csv_path)
+
+    if raw_acts:
+        output_dir = gather_raw_last_prompt_acts_from_grid_csv(
+            model_name_or_path, csv_path, layer, observability, observation_type
+        )
+        return output_dir
 
     print(f"Loading model: {model_name_or_path}")
-    model = nnsight.LanguageModel(model_name_or_path, device_map="auto")
+    torch_dtype = "bfloat16" if "gpt-oss-20b" in model_name_or_path else "auto"
+    print(f"Using torch_dtype: {torch_dtype}")
+    model = nnsight.LanguageModel(model_name_or_path, device_map="auto", torch_dtype=torch_dtype)
+
+    print(f"Loading grid data from {csv_path}")
+    df = pd.read_csv(csv_path)
 
     # Group by environment
     activations_by_type = defaultdict(list)
@@ -320,8 +464,8 @@ def gather_activations_from_grid_at_last_prompt_token(
 
             # Create probe inputs and group by cell type
             probe_inputs = _create_probe_inputs_from_activation(last_prompt_activation, cell_types, row_column)
-            for cell_type, full_probe_input in probe_inputs.items():
-                activations_by_type[cell_type].append(full_probe_input)
+            for cell_type, all_probe_inputs_for_cell_type in probe_inputs.items():
+                activations_by_type[cell_type].extend(all_probe_inputs_for_cell_type)
 
     # Save activations by type
     csv_name = os.path.basename(csv_path)
@@ -427,6 +571,9 @@ def get_activations_for_each_row_in_csv(
         # Create probe inputs keyed by (x, y) coordinates
         activations_dict = _create_probe_inputs_by_coordinates(last_prompt_activation, cell_types)
         results.append({"observation": observation, "activations": activations_dict})
+
+    del model
+    torch.cuda.empty_cache()
 
     return results
 

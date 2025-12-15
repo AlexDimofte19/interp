@@ -25,7 +25,7 @@ ArrayLike = np.ndarray | torch.Tensor
 def _prepare_multiclass_data(
     activations_dict: dict[str, ArrayLike],
     dtype: torch.dtype = torch.float32,
-) -> tuple[np.ndarray, np.ndarray, list[str], dict[str, int]]:
+) -> tuple[torch.Tensor, torch.Tensor, list[str], dict[str, int]]:
     """Prepare multi-class data from activations dictionary.
 
     Returns:
@@ -34,9 +34,6 @@ def _prepare_multiclass_data(
         class_names: list of class names
         class_name_to_class_idx: mapping from class name to index
     """
-    if not activations_dict:
-        raise ValueError("activations_dict cannot be empty")
-
     X_list = []
     y_list = []
     class_names = list(activations_dict.keys())
@@ -44,23 +41,20 @@ def _prepare_multiclass_data(
 
     for class_idx, (class_name, acts) in enumerate(activations_dict.items()):
         class_name_to_class_idx[class_name] = class_idx
-        X_class = _to_numpy(acts, dtype)
-
-        # Handle both 1D and 2D activations
-        if X_class.ndim == 1:
-            X_class = X_class.reshape(1, -1)
-        elif X_class.ndim == 2:
-            pass
+        if isinstance(acts, np.ndarray):
+            acts_tensor = torch.from_numpy(acts)
         else:
-            raise ValueError(f"Activations must be 1-D or 2-D. Got {X_class.shape} for class {class_name}.")
+            acts_tensor = acts
 
-        X_list.append(X_class)
-        y_list.append(np.full(X_class.shape[0], class_idx, dtype=np.int64))
+        X_list.append(acts_tensor.to(dtype=dtype))
+        y_list.append(torch.full((acts_tensor.shape[0],), class_idx, dtype=torch.long))
 
-    X = np.vstack(X_list)
-    y = np.concatenate(y_list)
+    X_tensor = torch.cat(X_list, dim=0)
+    y_tensor = torch.cat(y_list, dim=0)
 
-    return X, y, class_names, class_name_to_class_idx
+    del X_list, y_list
+
+    return X_tensor, y_tensor, class_names, class_name_to_class_idx
 
 
 def _compute_metrics(
