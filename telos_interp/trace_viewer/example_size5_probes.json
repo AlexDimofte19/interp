@@ -1,0 +1,151 @@
+{
+    "steps": [
+        {
+            "step_id": 0,
+            "prompt_suffix_tokens": [
+                {
+                    "id": 361,
+                    "probes": {
+                        "tile_identity_probe_r0_c0": {
+                            "model.layers.20.output": {
+                                "agent": 0.0005,
+                                "empty": 0.0019,
+                                "goal": 0.0005,
+                                "wall": 0.9971
+                            }
+                        },
+                        "tile_identity_probe_r0_c1": {
+                            "model.layers.20.output": {
+                                "agent": 0.0005,
+                                "empty": 0.0119,
+                                "goal": 0.0005,
+                                "wall": 0.9871
+                            }
+                        },
+                        "tile_identity_probe_r1_c1": {
+                            "model.layers.20.output": {
+                                "agent": 0.0700,
+                                "empty": 0.7800,
+                                "goal": 0.0500,
+                                "wall": 0.1000
+                            }
+                        },
+                        "tile_identity_probe_r1_c3": {
+                            "model.layers.20.output": {
+                                "agent": 0.0200,
+                                "empty": 0.1000,
+                                "goal": 0.8000,
+                                "wall": 0.0800
+                            }
+                        },
+                        "tile_identity_probe_r3_c1": {
+                            "model.layers.20.output": {
+                                "agent": 0.0200,
+                                "empty": 0.7500,
+                                "goal": 0.1500,
+                                "wall": 0.0800
+                            }
+                        }
+                    }
+                }
+            ],
+            "output_tokens": [
+                {
+                    "id": 365,
+                    "probes": {
+                        "tile_identity_probe_r0_c0": {
+                            "model.layers.20.output": {
+                                "agent": 0.0005,
+                                "empty": 0.0019,
+                                "goal": 0.0005,
+                                "wall": 0.9971
+                            }
+                        },
+                        "tile_identity_probe_r0_c1": {
+                            "model.layers.20.output": {
+                                "agent": 0.0005,
+                                "empty": 0.0119,
+                                "goal": 0.0005,
+                                "wall": 0.9871
+                            }
+                        },
+                        "tile_identity_probe_r1_c1": {
+                            "model.layers.20.output": {
+                                "agent": 0.0700,
+                                "empty": 0.7800,
+                                "goal": 0.0500,
+                                "wall": 0.1000
+                            }
+                        },
+                        "tile_identity_probe_r1_c3": {
+                            "model.layers.20.output": {
+                                "agent": 0.0200,
+                                "empty": 0.1000,
+                                "goal": 0.8000,
+                                "wall": 0.0800
+                            }
+                        },
+                        "tile_identity_probe_r3_c1": {
+                            "model.layers.20.output": {
+                                "agent": 0.0200,
+                                "empty": 0.7500,
+                                "goal": 0.1500,
+                                "wall": 0.0800
+                            }
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "step_id": 2,
+            "output_tokens": [
+                {
+                    "id": 473,
+                    "probes": {
+                        "tile_identity_probe_r0_c0": {
+                            "model.layers.20.output": {
+                                "agent": 0.0005,
+                                "empty": 0.0019,
+                                "goal": 0.0005,
+                                "wall": 0.9632
+                            }
+                        },
+                        "tile_identity_probe_r0_c1": {
+                            "model.layers.20.output": {
+                                "agent": 0.0005,
+                                "empty": 0.0119,
+                                "goal": 0.0005,
+                                "wall": 0.91
+                            }
+                        },
+                        "tile_identity_probe_r1_c1": {
+                            "model.layers.20.output": {
+                                "agent": 0.1200,
+                                "empty": 0.7200,
+                                "goal": 0.0800,
+                                "wall": 0.0500
+                            }
+                        },
+                        "tile_identity_probe_r1_c3": {
+                            "model.layers.20.output": {
+                                "agent": 0.0500,
+                                "empty": 0.0700,
+                                "goal": 0.8300,
+                                "wall": 0.0500
+                            }
+                        },
+                        "tile_identity_probe_r3_c1": {
+                            "model.layers.20.output": {
+                                "agent": 0.0200,
+                                "empty": 0.7500,
+                                "goal": 0.1500,
+                                "wall": 0.0800
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    ]
+}

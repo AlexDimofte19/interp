@@ -1,6 +1,6 @@
 # Trace Viewer Input Format
 
-This document describes the JSON input format for the trace viewer, used to visualize probing experiments on language model activations during grid navigation tasks. `example_input.json` provides an example for a valid file containing multiple steps, probabilities and probes outputs.
+This document describes the JSON input format for the trace viewer, used to visualize probing experiments on language model activations during grid navigation tasks. `example_size5.json` provides a handcrafted example for a valid file containing multiple steps, probabilities and probes outputs for GPT-OSS 20B solving a 5x5 grid. `example_size15.json` provides a larger example with a 15x15 grid with probabilities produced automatically using the command `reveng-cli get_trajectory --grid_size 15 --verbose --grid_complexity 0.7`.
 
 ## Top-Level Structure
 
@@ -20,11 +20,13 @@ This document describes the JSON input format for the trace viewer, used to visu
 
 Configuration parameters for the grid environment.
 
-- `n_rows` (integer): Number of rows in the grid
-- `n_cols` (integer): Number of columns in the grid
+- `grid_width` (integer): Number of rows in the grid
+- `grid_height` (integer): Number of columns in the grid
+- `grid_complexity` (float): Complexity measure of the grid layout (0.0 to 1.0)
 - `fully_observable` (boolean): Whether the entire grid is visible to the agent
-- `complexity` (float): Complexity measure of the grid layout (0.0 to 1.0)
-- `initial_astar_distance` (integer): Initial A* pathfinding distance to goal
+- `astar_distance` (integer): Initial A* pathfinding distance to goal
+- `agent_start_coordinates` (list of 2 integers): Starting agent coordinates in `[ROW, COLUMN]` format
+- `goal_coordinates` (list of 2 integers): Goal coordinates in `[ROW, COLUMN]` format
 - `legend` (dict): A map between tile names (e.g., `agent` or `wall`) and a dict containing their `symbol` (e.g., `A` or `#`) and a short `description` used to generate the legend.
 
 ### `model_params`
@@ -32,15 +34,16 @@ Configuration parameters for the grid environment.
 
 Language model configuration and inference settings.
 
-- `model_name` (string): Model identifier (e.g., "openai/gpt-oss-20b")
+- `model_id` (string): Model identifier (e.g., "openai/gpt-oss-20b")
 - `provider` (string): API provider (e.g., "together", "openai")
 - `interface` (string): Interface type (e.g., "playground", "api")
 - `n_interactions_in_context` (integer): Number of previous interactions in context
-- `out_length` (string | integer): Output length limit or "auto"
+- `max_tokens` (integer | string): Output length limit or "auto"
+- `max_steps_per_trajectory` (integer): Max steps the agent can complete before the run is aborted
 - `temperature` (string | float): Sampling temperature or "auto"
 - `reasoning_effort` (string): Reasoning effort level (e.g., "low", "medium", "high")
 - `top_p` (string | float): Nucleus sampling parameter or "auto"
-- `top_k` (string | integer): Top-k sampling parameter or "auto"
+- `top_logprobs` (int): Number of logprobs collected per output token. -1 if absent
 - `seed` (integer): Random seed for reproducibility
 
 ### `prompt`
@@ -119,8 +122,8 @@ Represents a single token with optional interpretability metadata.
 - `token` (string): Token text (special characters like `Ġ`, `Ċ` should be preserved in serialization)
 - `token_id` (integer): Vocabulary index of the token
 - `token_groups` (array of strings): Categories this token belongs to (see [Token groups](#token-groups))
-- `probabilities` (dict of str:float): Map between several possible output `token` and their probabilities (float, 0-1 range)
-- `probes` (object, optional): Probing results for this token's activations (see [Probes](#probes-object))
+- `probabilities` (dict of str:float): Map between several possible output `token` and their probabilities (float, 0-1 range). Returned by `get_trajectory` (control the number by setting `--top_logprobs N` with N>0). May be absent if not requested.
+- `probes` (object, optional): Probing results for this token's activations (see [Probes](#probes-object)). Must be added to a trajectory output after creation using the format shown in `example_size5_probes.json`.
 
 ## Token groups
 

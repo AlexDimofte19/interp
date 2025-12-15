@@ -1,10 +1,12 @@
 {
     "grid_params": {
-        "n_rows": 5,
-        "n_cols": 5,
+        "grid_width": 5,
+        "grid_height": 5,
         "fully_observable": true,
-        "complexity": 0.0,
-        "initial_astar_distance": 4,
+        "grid_complexity": 0.0,
+        "astar_distance": 4,
+        "agent_start_coordinates": [3, 1],
+        "goal_coordinates": [1, 3],
         "legend": {
             "agent": {"symbol": "A", "description": "Agent"},
             "goal": {"symbol": "G", "description": "Goal"},
@@ -18,11 +20,12 @@
         "provider": "together",
         "interface": "playground",
         "n_interactions_in_context": 0,
-        "out_length": "auto",
+        "max_tokens": "auto",
+        "max_steps_per_trajectory": 10000,
         "temperature": "auto",
         "reasoning_effort": "low",
         "top_p": "auto",
-        "top_k": "auto",
+        "top_logprobs": 0,
         "seed": 42
     },
     "prompt": {
