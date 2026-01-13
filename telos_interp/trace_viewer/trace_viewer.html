@@ -1500,8 +1500,8 @@
             const tileProbes = extractTileIdentityProbes(token.probes, selectedLayer);
 
             // Render decoded grid
-            const n_rows = viewerData.grid_params.n_rows;
-            const n_cols = viewerData.grid_params.n_cols;
+            const n_rows = viewerData.grid_params.grid_height;
+            const n_cols = viewerData.grid_params.grid_width;
             renderDecodedGrid(tileProbes, n_rows, n_cols);
 
             // Store for hover interactions
@@ -1629,8 +1629,8 @@
             const col = Math.floor((x - padding) / cellSize);
             const row = Math.floor((y - padding) / cellSize);
 
-            const n_rows = viewerData.grid_params.n_rows;
-            const n_cols = viewerData.grid_params.n_cols;
+            const n_rows = viewerData.grid_params.grid_height;
+            const n_cols = viewerData.grid_params.grid_width;
 
             // Check if within grid bounds
             if (row < 0 || row >= n_rows || col < 0 || col >= n_cols) {

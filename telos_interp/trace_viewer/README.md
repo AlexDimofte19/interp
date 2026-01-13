@@ -52,7 +52,7 @@ Language model configuration and inference settings.
 Template and tokenized prompt information. The prompt is split into three parts: `prefix` (before placeholder), `placeholder`, and `suffix` (after placeholder). The suffix tokens are stored both here and in each step since they might contain `probes` for activations depending on the preceding grid state.
 
 - `prompt_template` (string): The prompt template text with placeholders between curly brackets (e.g., `{{grid_state}}`)
-- `prompt_template_n_tokens` (string): Number of tokens in the full `prompt_template`
+- `prompt_template_n_tokens` (integer): Number of tokens in the full `prompt_template`
 - `prompt_prefix_n_tokens` (integer): Number of tokens in the prefix (before placeholder)
 - `prompt_prefix_tokens` (array of [Token](#token-object)): Tokenized prefix portion of the prompt template
 - `prompt_placeholder_n_tokens` (integer): Number of tokens in the placeholder itself (can be ignored, as it is replaced with the actual grid_state at every step)
