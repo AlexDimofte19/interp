@@ -28,7 +28,7 @@ def is_token_group_specification(spec: str) -> bool:
     - It matches a known token group name (case-insensitive)
     - Or it starts with '@' prefix (for custom/unknown groups)
 
-    Args:
+
         spec: Index specification string to check
 
     Returns:
@@ -229,8 +229,21 @@ def extract_activations_single_pass(
         invalid = [idx for idx in token_indices if idx >= seq_len]
         print(f"Warning: Skipping {len(invalid)} token indices beyond sequence length {seq_len}")
 
+    # Move input_ids to the model's device (important for multi-GPU setups with device_map="auto")
+    # Get the device of the embedding layer as the input device
+    try:
+        model_device = next(model.model.parameters()).device
+        input_ids = input_ids.to(model_device)
+    except StopIteration:
+        pass  # No parameters found, keep input_ids on CPU
+
     results: dict[int, dict[int, torch.Tensor]] = {layer_idx: {} for layer_idx in layer_indices}
     activations_to_save = []
+
+    # Sync all devices before tracing (important for multi-GPU MoE models)
+    if torch.cuda.is_available():
+        for device_idx in range(torch.cuda.device_count()):
+            torch.cuda.synchronize(device_idx)
 
     with torch.no_grad():
         with model.trace(input_ids):
@@ -240,11 +253,15 @@ def extract_activations_single_pass(
                     activation = layer_output[0, token_idx, :].save()
                     activations_to_save.append((layer_idx, token_idx, activation))
 
+    # Sync all devices after tracing
     if torch.cuda.is_available():
-        torch.cuda.synchronize()
+        for device_idx in range(torch.cuda.device_count()):
+            torch.cuda.synchronize(device_idx)
 
     for layer_idx, token_idx, activation in activations_to_save:
-        results[layer_idx][token_idx] = activation.detach().clone().cpu()
+        # Convert to tensor and move to CPU
+        act_tensor = activation.detach().cpu().clone()
+        results[layer_idx][token_idx] = act_tensor
 
     return results
 
@@ -283,7 +300,7 @@ def save_activations_to_files(
     output_base: Path,
     step_idx: int | None,
     category: str,
-) -> None:
+) -> int:
     """Save activations to .pt files in the output directory structure.
 
     Output structure:
@@ -296,7 +313,11 @@ def save_activations_to_files(
         output_base: Base output directory (includes model_id)
         step_idx: Step index (None for categories without step context)
         category: Token category name
+
+    Returns:
+        Number of activations with NaN values detected
     """
+    nan_count = 0
     for layer_idx, token_activations in activations.items():
         if step_idx is not None:
             layer_dir = output_base / f"layer_{layer_idx}" / f"step_{step_idx}" / category
@@ -306,8 +327,12 @@ def save_activations_to_files(
         layer_dir.mkdir(parents=True, exist_ok=True)
 
         for token_idx, activation in token_activations.items():
+            if torch.isnan(activation).any():
+                nan_count += 1
             output_path = layer_dir / f"{token_idx}.pt"
             torch.save(activation, output_path)
+
+    return nan_count
 
 
 def resolve_token_indices(

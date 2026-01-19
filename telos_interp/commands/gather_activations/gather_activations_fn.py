@@ -125,6 +125,10 @@ def extract_activations_from_trajectories(
         sanitized_model = sanitize_model_id(model_id)
         output_base = Path(output_dir) / file_stem / sanitized_model
 
+        # Skip if output folder already exists
+        if output_base.exists():
+            continue
+
         # Get shared token data
         prefix_tokens = trajectory["prompt"]["prompt_prefix_tokens"]
         suffix_tokens = trajectory["prompt"]["prompt_suffix_tokens"]
@@ -140,6 +144,10 @@ def extract_activations_from_trajectories(
 
         # Track if we've printed debug output
         debug_printed = False
+
+        # Track NaN activations for this trajectory
+        trajectory_nan_count = 0
+        trajectory_total_count = 0
 
         # Extract prompt_prefix once (step-independent due to causal attention)
         prefix_activations = None
@@ -174,9 +182,11 @@ def extract_activations_from_trajectories(
 
             # Save prefix activations for this step (same for all steps)
             if prefix_activations is not None:
-                save_activations_to_files(
+                nan_count = save_activations_to_files(
                     prefix_activations, output_base, step_idx=step_idx, category="prompt_prefix"
                 )
+                trajectory_nan_count += nan_count
+                trajectory_total_count += sum(len(v) for v in prefix_activations.values())
 
             # Skip step-dependent extraction if not needed
             if not has_step_dependent:
@@ -248,9 +258,20 @@ def extract_activations_from_trajectories(
                         if abs_idx in activations[layer_idx]:
                             remapped[layer_idx][rel_idx] = activations[layer_idx][abs_idx]
 
-                save_activations_to_files(
+                nan_count = save_activations_to_files(
                     remapped, output_base, step_idx=step_idx, category=category
                 )
+                trajectory_nan_count += nan_count
+                trajectory_total_count += sum(len(v) for v in remapped.values())
+
+        # Report NaN summary for this trajectory
+        if trajectory_nan_count > 0:
+            print(f"  WARNING: {trajectory_nan_count}/{trajectory_total_count} activations contain NaN values!")
+            print(f"  This is often caused by multi-GPU setups. Try using CUDA_VISIBLE_DEVICES=0")
+
+        # Clear CUDA cache after each trajectory to prevent OOM from memory fragmentation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     print(f"\nActivations saved to {output_dir}/")
 

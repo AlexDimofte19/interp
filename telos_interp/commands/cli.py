@@ -7,6 +7,8 @@ import tyro
 from telos_interp.commands.gather_activations import gather_activations
 from telos_interp.commands.generate_data import generate_data
 from telos_interp.commands.steering import steering_cmd
+from telos_interp.commands.prepare_activations_for_probing import prepare_activations_for_probing
+from telos_interp.commands.train_cognitive_map_probe import train_cognitive_map_probe
 from telos_interp.commands.train_distance_probe import train_distance_probe
 from telos_interp.commands.train_probe import train_probe
 
@@ -20,6 +22,8 @@ def main():
     - generate_data: Generate datasets of prompts and responses for training probes
     - train_probe: Train and apply probing classifiers on model activations
     - train_distance_probe: Train and apply distance regression probes
+    - prepare_activations_for_probing: Extract and concatenate activations for cognitive map probing
+    - train_cognitive_map_probe: Train cognitive map probing classifiers (LR or MLP)
     - steering: Compute and apply steering vectors for model generation
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -29,6 +33,8 @@ def main():
             "generate_data": generate_data,
             "train_probe": train_probe,
             "train_distance_probe": train_distance_probe,
+            "prepare_activations_for_probing": prepare_activations_for_probing,
+            "train_cognitive_map_probe": train_cognitive_map_probe,
             "steering": steering_cmd,
         }
     )
