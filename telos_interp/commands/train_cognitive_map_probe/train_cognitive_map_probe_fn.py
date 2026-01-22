@@ -757,30 +757,30 @@ def train_cognitive_map_probe(
     if not 0.0 < subset <= 1.0:
         raise ValueError(f"subset must be in (0.0, 1.0], got {subset}")
 
-    if subset < 1.0:
-        if num_cells_per_trajectory is not None and num_cells_per_trajectory > 0:
-            # Subset by complete trajectories, randomly selected (not just first N)
-            num_trajectories = len(activations) // num_cells_per_trajectory
-            num_trajectories_to_keep = max(1, int(num_trajectories * subset))
+    # If subset is 1.0, no subsetting is applied. In any case, shuffle the trajectories.
+    if num_cells_per_trajectory is not None and num_cells_per_trajectory > 0:
+        # Subset by complete trajectories, randomly selected (not just first N)
+        num_trajectories = len(activations) // num_cells_per_trajectory
+        num_trajectories_to_keep = max(1, int(num_trajectories * subset))
 
-            # Shuffle trajectory indices and select subset
-            trajectory_perm = torch.randperm(num_trajectories)
-            selected_trajectories = trajectory_perm[:num_trajectories_to_keep]
+        # Shuffle trajectory indices and select subset
+        trajectory_perm = torch.randperm(num_trajectories)
+        selected_trajectories = trajectory_perm[:num_trajectories_to_keep]
 
-            # Build sample indices and reorder data by selected trajectories
-            selected_indices = _build_indices_for_trajectories(selected_trajectories, num_cells_per_trajectory)
-            activations = activations[selected_indices]
-            labels = labels[selected_indices]
+        # Build sample indices and reorder data by selected trajectories
+        selected_indices = _build_indices_for_trajectories(selected_trajectories, num_cells_per_trajectory)
+        activations = activations[selected_indices]
+        labels = labels[selected_indices]
 
-            print(f"Subset: keeping {num_trajectories_to_keep}/{num_trajectories} trajectories ({subset * 100:.1f}%)")
-            print(f"  Remaining samples: {len(activations)}")
-        else:
-            # Fallback: shuffle then subset by samples if no trajectory info
-            perm = torch.randperm(len(activations))
-            num_samples_to_keep = max(1, int(len(activations) * subset))
-            activations = activations[perm[:num_samples_to_keep]]
-            labels = labels[perm[:num_samples_to_keep]]
-            print(f"Subset: keeping {num_samples_to_keep} samples ({subset * 100:.1f}%)")
+        print(f"Subset: keeping {num_trajectories_to_keep}/{num_trajectories} trajectories ({subset * 100:.1f}%)")
+        print(f"  Remaining samples: {len(activations)}")
+    else:
+        # Fallback: shuffle then subset by samples if no trajectory info
+        perm = torch.randperm(len(activations))
+        num_samples_to_keep = max(1, int(len(activations) * subset))
+        activations = activations[perm[:num_samples_to_keep]]
+        labels = labels[perm[:num_samples_to_keep]]
+        print(f"Subset: keeping {num_samples_to_keep} samples ({subset * 100:.1f}%)")
 
     # Remap labels to only include classes present in the data
     remapped_labels, num_classes, label_to_idx, idx_to_label = _remap_labels(labels, verbose)
