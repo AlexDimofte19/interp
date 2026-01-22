@@ -1,7 +1,6 @@
 """Train and apply distance regression probes on model activations."""
 
 from dataclasses import dataclass
-from typing import Union
 
 from telos_interp import distance_probing
 
@@ -99,7 +98,7 @@ class DistanceProbePredictConfig:
         print(f"Evaluation saved to {eval_path}")
 
 
-TrainDistanceProbe = Union[TrainDistanceProbeConfig, DistanceProbePredictConfig]
+TrainDistanceProbe = TrainDistanceProbeConfig | DistanceProbePredictConfig
 
 
 def train_distance_probe(config: TrainDistanceProbe):

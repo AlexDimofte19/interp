@@ -6,8 +6,8 @@ import tyro
 
 from telos_interp.commands.gather_activations import gather_activations
 from telos_interp.commands.generate_data import generate_data
-from telos_interp.commands.steering import steering_cmd
 from telos_interp.commands.prepare_activations_for_probing import prepare_activations_for_probing
+from telos_interp.commands.steering import steering_cmd
 from telos_interp.commands.train_cognitive_map_probe import train_cognitive_map_probe
 from telos_interp.commands.train_distance_probe import train_distance_probe
 from telos_interp.commands.train_probe import train_probe

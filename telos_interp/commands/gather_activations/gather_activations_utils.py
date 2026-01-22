@@ -1,7 +1,6 @@
 """Utility functions for gathering activations."""
 
 import os
-import re
 from pathlib import Path
 
 import torch
@@ -127,8 +126,8 @@ def parse_index_specification(spec: str, max_index: int, clamp: bool = False) ->
     # Split by comma
     parts = spec.split(",")
 
-    for part in parts:
-        part = part.strip()
+    for part_raw in parts:
+        part = part_raw.strip()
         if not part:
             continue
 
@@ -170,8 +169,8 @@ def parse_index_specification(spec: str, max_index: int, clamp: bool = False) ->
             # Single index
             try:
                 idx = int(part)
-            except ValueError:
-                raise ValueError(f"Invalid index specification: '{part}'")
+            except ValueError as e:
+                raise ValueError(f"Invalid index specification: '{part}'") from e
 
             # Resolve negative index
             if idx < 0:
@@ -181,10 +180,9 @@ def parse_index_specification(spec: str, max_index: int, clamp: bool = False) ->
                 # Clamp to valid range (skip if still out of bounds after clamping)
                 if idx < 0 or idx >= max_index:
                     continue
-            else:
-                # Validate
-                if idx < 0 or idx >= max_index:
-                    raise ValueError(f"Index {part} out of bounds [0, {max_index})")
+            # Validate
+            elif idx < 0 or idx >= max_index:
+                raise ValueError(f"Index {part} out of bounds [0, {max_index})")
 
             indices.add(idx)
 

@@ -4,10 +4,11 @@ from pathlib import Path
 from typing import Literal
 
 import torch
-import torch.nn as nn
-import torch.optim as optim
+from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
+
+from telos_interp.commands.prepare_activations_for_probing import CELL_ID_TO_SYMBOL
 
 # Model type literal for type hints
 ModelType = Literal["lr", "mlp"]
@@ -40,11 +41,13 @@ class MLPProbe(nn.Module):
         prev_dim = input_dim
 
         for hidden_dim in hidden_dims:
-            layers.extend([
-                nn.Linear(prev_dim, hidden_dim),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-            ])
+            layers.extend(
+                [
+                    nn.Linear(prev_dim, hidden_dim),
+                    nn.ReLU(),
+                    nn.Dropout(dropout),
+                ]
+            )
             prev_dim = hidden_dim
 
         layers.append(nn.Linear(prev_dim, num_classes))
@@ -82,9 +85,9 @@ def _train_epoch(
     total_loss = 0.0
     num_batches = 0
 
-    for batch_x, batch_y in dataloader:
-        batch_x = batch_x.to(device)
-        batch_y = batch_y.to(device)
+    for batch_x_raw, batch_y_raw in dataloader:
+        batch_x = batch_x_raw.to(device)
+        batch_y = batch_y_raw.to(device)
 
         optimizer.zero_grad()
         outputs = model(batch_x)
@@ -96,6 +99,66 @@ def _train_epoch(
         num_batches += 1
 
     return total_loss / num_batches if num_batches > 0 else 0.0
+
+
+def _print_debug_grids(
+    activations: torch.Tensor,
+    true_labels: torch.Tensor,
+    pred_labels: torch.Tensor,
+    idx_to_label: dict[int, int],
+) -> None:
+    """Print debug grids showing observation vs prediction for one trajectory's grid.
+
+    Args:
+        activations: Tensor with [..., row_id, col_id] at the end (one trajectory)
+        true_labels: Ground truth label indices (remapped)
+        pred_labels: Predicted label indices (remapped)
+        idx_to_label: Maps model output index -> original cell ID
+    """
+    n = len(activations)
+
+    # Extract positions from last 2 columns of activations
+    positions = activations[:, -2:].int()  # (n, 2) - row_id, col_id
+
+    # Determine grid size from positions
+    max_row = positions[:, 0].max().item() + 1
+    max_col = positions[:, 1].max().item() + 1
+    grid_size = max(max_row, max_col)
+
+    # Create grids (filled with '·' for unseen positions)
+    true_grid = [["·" for _ in range(grid_size)] for _ in range(grid_size)]
+    pred_grid = [["·" for _ in range(grid_size)] for _ in range(grid_size)]
+
+    # Fill in the grids
+    correct_count = 0
+    for i in range(n):
+        row, col = positions[i].tolist()
+        true_label_id = idx_to_label[true_labels[i].item()]
+        pred_label_id = idx_to_label[pred_labels[i].item()]
+        true_grid[row][col] = CELL_ID_TO_SYMBOL[true_label_id]
+        pred_grid[row][col] = CELL_ID_TO_SYMBOL[pred_label_id]
+        if true_label_id == pred_label_id:
+            correct_count += 1
+
+    # Print grids side by side
+    print("\n" + "=" * 60)
+    print("DEBUG: Single Trajectory Grid Comparison")
+    print(f"(grid size {grid_size}x{grid_size}, {n} cells)")
+    print("=" * 60)
+
+    # Header
+    header_width = grid_size * 2 - 1
+    print(f"\n{'Observation (Ground Truth)':<{header_width + 5}}  {'Prediction'}")
+    print("-" * header_width + "     " + "-" * header_width)
+
+    # Print rows side by side
+    for row_idx in range(grid_size):
+        true_row = " ".join(true_grid[row_idx])
+        pred_row = " ".join(pred_grid[row_idx])
+        print(f"{true_row}     {pred_row}")
+
+    print(f"\nGrid accuracy: {correct_count}/{n} ({100 * correct_count / n:.1f}%)")
+    print("=" * 60 + "\n")
 
 
 def _evaluate(
@@ -112,17 +175,18 @@ def _evaluate(
     total = 0
     num_batches = 0
 
-    # Per-class metrics
-    class_correct = torch.zeros(num_classes)
-    class_total = torch.zeros(num_classes)
+    # Per-class metrics: true positives, ground truth count, predicted count
+    class_tp = torch.zeros(num_classes)
+    class_gt_support = torch.zeros(num_classes)
+    class_pred_count = torch.zeros(num_classes)
 
     all_preds = []
     all_labels = []
 
     with torch.no_grad():
-        for batch_x, batch_y in dataloader:
-            batch_x = batch_x.to(device)
-            batch_y = batch_y.to(device)
+        for batch_x_raw, batch_y_raw in dataloader:
+            batch_x = batch_x_raw.to(device)
+            batch_y = batch_y_raw.to(device)
 
             outputs = model(batch_x)
             loss = criterion(outputs, batch_y)
@@ -137,24 +201,37 @@ def _evaluate(
             all_preds.extend(predicted.cpu().tolist())
             all_labels.extend(batch_y.cpu().tolist())
 
-            # Per-class accuracy
+            # Per-class metrics
             for i in range(num_classes):
-                mask = batch_y == i
-                class_total[i] += mask.sum().item()
-                class_correct[i] += ((predicted == batch_y) & mask).sum().item()
+                gt_mask = batch_y == i
+                pred_mask = predicted == i
+                class_gt_support[i] += gt_mask.sum().item()
+                class_pred_count[i] += pred_mask.sum().item()
+                class_tp[i] += (gt_mask & pred_mask).sum().item()
 
-    # Compute per-class accuracy
-    per_class_accuracy = {}
+    # Compute per-class precision, recall, F1, accuracy
+    per_class_metrics = {}
     for i in range(num_classes):
-        if class_total[i] > 0:
-            per_class_accuracy[i] = class_correct[i].item() / class_total[i].item()
-        else:
-            per_class_accuracy[i] = 0.0
+        tp = class_tp[i].item()
+        gt_support = class_gt_support[i].item()
+        pred_count = class_pred_count[i].item()
+
+        precision = tp / pred_count if pred_count > 0 else 0.0
+        recall = tp / gt_support if gt_support > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+        per_class_metrics[i] = {
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "gt_support": int(gt_support),
+            "predicted": int(pred_count),
+        }
 
     return {
         "loss": total_loss / num_batches if num_batches > 0 else 0.0,
         "accuracy": correct / total if total > 0 else 0.0,
-        "per_class_accuracy": per_class_accuracy,
+        "per_class_metrics": per_class_metrics,
         "num_samples": total,
         "predictions": all_preds,
         "labels": all_labels,
@@ -226,10 +303,165 @@ def _compute_class_weights(
     unique_classes, class_counts = torch.unique(labels, return_counts=True)
     n_samples = len(labels)
 
-    for class_id, count in zip(unique_classes, class_counts):
+    for class_id, count in zip(unique_classes, class_counts, strict=False):
         class_weights[class_id] = n_samples / (num_classes * count.float())
 
     return class_weights.to(device)
+
+
+def _load_and_preprocess_train_data(
+    train_path: Path,
+    verbose: bool,
+) -> tuple[torch.Tensor, torch.Tensor, dict, int | None]:
+    """Load training data and filter NaN values.
+
+    Returns:
+        Tuple of (activations, labels, train_data_dict, num_cells_per_trajectory)
+    """
+    if verbose:
+        print(f"Loading training data from {train_path}")
+
+    train_data = torch.load(train_path, map_location="cpu", weights_only=False)
+
+    # Validate probe type
+    probe_type = train_data.get("probe_type", train_data.get("config", {}).get("probe_type"))
+    if probe_type is not None and probe_type != "grid_tile":
+        raise ValueError(
+            f"Expected probe_type='grid_tile', got '{probe_type}'. This command only supports grid_tile probe data."
+        )
+
+    activations = train_data["activations"]
+    labels = train_data["labels"]
+
+    if verbose:
+        print(f"Loaded {activations.shape[0]} samples")
+        print(f"Activation dimension (with position): {activations.shape[1]}")
+        print(f"Number of unique labels: {labels.unique().shape[0]}")
+
+    # Filter out samples with NaN values
+    nan_mask = torch.isnan(activations).any(dim=1)
+    num_nan = nan_mask.sum().item()
+    if num_nan > 0:
+        if verbose:
+            print(
+                f"WARNING: Found {num_nan} samples with NaN values ({100 * num_nan / len(activations):.1f}%), filtering them out"
+            )
+        activations = activations[~nan_mask]
+        labels = labels[~nan_mask]
+        if verbose:
+            print(f"Remaining samples: {activations.shape[0]}")
+
+    num_cells_per_trajectory = train_data.get("num_cells_per_trajectory")
+    return activations, labels, train_data, num_cells_per_trajectory
+
+
+def _remap_labels(
+    labels: torch.Tensor,
+    verbose: bool,
+) -> tuple[torch.Tensor, int, dict[int, int], dict[int, int]]:
+    """Remap labels to contiguous indices.
+
+    Returns:
+        Tuple of (remapped_labels, num_classes, label_to_idx, idx_to_label)
+    """
+    unique_labels = torch.unique(labels).tolist()
+    num_classes = len(unique_labels)
+    label_to_idx = {label: idx for idx, label in enumerate(unique_labels)}
+    idx_to_label = {idx: label for label, idx in label_to_idx.items()}
+
+    if verbose:
+        print(f"Classes present in data: {unique_labels}")
+        if unique_labels != list(range(num_classes)):
+            print(f"Remapping to contiguous indices: {label_to_idx}")
+
+    remapped_labels = torch.tensor([label_to_idx[l.item()] for l in labels], dtype=labels.dtype)
+    return remapped_labels, num_classes, label_to_idx, idx_to_label
+
+
+def _load_separate_eval_data(
+    eval_path: Path,
+    label_to_idx: dict[int, int],
+    verbose: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Load and process separate evaluation data.
+
+    Returns:
+        Tuple of (eval_activations, eval_labels)
+    """
+    if verbose:
+        print(f"Loading evaluation data from {eval_path}")
+
+    eval_data = torch.load(eval_path, map_location="cpu", weights_only=False)
+    eval_activations = eval_data["activations"]
+    eval_labels_raw = eval_data["labels"]
+
+    # Remap eval labels using the same mapping (skip labels not in training)
+    eval_labels_list = []
+    valid_eval_mask = []
+    for l in eval_labels_raw:
+        if l.item() in label_to_idx:
+            eval_labels_list.append(label_to_idx[l.item()])
+            valid_eval_mask.append(True)
+        else:
+            valid_eval_mask.append(False)
+
+    valid_eval_mask_tensor = torch.tensor(valid_eval_mask)
+    if not valid_eval_mask_tensor.all():
+        num_skipped = (~valid_eval_mask_tensor).sum().item()
+        if verbose:
+            print(f"WARNING: Skipping {num_skipped} eval samples with labels not in training data")
+        eval_activations = eval_activations[valid_eval_mask_tensor]
+
+    eval_labels = torch.tensor(eval_labels_list, dtype=eval_labels_raw.dtype)
+
+    if verbose:
+        print(f"Loaded {eval_activations.shape[0]} evaluation samples")
+
+    return eval_activations, eval_labels
+
+
+def _print_final_results(
+    final_results: dict,
+    idx_to_label: dict[int, int],
+    debug_trajectory_activations: torch.Tensor | None,
+    debug_trajectory_labels: torch.Tensor | None,
+    model: nn.Module,
+    torch_device: torch.device,
+) -> None:
+    """Print final evaluation results including per-class metrics and debug grid."""
+    print(f"Accuracy: {final_results['accuracy']:.4f}")
+    print(f"Loss: {final_results['loss']:.4f}")
+    print(f"Number of samples: {final_results['num_samples']}")
+
+    # Print per-class metrics table
+    print("\nPer-class metrics:")
+    print("-" * 75)
+    print(f"{'Class':<10} {'Precision':>10} {'Recall':>10} {'F1-Score':>10} {'GT Support':>12} {'Predicted':>10}")
+    print("-" * 75)
+    for class_idx in sorted(final_results["per_class_metrics"].keys()):
+        metrics = final_results["per_class_metrics"][class_idx]
+        original_label = idx_to_label[class_idx]
+        symbol = CELL_ID_TO_SYMBOL[original_label]
+        print(
+            f"{symbol:<10} {metrics['precision']:>10.4f} {metrics['recall']:>10.4f} "
+            f"{metrics['f1']:>10.4f} {metrics['gt_support']:>12} {metrics['predicted']:>10}"
+        )
+    print("-" * 75)
+
+    # Print debug grid comparison using the first trajectory (saved before shuffling)
+    if debug_trajectory_activations is not None:
+        debug_x = debug_trajectory_activations.float().to(torch_device)
+        with torch.no_grad():
+            debug_outputs = model(debug_x)
+            _, debug_preds = torch.max(debug_outputs, 1)
+        _print_debug_grids(
+            activations=debug_trajectory_activations,
+            true_labels=debug_trajectory_labels,
+            pred_labels=debug_preds.cpu(),
+            idx_to_label=idx_to_label,
+        )
+    else:
+        print("\n(Debug grid not available: num_cells_per_trajectory not found in data)")
 
 
 def train_cognitive_map_probe(
@@ -294,60 +526,25 @@ def train_cognitive_map_probe(
     device_str = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
     torch_device = torch.device(device_str)
 
-    if verbose:
-        print(f"Using device: {torch_device}")
+    print(f"Using device: {torch_device}")
 
     # Load training data
     train_path = Path(train_data_path)
     if not train_path.exists():
         raise FileNotFoundError(f"Training data not found: {train_path}")
 
-    if verbose:
-        print(f"Loading training data from {train_path}")
-
-    train_data = torch.load(train_path, map_location="cpu", weights_only=False)
-
-    # Validate probe type
-    probe_type = train_data.get("probe_type", train_data.get("config", {}).get("probe_type"))
-    if probe_type is not None and probe_type != "grid_tile":
-        raise ValueError(
-            f"Expected probe_type='grid_tile', got '{probe_type}'. "
-            "This command only supports grid_tile probe data."
-        )
-
-    activations = train_data["activations"]
-    labels = train_data["labels"]
-
-    if verbose:
-        print(f"Loaded {activations.shape[0]} samples")
-        print(f"Activation dimension (with position): {activations.shape[1]}")
-        print(f"Number of unique labels: {labels.unique().shape[0]}")
-
-    # Filter out samples with NaN values
-    nan_mask = torch.isnan(activations).any(dim=1)
-    num_nan = nan_mask.sum().item()
-    if num_nan > 0:
-        if verbose:
-            print(f"WARNING: Found {num_nan} samples with NaN values ({100*num_nan/len(activations):.1f}%), filtering them out")
-        activations = activations[~nan_mask]
-        labels = labels[~nan_mask]
-        if verbose:
-            print(f"Remaining samples: {activations.shape[0]}")
+    activations, labels, train_data, num_cells_per_trajectory = _load_and_preprocess_train_data(train_path, verbose)
 
     # Remap labels to only include classes present in the data
-    # This avoids wasting model capacity on empty classes
-    unique_labels = torch.unique(labels).tolist()
-    num_classes = len(unique_labels)
-    label_to_idx = {label: idx for idx, label in enumerate(unique_labels)}
-    idx_to_label = {idx: label for label, idx in label_to_idx.items()}
+    remapped_labels, num_classes, label_to_idx, idx_to_label = _remap_labels(labels, verbose)
 
-    if verbose:
-        print(f"Classes present in data: {unique_labels}")
-        if unique_labels != list(range(num_classes)):
-            print(f"Remapping to contiguous indices: {label_to_idx}")
-
-    # Remap labels to contiguous indices
-    remapped_labels = torch.tensor([label_to_idx[l.item()] for l in labels], dtype=labels.dtype)
+    # Save first trajectory's data for debug visualization (before shuffling)
+    # This ensures we display a real, complete grid from the dataset
+    debug_trajectory_activations = None
+    debug_trajectory_labels = None
+    if num_cells_per_trajectory is not None and num_cells_per_trajectory <= len(activations):
+        debug_trajectory_activations = activations[:num_cells_per_trajectory].clone()
+        debug_trajectory_labels = remapped_labels[:num_cells_per_trajectory].clone()
 
     # Parse hidden dimensions
     hidden_dims_list = [int(d.strip()) for d in hidden_dims.split(",") if d.strip()]
@@ -367,8 +564,7 @@ def train_cognitive_map_probe(
         eval_activations = activations[eval_indices]
         eval_labels = remapped_labels[eval_indices]
 
-        if verbose:
-            print(f"Split: {train_activations.shape[0]} train, {eval_activations.shape[0]} eval")
+        print(f"Split: {train_activations.shape[0]} train, {eval_activations.shape[0]} eval")
     else:
         train_activations = activations
         train_labels = remapped_labels
@@ -378,50 +574,19 @@ def train_cognitive_map_probe(
         if not eval_path.exists():
             raise FileNotFoundError(f"Evaluation data not found: {eval_path}")
 
-        if verbose:
-            print(f"Loading evaluation data from {eval_path}")
-
-        eval_data = torch.load(eval_path, map_location="cpu", weights_only=False)
-        eval_activations = eval_data["activations"]
-        eval_labels_raw = eval_data["labels"]
-
-        # Remap eval labels using the same mapping (skip labels not in training)
-        eval_labels_list = []
-        valid_eval_mask = []
-        for l in eval_labels_raw:
-            if l.item() in label_to_idx:
-                eval_labels_list.append(label_to_idx[l.item()])
-                valid_eval_mask.append(True)
-            else:
-                valid_eval_mask.append(False)
-
-        valid_eval_mask = torch.tensor(valid_eval_mask)
-        if not valid_eval_mask.all():
-            num_skipped = (~valid_eval_mask).sum().item()
-            if verbose:
-                print(f"WARNING: Skipping {num_skipped} eval samples with labels not in training data")
-            eval_activations = eval_activations[valid_eval_mask]
-
-        eval_labels = torch.tensor(eval_labels_list, dtype=eval_labels_raw.dtype)
-
-        if verbose:
-            print(f"Loaded {eval_activations.shape[0]} evaluation samples")
+        eval_activations, eval_labels = _load_separate_eval_data(eval_path, label_to_idx, verbose)
 
     # Apply class balancing by upsampling if requested
     if balance_classes:
-        if verbose:
-            print("Balancing classes by upsampling...")
-            unique, counts = torch.unique(train_labels, return_counts=True)
-            print(f"  Before: {dict(zip(unique.tolist(), counts.tolist()))}")
+        print("Balancing classes by upsampling...")
+        unique, counts = torch.unique(train_labels, return_counts=True)
+        print(f"  Before: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
 
-        train_activations, train_labels = _balance_classes_by_upsampling(
-            train_activations, train_labels, seed=seed
-        )
+        train_activations, train_labels = _balance_classes_by_upsampling(train_activations, train_labels, seed=seed)
 
-        if verbose:
-            unique, counts = torch.unique(train_labels, return_counts=True)
-            print(f"  After: {dict(zip(unique.tolist(), counts.tolist()))}")
-            print(f"  New training set size: {train_activations.shape[0]}")
+        unique, counts = torch.unique(train_labels, return_counts=True)
+        print(f"  After: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
+        print(f"  New training set size: {train_activations.shape[0]}")
 
     # Create data loaders
     train_dataset = TensorDataset(train_activations.float(), train_labels.long())
@@ -452,11 +617,9 @@ def train_cognitive_map_probe(
 
     # Loss and optimizer
     if class_weight == "balanced":
-        if verbose:
-            print("Using balanced class weights in loss function")
+        print("Using balanced class weights in loss function")
         weights = _compute_class_weights(train_labels, num_classes, torch_device)
-        if verbose:
-            print(f"  Class weights: {weights.tolist()}")
+        print(f"  Class weights: {weights.tolist()}")
         criterion = nn.CrossEntropyLoss(weight=weights)
     else:
         criterion = nn.CrossEntropyLoss()
@@ -487,11 +650,13 @@ def train_cognitive_map_probe(
             best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
         # Update progress bar
-        epoch_iterator.set_postfix({
-            "train_loss": f"{train_loss:.4f}",
-            "eval_acc": f"{eval_results['accuracy']:.4f}",
-            "best_acc": f"{best_eval_accuracy:.4f}",
-        })
+        epoch_iterator.set_postfix(
+            {
+                "train_loss": f"{train_loss:.4f}",
+                "eval_acc": f"{eval_results['accuracy']:.4f}",
+                "best_acc": f"{best_eval_accuracy:.4f}",
+            }
+        )
 
     # Restore best model
     if best_model_state is not None:
@@ -506,13 +671,14 @@ def train_cognitive_map_probe(
     final_results = _evaluate(model, eval_loader, criterion, torch_device, num_classes)
 
     if verbose:
-        print(f"Accuracy: {final_results['accuracy']:.4f}")
-        print(f"Loss: {final_results['loss']:.4f}")
-        print(f"Number of samples: {final_results['num_samples']}")
-        print("\nPer-class accuracy:")
-        for class_idx, acc in sorted(final_results["per_class_accuracy"].items()):
-            original_label = idx_to_label[class_idx]
-            print(f"  Class {original_label} (idx {class_idx}): {acc:.4f}")
+        _print_final_results(
+            final_results=final_results,
+            idx_to_label=idx_to_label,
+            debug_trajectory_activations=debug_trajectory_activations,
+            debug_trajectory_labels=debug_trajectory_labels,
+            model=model,
+            torch_device=torch_device,
+        )
 
     # Determine output path
     if output_path is None:
@@ -523,9 +689,9 @@ def train_cognitive_map_probe(
         final_output_path = Path(output_path)
 
     # Save model
-    # Convert per_class_accuracy keys back to original labels for interpretability
-    per_class_accuracy_original = {
-        idx_to_label[idx]: acc for idx, acc in final_results["per_class_accuracy"].items()
+    # Convert per_class_metrics keys back to original labels for interpretability
+    per_class_metrics_original = {
+        idx_to_label[idx]: metrics for idx, metrics in final_results["per_class_metrics"].items()
     }
 
     save_data = {
@@ -555,7 +721,7 @@ def train_cognitive_map_probe(
             "best_eval_accuracy": best_eval_accuracy,
             "final_accuracy": final_results["accuracy"],
             "final_loss": final_results["loss"],
-            "per_class_accuracy": per_class_accuracy_original,
+            "per_class_metrics": per_class_metrics_original,
         },
     }
     torch.save(save_data, final_output_path)
