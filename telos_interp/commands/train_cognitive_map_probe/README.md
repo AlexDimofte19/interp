@@ -49,6 +49,7 @@ Best for:
 | `eval_split` | float | 0.2 | Fraction for validation (if no eval_data_path) |
 | `class_weight` | str \| None | None | Class weighting: None or "balanced" |
 | `balance_classes` | bool | False | Upsample minority classes to match majority |
+| `normalize` | bool | False | Normalize activations using training mean/std |
 | `device` | str \| None | None | Device ("cuda", "cpu"). Auto-detects if None |
 | `seed` | int | 42 | Random seed for reproducibility |
 | `verbose` | bool | True | Print training progress |
@@ -173,46 +174,40 @@ The trained model is saved as a `.pt` file containing:
 
 ```python
 {
-    "model_state_dict": dict,     # PyTorch model weights
-    "model_type": str,            # "lr" or "mlp"
-    "input_dim": int,             # Input dimension
-    "num_classes": int,           # Number of output classes
-    "hidden_dims": list | None,   # Hidden dimensions (MLP only)
-    "dropout": float | None,      # Dropout rate (MLP only)
-    "config": {
-        "train_data_path": str,
-        "eval_data_path": str | None,
-        "num_epochs": int,
-        "learning_rate": float,
-        "batch_size": int,
-        "weight_decay": float,
-        "hidden_dims": str,
-        "dropout": float,
-        "eval_split": float,
-        "seed": int,
-    },
-    "results": {
-        "best_eval_accuracy": float,
-        "final_accuracy": float,
-        "final_loss": float,
-        "per_class_accuracy": dict,
-    },
+    "model_state_dict": dict,       # PyTorch model weights
+    "model_type": str,              # "lr" or "mlp"
+    "input_dim": int,               # Input dimension
+    "num_classes": int,             # Number of output classes
+    "hidden_dims": list | None,     # Hidden dimensions (MLP only)
+    "dropout": float | None,        # Dropout rate (MLP only)
+    "label_to_idx": dict,           # Original label -> model output index
+    "idx_to_label": dict,           # Model output index -> original label
+    "scaler_mean": Tensor | None,   # Normalization mean (if normalize=True)
+    "scaler_std": Tensor | None,    # Normalization std (if normalize=True)
+    "config": { ... },              # Training configuration
+    "results": { ... },             # Training results (accuracy, loss, etc.)
 }
 ```
 
-## Loading a Trained Model
+## Loading and Using a Trained Probe
 
 ```python
-from interp-cli_interp.commands.train_cognitive_map_probe import load_cognitive_map_probe
+from telos_interp.commands.train_cognitive_map_probe import CognitiveMapProbe
 
-# Load model
-model = load_cognitive_map_probe("/path/to/model.pt", device="cuda")
+# Load probe
+probe = CognitiveMapProbe.load("/path/to/model.pt", device="cuda")
 
-# Use for inference
-model.eval()
-with torch.no_grad():
-    logits = model(activations)
-    predictions = logits.argmax(dim=1)
+# Get predictions (returns original label IDs, not internal indices)
+predictions = probe.predict(activations)  # shape: (N,)
+
+# Get class probabilities
+probs = probe.predict_proba(activations)  # shape: (N, num_classes)
+
+# Check if normalization is enabled (applied automatically in predict/predict_proba)
+print(f"Normalized: {probe.normalized}")
+
+# Access training results
+print(f"Accuracy: {probe.results['final_accuracy']}")
 ```
 
 ## Training Details

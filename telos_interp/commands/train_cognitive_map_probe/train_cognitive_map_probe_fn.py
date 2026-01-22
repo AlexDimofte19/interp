@@ -73,6 +73,184 @@ def _create_model(
         raise ValueError(f"Unknown model_type: {model_type}")
 
 
+class CognitiveMapProbe:
+    """A trained cognitive map probe with built-in normalization and prediction.
+
+    This class encapsulates a trained probe model along with normalization
+    parameters and label mappings, providing a simple interface for inference.
+
+    Example:
+        # Training
+        probe = train_cognitive_map_probe("train.pt", normalize=True)
+        probe.save("probe.pt")
+
+        # Inference
+        probe = CognitiveMapProbe.load("probe.pt")
+        probs = probe.predict_proba(activations)  # (N, num_classes)
+        labels = probe.predict(activations)        # (N,) original label IDs
+    """
+
+    def __init__(
+        self,
+        model: nn.Module,
+        model_type: ModelType,
+        input_dim: int,
+        label_to_idx: dict[int, int],
+        idx_to_label: dict[int, int],
+        hidden_dims: list[int] | None = None,
+        dropout: float | None = None,
+        scaler_mean: torch.Tensor | None = None,
+        scaler_std: torch.Tensor | None = None,
+        config: dict | None = None,
+        results: dict | None = None,
+        device: torch.device | str | None = None,
+    ):
+        """Initialize a CognitiveMapProbe.
+
+        Args:
+            model: The trained nn.Module (LogisticRegressionProbe or MLPProbe)
+            model_type: Type of model ("lr" or "mlp")
+            input_dim: Input dimension of the model
+            label_to_idx: Maps original label ID -> model output index
+            idx_to_label: Maps model output index -> original label ID
+            hidden_dims: Hidden layer dimensions (for MLP)
+            dropout: Dropout rate (for MLP)
+            scaler_mean: Mean for input normalization (None if no normalization)
+            scaler_std: Std for input normalization (None if no normalization)
+            config: Training configuration (for provenance)
+            results: Training results (accuracy, metrics, etc.)
+            device: Device to use for inference
+        """
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        elif isinstance(device, str):
+            device = torch.device(device)
+        self.device = device
+
+        self.model = model.to(self.device)
+        self.model.eval()
+
+        self.model_type = model_type
+        self.input_dim = input_dim
+        self.hidden_dims = hidden_dims
+        self.dropout = dropout
+
+        self.label_to_idx = label_to_idx
+        self.idx_to_label = idx_to_label
+        self.config = config or {}
+        self.results = results or {}
+
+        # Store normalization parameters
+        if scaler_mean is not None:
+            self.scaler_mean = scaler_mean.to(self.device)
+            self.scaler_std = scaler_std.to(self.device)
+        else:
+            self.scaler_mean = None
+            self.scaler_std = None
+
+    @property
+    def num_classes(self) -> int:
+        """Number of classes the probe predicts."""
+        return len(self.label_to_idx)
+
+    @property
+    def normalized(self) -> bool:
+        """Whether this probe applies input normalization."""
+        return self.scaler_mean is not None
+
+    def _normalize(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply normalization if enabled."""
+        if self.scaler_mean is not None:
+            return (x - self.scaler_mean) / self.scaler_std
+        return x
+
+    @torch.no_grad()
+    def predict_proba(self, activations: torch.Tensor) -> torch.Tensor:
+        """Get class probabilities for activations.
+
+        Args:
+            activations: Input tensor of shape (N, input_dim)
+
+        Returns:
+            Tensor of shape (N, num_classes) with class probabilities
+        """
+        self.model.eval()
+        x = activations.float().to(self.device)
+        x = self._normalize(x)
+        logits = self.model(x)
+        return torch.softmax(logits, dim=-1)
+
+    @torch.no_grad()
+    def predict(self, activations: torch.Tensor) -> torch.Tensor:
+        """Get predicted original label IDs for activations.
+
+        Args:
+            activations: Input tensor of shape (N, input_dim)
+
+        Returns:
+            Tensor of shape (N,) with original label IDs (not internal indices)
+        """
+        probs = self.predict_proba(activations)
+        pred_indices = torch.argmax(probs, dim=-1)
+        # Map indices back to original label IDs
+        original_labels = torch.tensor(
+            [self.idx_to_label[idx.item()] for idx in pred_indices],
+            dtype=torch.long,
+            device=activations.device,
+        )
+        return original_labels
+
+    def save(self, path: str | Path) -> None:
+        """Save the probe to a file."""
+        save_data = {
+            "model_state_dict": self.model.state_dict(),
+            "model_type": self.model_type,
+            "input_dim": self.input_dim,
+            "num_classes": self.num_classes,
+            "hidden_dims": self.hidden_dims,
+            "dropout": self.dropout,
+            "label_to_idx": self.label_to_idx,
+            "idx_to_label": self.idx_to_label,
+            "scaler_mean": self.scaler_mean.cpu() if self.scaler_mean is not None else None,
+            "scaler_std": self.scaler_std.cpu() if self.scaler_std is not None else None,
+            "config": self.config,
+            "results": self.results,
+        }
+        torch.save(save_data, path)
+
+    @classmethod
+    def load(cls, path: str | Path, device: str | None = None) -> "CognitiveMapProbe":
+        """Load a probe from a file."""
+        device_str = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+        torch_device = torch.device(device_str)
+
+        data = torch.load(path, map_location=torch_device, weights_only=False)
+
+        model = _create_model(
+            model_type=data["model_type"],
+            input_dim=data["input_dim"],
+            num_classes=data["num_classes"],
+            hidden_dims=data["hidden_dims"] or [],
+            dropout=data["dropout"] or 0.0,
+        )
+        model.load_state_dict(data["model_state_dict"])
+
+        return cls(
+            model=model,
+            model_type=data["model_type"],
+            input_dim=data["input_dim"],
+            label_to_idx=data["label_to_idx"],
+            idx_to_label=data["idx_to_label"],
+            hidden_dims=data["hidden_dims"],
+            dropout=data["dropout"],
+            scaler_mean=data.get("scaler_mean"),
+            scaler_std=data.get("scaler_std"),
+            config=data.get("config"),
+            results=data.get("results"),
+            device=torch_device,
+        )
+
+
 def _train_epoch(
     model: nn.Module,
     dataloader: DataLoader,
@@ -102,7 +280,7 @@ def _train_epoch(
 
 
 def _print_debug_grids(
-    activations: torch.Tensor,
+    positions: torch.Tensor,
     true_labels: torch.Tensor,
     pred_labels: torch.Tensor,
     idx_to_label: dict[int, int],
@@ -110,15 +288,15 @@ def _print_debug_grids(
     """Print debug grids showing observation vs prediction for one trajectory's grid.
 
     Args:
-        activations: Tensor with [..., row_id, col_id] at the end (one trajectory)
+        positions: Tensor of shape (n, 2) with [row_id, col_id] for each cell (original, non-normalized)
         true_labels: Ground truth label indices (remapped)
         pred_labels: Predicted label indices (remapped)
         idx_to_label: Maps model output index -> original cell ID
     """
-    n = len(activations)
+    n = len(positions)
 
-    # Extract positions from last 2 columns of activations
-    positions = activations[:, -2:].int()  # (n, 2) - row_id, col_id
+    # Convert positions to int (should already be integer values)
+    positions = positions.int()  # (n, 2) - row_id, col_id
 
     # Determine grid size from positions
     max_row = positions[:, 0].max().item() + 1
@@ -219,11 +397,13 @@ def _evaluate(
         precision = tp / pred_count if pred_count > 0 else 0.0
         recall = tp / gt_support if gt_support > 0 else 0.0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        accuracy = tp / gt_support if gt_support > 0 else 0.0  # Per-class accuracy
 
         per_class_metrics[i] = {
             "precision": precision,
             "recall": recall,
             "f1": f1,
+            "accuracy": accuracy,
             "gt_support": int(gt_support),
             "predicted": int(pred_count),
         }
@@ -307,6 +487,30 @@ def _compute_class_weights(
         class_weights[class_id] = n_samples / (num_classes * count.float())
 
     return class_weights.to(device)
+
+
+def _build_indices_for_trajectories(
+    trajectory_ids: torch.Tensor,
+    num_cells_per_trajectory: int,
+) -> torch.Tensor:
+    """Build flat sample indices from trajectory IDs.
+
+    Given a set of trajectory IDs, returns the indices of all samples
+    belonging to those trajectories. This keeps trajectory data together
+    while allowing trajectory-level shuffling and splitting.
+
+    Args:
+        trajectory_ids: Tensor of trajectory indices to include
+        num_cells_per_trajectory: Number of samples per trajectory
+
+    Returns:
+        1D tensor of sample indices (all samples from the specified trajectories)
+    """
+    indices_list = []
+    for traj_id in trajectory_ids:
+        start = traj_id.item() * num_cells_per_trajectory
+        indices_list.append(torch.arange(start, start + num_cells_per_trajectory))
+    return torch.cat(indices_list)
 
 
 def _load_and_preprocess_train_data(
@@ -424,6 +628,7 @@ def _print_final_results(
     final_results: dict,
     idx_to_label: dict[int, int],
     debug_trajectory_activations: torch.Tensor | None,
+    debug_trajectory_positions: torch.Tensor | None,
     debug_trajectory_labels: torch.Tensor | None,
     model: nn.Module,
     torch_device: torch.device,
@@ -435,27 +640,29 @@ def _print_final_results(
 
     # Print per-class metrics table
     print("\nPer-class metrics:")
-    print("-" * 75)
-    print(f"{'Class':<10} {'Precision':>10} {'Recall':>10} {'F1-Score':>10} {'GT Support':>12} {'Predicted':>10}")
-    print("-" * 75)
+    print("-" * 87)
+    print(
+        f"{'Class':<10} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1-Score':>10} {'GT Support':>12} {'Predicted':>10}"
+    )
+    print("-" * 87)
     for class_idx in sorted(final_results["per_class_metrics"].keys()):
         metrics = final_results["per_class_metrics"][class_idx]
         original_label = idx_to_label[class_idx]
         symbol = CELL_ID_TO_SYMBOL[original_label]
         print(
-            f"{symbol:<10} {metrics['precision']:>10.4f} {metrics['recall']:>10.4f} "
+            f"{symbol:<10} {metrics['accuracy']:>10.4f} {metrics['precision']:>10.4f} {metrics['recall']:>10.4f} "
             f"{metrics['f1']:>10.4f} {metrics['gt_support']:>12} {metrics['predicted']:>10}"
         )
-    print("-" * 75)
+    print("-" * 87)
 
     # Print debug grid comparison using the first trajectory (saved before shuffling)
-    if debug_trajectory_activations is not None:
+    if debug_trajectory_activations is not None and debug_trajectory_positions is not None:
         debug_x = debug_trajectory_activations.float().to(torch_device)
         with torch.no_grad():
             debug_outputs = model(debug_x)
             _, debug_preds = torch.max(debug_outputs, 1)
         _print_debug_grids(
-            activations=debug_trajectory_activations,
+            positions=debug_trajectory_positions,
             true_labels=debug_trajectory_labels,
             pred_labels=debug_preds.cpu(),
             idx_to_label=idx_to_label,
@@ -476,12 +683,14 @@ def train_cognitive_map_probe(
     hidden_dims: str = "512,256",
     dropout: float = 0.1,
     eval_split: float = 0.2,
+    subset: float = 1.0,
     class_weight: ClassWeight = None,
     balance_classes: bool = False,
+    normalize: bool = False,
     device: str | None = None,
     seed: int = 42,
     verbose: bool = True,
-) -> None:
+) -> CognitiveMapProbe:
     """Train a cognitive map probing classifier on prepared activations.
 
     Takes a .pt file produced by prepare_activations_for_probing with
@@ -507,15 +716,24 @@ def train_cognitive_map_probe(
         dropout: Dropout rate for MLP (ignored for lr)
         eval_split: Fraction of training data to use for validation
             (only used if eval_data_path is not provided)
+        subset: Fraction of full trajectories to use (0.0 to 1.0, default 1.0).
+            Applied before train/eval split. If the data has trajectory info,
+            subsets by complete trajectories; otherwise subsets by samples.
         class_weight: How to weight classes in the loss function:
             - None: No class weighting (default)
             - "balanced": Weight inversely proportional to class frequency
         balance_classes: If True, upsample minority classes to match the
             majority class count before training
+        normalize: If True, normalize activations using mean and std computed
+            from training data. The normalization parameters are saved with
+            the probe and applied automatically during inference.
         device: Device to use for training (e.g., "cuda", "cpu").
             If not provided, uses CUDA if available.
         seed: Random seed for reproducibility
         verbose: Print training progress
+
+    Returns:
+        Trained CognitiveMapProbe instance (also saved to output_path)
     """
     # Set random seed
     torch.manual_seed(seed)
@@ -535,29 +753,77 @@ def train_cognitive_map_probe(
 
     activations, labels, train_data, num_cells_per_trajectory = _load_and_preprocess_train_data(train_path, verbose)
 
+    # Validate and apply subset parameter
+    if not 0.0 < subset <= 1.0:
+        raise ValueError(f"subset must be in (0.0, 1.0], got {subset}")
+
+    if subset < 1.0:
+        if num_cells_per_trajectory is not None and num_cells_per_trajectory > 0:
+            # Subset by complete trajectories, randomly selected (not just first N)
+            num_trajectories = len(activations) // num_cells_per_trajectory
+            num_trajectories_to_keep = max(1, int(num_trajectories * subset))
+
+            # Shuffle trajectory indices and select subset
+            trajectory_perm = torch.randperm(num_trajectories)
+            selected_trajectories = trajectory_perm[:num_trajectories_to_keep]
+
+            # Build sample indices and reorder data by selected trajectories
+            selected_indices = _build_indices_for_trajectories(selected_trajectories, num_cells_per_trajectory)
+            activations = activations[selected_indices]
+            labels = labels[selected_indices]
+
+            print(f"Subset: keeping {num_trajectories_to_keep}/{num_trajectories} trajectories ({subset * 100:.1f}%)")
+            print(f"  Remaining samples: {len(activations)}")
+        else:
+            # Fallback: shuffle then subset by samples if no trajectory info
+            perm = torch.randperm(len(activations))
+            num_samples_to_keep = max(1, int(len(activations) * subset))
+            activations = activations[perm[:num_samples_to_keep]]
+            labels = labels[perm[:num_samples_to_keep]]
+            print(f"Subset: keeping {num_samples_to_keep} samples ({subset * 100:.1f}%)")
+
     # Remap labels to only include classes present in the data
     remapped_labels, num_classes, label_to_idx, idx_to_label = _remap_labels(labels, verbose)
 
-    # Save first trajectory's data for debug visualization (before shuffling)
-    # This ensures we display a real, complete grid from the dataset
+    # Save first trajectory's data for debug visualization
+    # Data is already shuffled at trajectory level, so first trajectory is random
     debug_trajectory_activations = None
+    debug_trajectory_positions = None
     debug_trajectory_labels = None
     if num_cells_per_trajectory is not None and num_cells_per_trajectory <= len(activations):
-        debug_trajectory_activations = activations[:num_cells_per_trajectory].clone()
-        debug_trajectory_labels = remapped_labels[:num_cells_per_trajectory].clone()
+        debug_idx_start = 0
+        debug_idx_end = num_cells_per_trajectory
+        debug_trajectory_activations = activations[debug_idx_start:debug_idx_end].clone()
+        # Save positions separately (last 2 columns) before any normalization
+        debug_trajectory_positions = activations[debug_idx_start:debug_idx_end, -2:].clone()
+        debug_trajectory_labels = remapped_labels[debug_idx_start:debug_idx_end].clone()
 
     # Parse hidden dimensions
     hidden_dims_list = [int(d.strip()) for d in hidden_dims.split(",") if d.strip()]
 
     # Split data if no separate eval file provided
     if eval_data_path is None:
-        # Shuffle and split
         num_samples = activations.shape[0]
-        indices = torch.randperm(num_samples)
-        split_idx = int(num_samples * (1 - eval_split))
 
-        train_indices = indices[:split_idx]
-        eval_indices = indices[split_idx:]
+        if num_cells_per_trajectory is not None and num_cells_per_trajectory > 0:
+            # Split by complete trajectories - no trajectory appears in both sets
+            num_trajectories = num_samples // num_cells_per_trajectory
+            trajectory_perm = torch.randperm(num_trajectories)
+            num_train_trajectories = int(num_trajectories * (1 - eval_split))
+
+            train_trajectory_ids = trajectory_perm[:num_train_trajectories]
+            eval_trajectory_ids = trajectory_perm[num_train_trajectories:]
+
+            train_indices = _build_indices_for_trajectories(train_trajectory_ids, num_cells_per_trajectory)
+            eval_indices = _build_indices_for_trajectories(eval_trajectory_ids, num_cells_per_trajectory)
+
+            print(f"Split by trajectories: {len(train_trajectory_ids)} train, {len(eval_trajectory_ids)} eval")
+        else:
+            # Fallback: shuffle samples if no trajectory info
+            indices = torch.randperm(num_samples)
+            split_idx = int(num_samples * (1 - eval_split))
+            train_indices = indices[:split_idx]
+            eval_indices = indices[split_idx:]
 
         train_activations = activations[train_indices]
         train_labels = remapped_labels[train_indices]
@@ -588,6 +854,19 @@ def train_cognitive_map_probe(
         print(f"  After: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
         print(f"  New training set size: {train_activations.shape[0]}")
 
+    # Compute normalization parameters from training data (before creating loaders)
+    scaler_mean = None
+    scaler_std = None
+    if normalize:
+        scaler_mean = train_activations.mean(dim=0)
+        scaler_std = train_activations.std(dim=0)
+        # Avoid division by zero
+        scaler_std = torch.where(scaler_std > 1e-8, scaler_std, torch.ones_like(scaler_std))
+        # Normalize both train and eval using training statistics
+        train_activations = (train_activations - scaler_mean) / scaler_std
+        eval_activations = (eval_activations - scaler_mean) / scaler_std
+        print(f"Normalization enabled: computed mean/std from {train_activations.shape[0]} training samples")
+
     # Create data loaders
     train_dataset = TensorDataset(train_activations.float(), train_labels.long())
     eval_dataset = TensorDataset(eval_activations.float(), eval_labels.long())
@@ -611,8 +890,7 @@ def train_cognitive_map_probe(
         print(f"Model type: {model_type}")
         print(f"Input dimension: {input_dim}")
         print(f"Number of classes: {num_classes}")
-        if model_type == "mlp":
-            print(f"Hidden dimensions: {hidden_dims_list}")
+        print(f"Hidden dimensions: {hidden_dims_list}")
         print(f"Number of parameters: {num_params:,}")
 
     # Loss and optimizer
@@ -625,29 +903,23 @@ def train_cognitive_map_probe(
         criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-    # Learning rate scheduler
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
-
     # Training loop
     best_eval_accuracy = 0.0
-    best_model_state = None
+    # best_model_state = None
 
-    if verbose:
-        print(f"\nTraining for {num_epochs} epochs...")
+    print(f"\nTraining for {num_epochs} epochs...")
 
     epoch_iterator = tqdm(range(num_epochs), desc="Training", disable=not verbose)
 
     for _ in epoch_iterator:
         train_loss = _train_epoch(model, train_loader, criterion, optimizer, torch_device)
-        scheduler.step()
 
         # Evaluate
         eval_results = _evaluate(model, eval_loader, criterion, torch_device, num_classes)
 
         # Track best model
-        if eval_results["accuracy"] > best_eval_accuracy:
-            best_eval_accuracy = eval_results["accuracy"]
-            best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        best_eval_accuracy = max(best_eval_accuracy, eval_results["accuracy"])
+        # best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
         # Update progress bar
         epoch_iterator.set_postfix(
@@ -659,51 +931,49 @@ def train_cognitive_map_probe(
         )
 
     # Restore best model
-    if best_model_state is not None:
-        model.load_state_dict(best_model_state)
+    # if best_model_state is not None:
+    # model.load_state_dict(best_model_state)
 
     # Final evaluation
-    if verbose:
-        print("\n" + "=" * 60)
-        print("FINAL EVALUATION (best model)")
-        print("=" * 60)
+    print("\n" + "=" * 60)
+    print("FINAL EVALUATION (best model)")
+    print("=" * 60)
 
     final_results = _evaluate(model, eval_loader, criterion, torch_device, num_classes)
 
     if verbose:
+        # Normalize debug activations if normalization is enabled (model expects normalized input)
+        debug_activations_for_display = debug_trajectory_activations
+        if normalize and debug_trajectory_activations is not None:
+            debug_activations_for_display = (debug_trajectory_activations - scaler_mean) / scaler_std
+
         _print_final_results(
             final_results=final_results,
             idx_to_label=idx_to_label,
-            debug_trajectory_activations=debug_trajectory_activations,
+            debug_trajectory_activations=debug_activations_for_display,
+            debug_trajectory_positions=debug_trajectory_positions,
             debug_trajectory_labels=debug_trajectory_labels,
             model=model,
             torch_device=torch_device,
         )
 
-    # Determine output path
-    if output_path is None:
-        output_dir = train_path.parent
-        output_filename = f"cognitive_map_probe_{model_type}.pt"
-        final_output_path = output_dir / output_filename
-    else:
-        final_output_path = Path(output_path)
-
-    # Save model
     # Convert per_class_metrics keys back to original labels for interpretability
     per_class_metrics_original = {
         idx_to_label[idx]: metrics for idx, metrics in final_results["per_class_metrics"].items()
     }
 
-    save_data = {
-        "model_state_dict": model.state_dict(),
-        "model_type": model_type,
-        "input_dim": input_dim,
-        "num_classes": num_classes,
-        "hidden_dims": hidden_dims_list if model_type == "mlp" else None,
-        "dropout": dropout if model_type == "mlp" else None,
-        "label_to_idx": label_to_idx,  # Maps original label -> model output index
-        "idx_to_label": idx_to_label,  # Maps model output index -> original label
-        "config": {
+    # Create the CognitiveMapProbe instance
+    probe = CognitiveMapProbe(
+        model=model,
+        model_type=model_type,
+        input_dim=input_dim,
+        label_to_idx=label_to_idx,
+        idx_to_label=idx_to_label,
+        hidden_dims=hidden_dims_list if model_type == "mlp" else None,
+        dropout=dropout if model_type == "mlp" else None,
+        scaler_mean=scaler_mean,
+        scaler_std=scaler_std,
+        config={
             "train_data_path": str(train_path),
             "eval_data_path": str(eval_data_path) if eval_data_path else None,
             "num_epochs": num_epochs,
@@ -713,48 +983,32 @@ def train_cognitive_map_probe(
             "hidden_dims": hidden_dims,
             "dropout": dropout,
             "eval_split": eval_split,
+            "subset": subset,
             "class_weight": class_weight,
             "balance_classes": balance_classes,
+            "normalize": normalize,
             "seed": seed,
         },
-        "results": {
+        results={
             "best_eval_accuracy": best_eval_accuracy,
             "final_accuracy": final_results["accuracy"],
             "final_loss": final_results["loss"],
             "per_class_metrics": per_class_metrics_original,
         },
-    }
-    torch.save(save_data, final_output_path)
-
-    if verbose:
-        print(f"\nModel saved to {final_output_path}")
-        print(f"Best evaluation accuracy: {best_eval_accuracy:.4f}")
-
-
-def load_cognitive_map_probe(model_path: str, device: str | None = None) -> nn.Module:
-    """Load a trained cognitive map probe.
-
-    Args:
-        model_path: Path to the saved model
-        device: Device to load model to
-
-    Returns:
-        Loaded model
-    """
-    device_str = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
-    torch_device = torch.device(device_str)
-
-    data = torch.load(model_path, map_location=torch_device, weights_only=False)
-
-    model = _create_model(
-        model_type=data["model_type"],
-        input_dim=data["input_dim"],
-        num_classes=data["num_classes"],
-        hidden_dims=data["hidden_dims"] or [],
-        dropout=data["dropout"] or 0.0,
+        device=torch_device,
     )
-    model.load_state_dict(data["model_state_dict"])
-    model = model.to(torch_device)
-    model.eval()
 
-    return model
+    # Save the probe
+    if output_path is None:
+        output_dir = train_path.parent
+        output_filename = f"cognitive_map_probe_{model_type}.pt"
+        final_output_path = output_dir / output_filename
+    else:
+        final_output_path = Path(output_path)
+
+    probe.save(final_output_path)
+
+    print(f"\nModel saved to {final_output_path}")
+    print(f"Best evaluation accuracy: {best_eval_accuracy:.4f}")
+
+    return probe
