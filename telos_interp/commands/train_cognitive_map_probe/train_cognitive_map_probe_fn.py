@@ -1006,6 +1006,7 @@ def train_cognitive_map_probe(
     else:
         final_output_path = Path(output_path)
 
+    final_output_path.parent.mkdir(parents=True, exist_ok=True)
     probe.save(final_output_path)
 
     print(f"\nModel saved to {final_output_path}")
