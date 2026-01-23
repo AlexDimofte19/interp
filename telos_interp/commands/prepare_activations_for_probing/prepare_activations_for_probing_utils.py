@@ -1,22 +1,20 @@
 """Utility functions for loading activations from nested folder structure."""
 
-import os
 import re
 from pathlib import Path
 
 import torch
 
-
 # Cell identity symbol to ID mapping
 CELL_SYMBOL_TO_ID = {
-    'A': 0,  # Agent
-    '#': 1,  # Wall
-    'G': 2,  # Goal
-    '_': 3,  # Empty
-    'D': 4,  # Door
-    'K': 5,  # Key
-    '?': 6,  # Unknown
-    '+': 7,  # Padding
+    "A": 0,  # Agent
+    "#": 1,  # Wall
+    "G": 2,  # Goal
+    "_": 3,  # Empty
+    "D": 4,  # Door
+    "K": 5,  # Key
+    "?": 6,  # Unknown
+    "+": 7,  # Padding
 }
 
 # Reverse mapping for convenience
@@ -65,15 +63,15 @@ def parse_grid_state(
     parsed_cells: list[list[int]] = []
     actual_grid_size = 0
 
-    for line in data_lines:
-        line = line.rstrip()
+    for line_raw in data_lines:
+        line = line_raw.rstrip()
         if not line:
             continue
 
         # Extract row index and cells
         # The row starts with the row number, followed by cells
         # Use regex to find the row number at the start
-        match = re.match(r'^(\d+)\s+', line)
+        match = re.match(r"^(\d+)\s+", line)
         if not match:
             continue
 
@@ -81,7 +79,7 @@ def parse_grid_state(
         actual_grid_size = max(actual_grid_size, row_id + 1)
 
         # Get the rest of the line after the row number
-        rest = line[match.end():]
+        rest = line[match.end() :]
 
         # Extract cell symbols - they are single characters separated by spaces
         # Split by whitespace and filter to get only valid cell symbols
@@ -99,13 +97,11 @@ def parse_grid_state(
     target_size = pad_to_size if pad_to_size is not None else actual_grid_size
 
     if target_size < actual_grid_size:
-        raise ValueError(
-            f"pad_to_size ({target_size}) is smaller than actual grid size ({actual_grid_size})"
-        )
+        raise ValueError(f"pad_to_size ({target_size}) is smaller than actual grid size ({actual_grid_size})")
 
     # Build a complete grid with padding
     result: list[list[int]] = []
-    padding_id = CELL_SYMBOL_TO_ID['+']
+    padding_id = CELL_SYMBOL_TO_ID["+"]
 
     # Create a lookup for existing cells
     cell_lookup = {(cell[0], cell[1]): cell[2] for cell in parsed_cells}
@@ -294,8 +290,8 @@ def parse_index_specification(spec: str, available_indices: list[int]) -> list[i
     requested_indices = set()
 
     parts = spec.split(",")
-    for part in parts:
-        part = part.strip()
+    for part_raw in parts:
+        part = part_raw.strip()
         if not part:
             continue
 
@@ -326,8 +322,8 @@ def parse_index_specification(spec: str, available_indices: list[int]) -> list[i
         else:
             try:
                 idx = int(part)
-            except ValueError:
-                raise ValueError(f"Invalid index specification: '{part}'")
+            except ValueError as e:
+                raise ValueError(f"Invalid index specification: '{part}'") from e
 
             if idx < 0:
                 idx = max_index + idx

@@ -197,7 +197,7 @@ def _process_single_folder(
         if activation is None:
             skipped += 1
             if verbose:
-                print(f"  Skipped: no activations found")
+                print("  Skipped: no activations found")
             continue
 
         # Load corresponding trajectory JSON
@@ -298,7 +298,7 @@ def _process_grid_tile_trajectory(
 
     if num_cells == 0:
         if verbose:
-            print(f"  Skipped: no triples after sampling")
+            print("  Skipped: no triples after sampling")
         return None
 
     # Check consistency of cell counts across trajectories
@@ -338,7 +338,7 @@ def _process_distance_trajectory(
         astar_distance = grid_params.get("astar_distance")
         if astar_distance is None:
             if verbose:
-                print(f"  Skipped: astar_distance not found in grid_params")
+                print("  Skipped: astar_distance not found in grid_params")
             return None
     except (KeyError, TypeError) as e:
         if verbose:
@@ -367,7 +367,7 @@ def _process_action_sequence_trajectory(
         steps = trajectory_data.get("steps", [])
         if not steps:
             if verbose:
-                print(f"  Skipped: no steps found in trajectory")
+                print("  Skipped: no steps found in trajectory")
             return None
 
         action_ids = []
@@ -385,7 +385,7 @@ def _process_action_sequence_trajectory(
 
         if not action_ids:
             if verbose:
-                print(f"  Skipped: no valid actions found")
+                print("  Skipped: no valid actions found")
             return None
 
     except (KeyError, TypeError) as e:
@@ -431,7 +431,7 @@ def _generate_filename(
         if pad_to_size is not None:
             filename = filename.replace(".pt", f"_pad{pad_to_size}.pt")
         elif num_cells is not None:
-            inferred_size = int(num_cells ** 0.5)
+            inferred_size = int(num_cells**0.5)
             filename = filename.replace(".pt", f"_grid{inferred_size}.pt")
 
         # Add sampling info to filename (only relevant for grid_tile)
@@ -550,14 +550,16 @@ def prepare_activations_for_probing(
     # Check if we're in multi-size mode
     multi_size = _is_multi_size_mode(activations_dir_path, trajectories_dir_path)
 
-    print(f"Extraction parameters:")
+    print("Extraction parameters:")
     print(f"  probe_type: {probe_type}")
     print(f"  layers: {layers}")
     print(f"  steps: {steps}")
     if probe_type == "grid_tile":
         print(f"  grid_step_idx (for grid parsing): {grid_step_idx}")
         print(f"  pad_to_size: {pad_to_size if pad_to_size else 'auto (use actual grid size)'}")
-        print(f"  max_positions_per_trajectory: {max_positions_per_trajectory if max_positions_per_trajectory else 'all'}")
+        print(
+            f"  max_positions_per_trajectory: {max_positions_per_trajectory if max_positions_per_trajectory else 'all'}"
+        )
         print(f"  balance_classes_per_trajectory: {balance_classes_per_trajectory}")
     if seed is not None:
         print(f"  seed: {seed}")
@@ -806,9 +808,9 @@ def _process_multi_size_mode(
     activation_dim = None
 
     for size_name in common_sizes:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Processing {size_name}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         act_path = act_names[size_name]
         traj_path = traj_names[size_name]
@@ -855,7 +857,9 @@ def _process_multi_size_mode(
         if activation_dim is None:
             activation_dim = current_activation_dim
         elif current_activation_dim != activation_dim:
-            print(f"  Warning: Activation dimension mismatch ({current_activation_dim} vs {activation_dim}), skipping {size_name}")
+            print(
+                f"  Warning: Activation dimension mismatch ({current_activation_dim} vs {activation_dim}), skipping {size_name}"
+            )
             total_skipped += skipped + len(all_vectors)
             continue
 
@@ -912,9 +916,9 @@ def _process_multi_size_mode(
         final_labels = torch.cat(merged_labels, dim=0)
         sequence_lengths_tensor = None
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("MERGED RESULTS")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Total samples: {final_vectors.shape[0]}")
     print(f"Activation dimension: {activation_dim}")
     print(f"Output tensor shape: {final_vectors.shape}")
@@ -923,7 +927,7 @@ def _process_multi_size_mode(
     if probe_type == "action_sequence":
         print(f"Max sequence length: {final_labels.shape[1]}")
     print(f"Total skipped: {total_skipped}")
-    print(f"Per-size breakdown:")
+    print("Per-size breakdown:")
     for size_name, info in all_size_results.items():
         print(f"  {size_name}: {info['num_trajectories']} trajectories, {info['num_samples']} samples")
 

@@ -2,7 +2,6 @@
 
 import json
 from dataclasses import dataclass
-from typing import Union
 
 import nnsight
 import pandas as pd
@@ -299,14 +298,14 @@ class ApplyProbeConfig:
         print(f"Score: {score}")
 
 
-TrainProbe = Union[
-    TrainMulticlassProbeConfig,
-    ProbePredictConfig,
-    ProbeEvaluatePredictionsConfig,
-    ProbeEvalOnJsonlConfig,
-    TrainProbeConfig,
-    ApplyProbeConfig,
-]
+TrainProbe = (
+    TrainMulticlassProbeConfig
+    | ProbePredictConfig
+    | ProbeEvaluatePredictionsConfig
+    | ProbeEvalOnJsonlConfig
+    | TrainProbeConfig
+    | ApplyProbeConfig
+)
 
 
 def train_probe(config: TrainProbe):

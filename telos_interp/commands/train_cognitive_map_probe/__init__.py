@@ -1,13 +1,13 @@
 from .train_cognitive_map_probe_fn import (
+    CognitiveMapProbe,
     LogisticRegressionProbe,
     MLPProbe,
-    load_cognitive_map_probe,
     train_cognitive_map_probe,
 )
 
 __all__ = [
+    "CognitiveMapProbe",
     "train_cognitive_map_probe",
-    "load_cognitive_map_probe",
     "LogisticRegressionProbe",
     "MLPProbe",
 ]

@@ -3,11 +3,9 @@
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
-
 from telos_interp.commands.gather_activations.gather_activations_utils import (
     parse_index_specification,
     sanitize_model_id,
@@ -18,7 +16,6 @@ from telos_interp.commands.gather_activations.trajectory_activations import (
     reconstruct_text_from_tokens,
     save_activations_to_files,
 )
-
 
 # =============================================================================
 # Tests for parse_index_specification
@@ -280,9 +277,7 @@ class TestSaveActivationsToFiles:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_base = Path(tmpdir)
-            save_activations_to_files(
-                activations, output_base, step_idx=0, category="grid_state"
-            )
+            save_activations_to_files(activations, output_base, step_idx=0, category="grid_state")
 
             # Check directory structure
             assert (output_base / "layer_0" / "step_0" / "grid_state").exists()
@@ -306,9 +301,7 @@ class TestSaveActivationsToFiles:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_base = Path(tmpdir)
-            save_activations_to_files(
-                activations, output_base, step_idx=None, category="prompt_prefix"
-            )
+            save_activations_to_files(activations, output_base, step_idx=None, category="prompt_prefix")
 
             # Check directory structure (no step folder)
             assert (output_base / "layer_0" / "prompt_prefix").exists()
@@ -320,9 +313,7 @@ class TestSaveActivationsToFiles:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_base = Path(tmpdir)
-            save_activations_to_files(
-                activations, output_base, step_idx=0, category="output"
-            )
+            save_activations_to_files(activations, output_base, step_idx=0, category="output")
             # Should not create any directories
             assert not (output_base / "layer_0").exists()
 
@@ -338,9 +329,9 @@ class TestCopyActivationsToStep:
     def test_copy_to_step(self):
         """Test copying activations from source to step folder."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            source_base = tmpdir / "source"
-            output_base = tmpdir / "output"
+            tmpdir_path = Path(tmpdir)
+            source_base = tmpdir_path / "source"
+            output_base = tmpdir_path / "output"
 
             # Create source structure
             source_dir = source_base / "layer_0" / "prompt_prefix"
@@ -365,14 +356,12 @@ class TestCopyActivationsToStep:
     def test_copy_nonexistent_source(self):
         """Test copying from nonexistent source doesn't raise error."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            source_base = tmpdir / "nonexistent"
-            output_base = tmpdir / "output"
+            tmpdir_path = Path(tmpdir)
+            source_base = tmpdir_path / "nonexistent"
+            output_base = tmpdir_path / "output"
 
             # Should not raise error
-            copy_activations_to_step(
-                source_base, output_base, step_idx=0, category="prompt_prefix", layer_indices=[0]
-            )
+            copy_activations_to_step(source_base, output_base, step_idx=0, category="prompt_prefix", layer_indices=[0])
 
             # Nothing should be created
             assert not (output_base / "layer_0").exists()
@@ -403,13 +392,11 @@ class TestTrajectoryIntegration:
                 "prompt_template_n_tokens": 365,
                 "prompt_prefix_n_tokens": 357,
                 "prompt_prefix_tokens": [
-                    {"id": i, "token": f"prefix_{i}", "token_id": i, "token_groups": ["prompt"]}
-                    for i in range(10)
+                    {"id": i, "token": f"prefix_{i}", "token_id": i, "token_groups": ["prompt"]} for i in range(10)
                 ],
                 "prompt_suffix_n_tokens": 4,
                 "prompt_suffix_tokens": [
-                    {"id": i, "token": f"suffix_{i}", "token_id": i, "token_groups": ["prompt"]}
-                    for i in range(4)
+                    {"id": i, "token": f"suffix_{i}", "token_id": i, "token_groups": ["prompt"]} for i in range(4)
                 ],
             },
             "steps": [
@@ -423,15 +410,13 @@ class TestTrajectoryIntegration:
                     ],
                     "prompt_suffix_n_tokens": 4,
                     "prompt_suffix_tokens": [
-                        {"id": i, "token": f"suffix_{i}", "token_id": i, "token_groups": ["prompt"]}
-                        for i in range(4)
+                        {"id": i, "token": f"suffix_{i}", "token_id": i, "token_groups": ["prompt"]} for i in range(4)
                     ],
                     "agent_action": "UP",
                     "output_text": "...",
                     "output_n_tokens": 100,
                     "output_tokens": [
-                        {"id": i, "token": f"out0_{i}", "token_id": i, "token_groups": ["output"]}
-                        for i in range(100)
+                        {"id": i, "token": f"out0_{i}", "token_id": i, "token_groups": ["output"]} for i in range(100)
                     ],
                 },
                 {
@@ -444,15 +429,13 @@ class TestTrajectoryIntegration:
                     ],
                     "prompt_suffix_n_tokens": 4,
                     "prompt_suffix_tokens": [
-                        {"id": i, "token": f"suffix_{i}", "token_id": i, "token_groups": ["prompt"]}
-                        for i in range(4)
+                        {"id": i, "token": f"suffix_{i}", "token_id": i, "token_groups": ["prompt"]} for i in range(4)
                     ],
                     "agent_action": "RIGHT",
                     "output_text": "...",
                     "output_n_tokens": 80,
                     "output_tokens": [
-                        {"id": i, "token": f"out1_{i}", "token_id": i, "token_groups": ["output"]}
-                        for i in range(80)
+                        {"id": i, "token": f"out1_{i}", "token_id": i, "token_groups": ["output"]} for i in range(80)
                     ],
                 },
             ],
