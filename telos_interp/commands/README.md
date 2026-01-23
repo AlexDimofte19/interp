@@ -16,6 +16,12 @@ The typical workflow for cognitive map probing follows these steps:
                           train_cognitive_map_probe
                                                     ↓
                                          [Trained probe .pt]
+                                                    ↓
+                         apply_cognitive_map_probe ←───────────┐
+                                                    ↓          │
+                            [Updated Trajectory JSONs with     │
+                             probe predictions in tokens]      │
+                                         [Activation .pt files]─┘
 ```
 
 ## Commands
@@ -102,6 +108,34 @@ See [`train_cognitive_map_probe/README.md`](train_cognitive_map_probe/README.md)
 
 ---
 
+### apply_cognitive_map_probe
+
+Apply a trained probe to trajectory activations and store predictions in the trajectory JSON files.
+
+```bash
+interp-cli apply_cognitive_map_probe \
+    --activations-dir /path/to/activations \
+    --trajectories-dir /path/to/trajectories \
+    --probe-path /path/to/probe.pt \
+    --layers 20 \
+    --steps all \
+    --output-indices -1
+```
+
+**Key options:**
+| Option | Description |
+|--------|-------------|
+| `--activations-dir` | Directory with activation folders |
+| `--trajectories-dir` | Directory with trajectory JSONs |
+| `--probe-path` | Path to trained probe .pt file |
+| `--output-dir` | Output directory for modified JSONs (optional) |
+| `--layers` | Layer indices to process |
+| `--output-indices` | Token indices for output category |
+
+See [`apply_cognitive_map_probe/README.md`](apply_cognitive_map_probe/README.md) for full documentation.
+
+---
+
 ## Quick Start Example
 
 ```bash
@@ -127,4 +161,14 @@ interp-cli train_cognitive_map_probe \
     --model-type mlp \
     --hidden-dims "512,256" \
     --num-epochs 100
+
+# 4. Apply probes to trajectories
+interp-cli apply_cognitive_map_probe \
+    --activations-dir /data/activations/size5 \
+    --trajectories-dir /data/trajectories/size5 \
+    --probe-path /path/to/cognitive_map_probe_mlp.pt \
+    --output-dir /data/trajectories_with_probes/size5 \
+    --layers 20 \
+    --steps all \
+    --output-indices -1
 ```
