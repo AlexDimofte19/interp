@@ -757,7 +757,7 @@
                         </ul>
                     </li>
                 </ul>
-                <p>Tokens can be hovered to show an info tooltip with next-token probabilities displayed as bar charts. Tokens with probe information will also display a decoded grid showing the model's internal representation of tile types. Tiles marked with "X" have no probe data available. Clicking on a token with probe information pins the decoded grid for further inspection. Use the layer selector dropdown above the decoded grid to switch between different model layers. Hovering on decoded grid tiles shows the prediction probabilities for all tile classes as bar charts.</p>
+                <p>Tokens can be hovered to show an info tooltip with next-token probabilities displayed as bar charts. Tokens with probe information will also display a decoded grid showing the model's internal representation of tile types. Tiles marked with "X" have no probe data available. Clicking on a token pins its position; when advancing steps, the decoded grid will update to show probe data for the same token position in the new step (if available). This allows tracking how the model's internal representation evolves across steps. Use the layer selector dropdown above the decoded grid to switch between different model layers. Hovering on decoded grid tiles shows the prediction probabilities for all tile classes as bar charts. Click the pinned token again to unpin.</p>
             </div>
         </div>
 
@@ -1318,28 +1318,33 @@
         }
 
         function getTokenKey(tokenRef) {
-            return `${tokenRef.stepIndex}_${tokenRef.context}_${tokenRef.tokenIndex}`;
+            // Key based on context and position only (not step), so layer selection persists across steps
+            return `${tokenRef.context}_${tokenRef.tokenIndex}`;
         }
 
-        function getPinnedTokenData() {
-            if (!uiState.pinnedToken) return null;
-
-            const step = viewerData.steps[uiState.pinnedToken.stepIndex];
+        function getTokenAtPosition(stepIndex, context, tokenIndex) {
+            // Get token at a specific position for any step
+            const step = viewerData.steps[stepIndex];
             if (!step) return null;
 
-            // Get token based on context
-            if (uiState.pinnedToken.context === 'prompt') {
+            if (context === 'prompt') {
                 const allTokens = [
                     ...(viewerData.prompt.prompt_prefix_tokens || []),
                     ...(step.grid_state_tokens || []),
                     ...(step.prompt_suffix_tokens || [])
                 ];
-                return allTokens[uiState.pinnedToken.tokenIndex];
-            } else if (uiState.pinnedToken.context === 'output') {
-                return step.output_tokens[uiState.pinnedToken.tokenIndex];
+                return allTokens[tokenIndex] || null;
+            } else if (context === 'output') {
+                return (step.output_tokens && step.output_tokens[tokenIndex]) || null;
             }
 
             return null;
+        }
+
+        function getPinnedTokenData() {
+            if (!uiState.pinnedToken) return null;
+            // Get the token at the pinned position for the CURRENT step
+            return getTokenAtPosition(currentStepIndex, uiState.pinnedToken.context, uiState.pinnedToken.tokenIndex);
         }
 
         function unpinToken() {
@@ -1405,7 +1410,7 @@
 
             // If token has tile_identity_probes, show decoded grid
             if (hasTileIdentityProbes(token) && !uiState.pinnedToken) {
-                const tokenKey = `${currentStepIndex}_${context}_${index}`;
+                const tokenKey = `${context}_${index}`;
                 const selectedLayer = uiState.selectedLayer[tokenKey] || getAvailableLayers(token)[0];
                 updateDecodedGrid(token, selectedLayer);
             }
@@ -1427,9 +1432,8 @@
         function handleTokenClick(event, token, context, index, element) {
             event.stopPropagation();
 
-            // Check if this token is already pinned
+            // Check if this position is already pinned (compare by position, not step)
             if (uiState.pinnedToken &&
-                uiState.pinnedToken.stepIndex === currentStepIndex &&
                 uiState.pinnedToken.context === context &&
                 uiState.pinnedToken.tokenIndex === index) {
                 // Unpin
@@ -1440,9 +1444,8 @@
                     uiState.pinnedToken.element.classList.remove('pinned');
                 }
 
-                // Pin this token
+                // Pin this position (persists across steps)
                 uiState.pinnedToken = {
-                    stepIndex: currentStepIndex,
                     context: context,
                     tokenIndex: index,
                     element: element
@@ -1456,6 +1459,9 @@
                     const selectedLayer = uiState.selectedLayer[tokenKey] || getAvailableLayers(token)[0];
                     updateDecodedGrid(token, selectedLayer);
                     showDecodedGrid();
+                } else {
+                    // Token is pinned but has no probes - hide decoded grid
+                    hideDecodedGrid();
                 }
             }
         }
@@ -1713,19 +1719,43 @@
             // Update step info
             updateInfo();
 
-            // If token is pinned, update decoded grid
-            if (uiState.pinnedToken && uiState.pinnedToken.stepIndex === stepIndex) {
-                // Re-render decoded grid for pinned token
+            // If a position is pinned, update the pin for the new step
+            if (uiState.pinnedToken) {
+                // Clear old element reference (it's from the previous render)
+                uiState.pinnedToken.element = null;
+
+                // Find and mark the element at the pinned position in the new step
+                const pinnedElement = findTokenElement(uiState.pinnedToken.context, uiState.pinnedToken.tokenIndex);
+                if (pinnedElement) {
+                    pinnedElement.classList.add('pinned');
+                    uiState.pinnedToken.element = pinnedElement;
+                }
+
+                // Get the token data at the pinned position for this step
                 const token = getPinnedTokenData();
                 if (token && hasTileIdentityProbes(token)) {
                     const tokenKey = getTokenKey(uiState.pinnedToken);
                     const selectedLayer = uiState.selectedLayer[tokenKey] || getAvailableLayers(token)[0];
                     updateDecodedGrid(token, selectedLayer);
+                    showDecodedGrid();
+                } else {
+                    // Token exists but has no probes at this step
+                    hideDecodedGrid();
                 }
-            } else if (uiState.pinnedToken) {
-                // Pinned token is from a different step, unpin it
-                unpinToken();
             }
+        }
+
+        function findTokenElement(context, tokenIndex) {
+            // Find the DOM element for a token at a specific position
+            const container = context === 'prompt' ? promptTokens : outputTokens;
+            const tokenSpans = container.querySelectorAll('.token-span');
+
+            for (const span of tokenSpans) {
+                if (span.dataset.context === context && parseInt(span.dataset.index) === tokenIndex) {
+                    return span;
+                }
+            }
+            return null;
         }
 
         function animate() {
