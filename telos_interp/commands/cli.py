@@ -5,6 +5,7 @@ import logging
 import tyro
 
 from telos_interp.commands.apply_cognitive_map_probe import apply_cognitive_map_probe
+from telos_interp.commands.eval_cognitive_map_probe import eval_cognitive_map_probe
 from telos_interp.commands.gather_activations import gather_activations
 from telos_interp.commands.generate_data import generate_data
 from telos_interp.commands.prepare_activations_for_probing import prepare_activations_for_probing
@@ -26,6 +27,7 @@ def main():
     - prepare_activations_for_probing: Extract and concatenate activations for cognitive map probing
     - train_cognitive_map_probe: Train cognitive map probing classifiers (LR or MLP)
     - apply_cognitive_map_probe: Apply trained probes to trajectories and store predictions
+    - eval_cognitive_map_probe: Evaluate probes on test trajectories with detailed metrics
     - steering: Compute and apply steering vectors for model generation
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -38,6 +40,7 @@ def main():
             "prepare_activations_for_probing": prepare_activations_for_probing,
             "train_cognitive_map_probe": train_cognitive_map_probe,
             "apply_cognitive_map_probe": apply_cognitive_map_probe,
+            "eval_cognitive_map_probe": eval_cognitive_map_probe,
             "steering": steering_cmd,
         }
     )
