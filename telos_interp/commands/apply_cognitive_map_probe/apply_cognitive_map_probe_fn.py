@@ -22,6 +22,71 @@ from telos_interp.commands.prepare_activations_for_probing.prepare_activations_f
 from telos_interp.commands.train_cognitive_map_probe import CognitiveMapProbe
 
 
+def _load_concatenated_activations(
+    trajectory_folder: Path,
+    layer_idx: int,
+    step_idx: int,
+    category_specs: dict[str, str | None],
+) -> tuple[torch.Tensor | None, list[tuple[str, int]]]:
+    """Load and concatenate activations from multiple tokens for a layer/step.
+
+    This matches the concatenation order used in prepare_activations_for_probing:
+    activations are concatenated in order of categories (prompt_prefix, prompt_suffix,
+    grid_state, output), and within each category by token index.
+
+    Args:
+        trajectory_folder: Path to trajectory folder in activations directory
+        layer_idx: Layer index
+        step_idx: Step index
+        category_specs: Dict mapping category name to index specification string
+
+    Returns:
+        Tuple of:
+        - Concatenated activation tensor, or None if no activations found
+        - List of (category, token_idx) tuples for tokens that were concatenated
+    """
+    model_folder = discover_model_folder(trajectory_folder)
+    if model_folder is None:
+        return None, []
+
+    step_folder = model_folder / f"layer_{layer_idx}" / f"step_{step_idx}"
+    if not step_folder.exists():
+        return None, []
+
+    all_activations = []
+    contributing_tokens: list[tuple[str, int]] = []
+
+    # Process categories in consistent order (matching training data preparation)
+    for category in ["prompt_prefix", "prompt_suffix", "grid_state", "output"]:
+        index_spec = category_specs.get(category)
+        if index_spec is None:
+            continue
+
+        category_folder = step_folder / category
+        if not category_folder.exists():
+            continue
+
+        available_tokens = discover_available_token_indices(category_folder)
+        if not available_tokens:
+            continue
+
+        selected_tokens = parse_index_specification(index_spec, available_tokens)
+        if not selected_tokens:
+            continue
+
+        for token_idx in selected_tokens:
+            file_path = category_folder / f"{token_idx}.pt"
+            if file_path.exists():
+                activation = load_activation(file_path)
+                all_activations.append(activation)
+                contributing_tokens.append((category, token_idx))
+
+    if not all_activations:
+        return None, []
+
+    return torch.cat(all_activations, dim=0), contributing_tokens
+
+
 def _load_probe(probe_path: Path) -> tuple[str, CognitiveMapProbe]:
     """Load a probe from a .pt file.
 
@@ -147,56 +212,6 @@ def _add_probes_to_token(token: dict, probe_results: dict[str, dict[str, dict[st
             token["probes"][probe_name][layer_name] = class_probs
 
 
-def _process_token_with_probe(
-    trajectory_folder: Path,
-    probe: CognitiveMapProbe,
-    probe_name: str,
-    grid_size: int,
-    layer_idx: int,
-    step_idx: int,
-    category: str,
-    token_idx: int,
-) -> dict[str, dict[str, dict[str, float]]] | None:
-    """Load activation and apply probe to a single token for all grid positions.
-
-    Args:
-        trajectory_folder: Path to trajectory folder in activations
-        probe: Loaded CognitiveMapProbe instance
-        probe_name: Name of the probe (used in output keys)
-        grid_size: Size of the grid
-        layer_idx: Layer index
-        step_idx: Step index
-        category: Token category (prompt_prefix, prompt_suffix, grid_state, output)
-        token_idx: Token index within the category
-
-    Returns:
-        Dictionary: {"{probe_name}_r{row}_c{col}": {layer_name: {class_label: probability, ...}}}
-        or None if activation not found
-    """
-    model_folder = discover_model_folder(trajectory_folder)
-    if model_folder is None:
-        return None
-
-    # Build path to activation file
-    activation_path = model_folder / f"layer_{layer_idx}" / f"step_{step_idx}" / category / f"{token_idx}.pt"
-    if not activation_path.exists():
-        return None
-
-    activation = load_activation(activation_path)
-
-    # Apply probe for all positions
-    layer_name = f"model.layers.{layer_idx}.output"
-    probe_results = _apply_probe_for_all_positions(
-        probe=probe,
-        probe_name=probe_name,
-        activation=activation,
-        grid_size=grid_size,
-        layer_name=layer_name,
-    )
-
-    return probe_results if probe_results else None
-
-
 def _process_trajectory(
     trajectory_name: str,
     activations_dir: Path,
@@ -272,44 +287,39 @@ def _process_trajectory(
         steps_to_process = [s for s in selected_steps if s in available_steps]
 
         for step_idx in steps_to_process:
-            step_folder = layer_folder / f"step_{step_idx}"
-            if not step_folder.exists():
+            # Load and concatenate activations from all specified tokens
+            concatenated_activation, contributing_tokens = _load_concatenated_activations(
+                trajectory_folder=trajectory_folder,
+                layer_idx=layer_idx,
+                step_idx=step_idx,
+                category_specs=category_specs,
+            )
+
+            if concatenated_activation is None or not contributing_tokens:
                 continue
 
-            available_categories = discover_available_categories(step_folder)
+            # Apply probe once to concatenated activation
+            layer_name = f"model.layers.{layer_idx}.output"
+            probe_results = _apply_probe_for_all_positions(
+                probe=probe,
+                probe_name=probe_name,
+                activation=concatenated_activation,
+                grid_size=grid_size,
+                layer_name=layer_name,
+            )
 
-            for category, index_spec in active_categories.items():
-                if category not in available_categories:
-                    continue
+            if not probe_results:
+                continue
 
-                category_folder = step_folder / category
-                available_tokens = discover_available_token_indices(category_folder)
-                selected_tokens = parse_index_specification(index_spec, available_tokens)
-
-                for token_idx in selected_tokens:
-                    # Apply probe to this token
-                    probe_results = _process_token_with_probe(
-                        trajectory_folder=trajectory_folder,
-                        probe=probe,
-                        probe_name=probe_name,
-                        grid_size=grid_size,
-                        layer_idx=layer_idx,
-                        step_idx=step_idx,
-                        category=category,
-                        token_idx=token_idx,
-                    )
-
-                    if probe_results is None:
-                        continue
-
-                    # Find the corresponding token in the trajectory JSON and add probes
-                    _add_probes_to_trajectory_token(
-                        trajectory_data=trajectory_data,
-                        step_idx=step_idx,
-                        category=category,
-                        token_idx=token_idx,
-                        probe_results=probe_results,
-                    )
+            # Store results on ALL tokens that contributed to the concatenated activation
+            for category, token_idx in contributing_tokens:
+                _add_probes_to_trajectory_token(
+                    trajectory_data=trajectory_data,
+                    step_idx=step_idx,
+                    category=category,
+                    token_idx=token_idx,
+                    probe_results=probe_results,
+                )
 
     return trajectory_data
 
@@ -330,7 +340,7 @@ def _add_probes_to_trajectory_token(
         token_idx: Token index within the category
         probe_results: Probe results to add
     """
-    # Handle prompt-level tokens (prompt_prefix, prompt_suffix outside of steps)
+    # Handle prompt-level tokens (only prompt_prefix lives at prompt level)
     if category == "prompt_prefix":
         tokens = trajectory_data.get("prompt", {}).get("prompt_prefix_tokens", [])
         for token in tokens:
@@ -338,15 +348,7 @@ def _add_probes_to_trajectory_token(
                 _add_probes_to_token(token, probe_results)
                 return
 
-    if category == "prompt_suffix":
-        # First check prompt-level prompt_suffix_tokens
-        tokens = trajectory_data.get("prompt", {}).get("prompt_suffix_tokens", [])
-        for token in tokens:
-            if token.get("id") == token_idx:
-                _add_probes_to_token(token, probe_results)
-                return
-
-    # Handle step-level tokens
+    # Handle step-level tokens (prompt_suffix uses step-level since activations differ per step)
     steps = trajectory_data.get("steps", [])
     for step in steps:
         if step.get("step_id") != step_idx:

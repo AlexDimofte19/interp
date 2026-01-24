@@ -408,9 +408,14 @@ def _evaluate(
             "predicted": int(pred_count),
         }
 
+    # Compute balanced accuracy (mean of per-class accuracies)
+    per_class_accuracies = [m["accuracy"] for m in per_class_metrics.values() if m["gt_support"] > 0]
+    balanced_accuracy = sum(per_class_accuracies) / len(per_class_accuracies) if per_class_accuracies else 0.0
+
     return {
         "loss": total_loss / num_batches if num_batches > 0 else 0.0,
         "accuracy": correct / total if total > 0 else 0.0,
+        "balanced_accuracy": balanced_accuracy,
         "per_class_metrics": per_class_metrics,
         "num_samples": total,
         "predictions": all_preds,
@@ -422,6 +427,7 @@ def _balance_classes_by_upsampling(
     activations: torch.Tensor,
     labels: torch.Tensor,
     seed: int = 42,
+    per_class_max_count: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Balance classes by upsampling minority classes to match the majority class.
 
@@ -429,6 +435,8 @@ def _balance_classes_by_upsampling(
         activations: Input activations tensor
         labels: Label tensor
         seed: Random seed for reproducibility
+        per_class_max_count: Maximum samples per class. Classes exceeding this will be
+                   downsampled before balancing. If None, uses the largest class size.
 
     Returns:
         Tuple of (balanced_activations, balanced_labels)
@@ -437,7 +445,11 @@ def _balance_classes_by_upsampling(
 
     unique_classes = torch.unique(labels)
     class_counts = {c.item(): (labels == c).sum().item() for c in unique_classes}
-    max_count = max(class_counts.values())
+
+    # Determine target count: cap at per_class_max_count if provided
+    target_count = max(class_counts.values())
+    if per_class_max_count is not None:
+        target_count = min(target_count, per_class_max_count)
 
     balanced_indices = []
 
@@ -445,15 +457,20 @@ def _balance_classes_by_upsampling(
         class_indices = torch.where(labels == class_id)[0]
         current_count = len(class_indices)
 
-        if current_count < max_count:
+        if current_count > target_count:
+            # Downsample: randomly select target_count indices
+            perm = torch.randperm(current_count)[:target_count]
+            balanced_indices.append(class_indices[perm])
+        elif current_count < target_count:
             # Upsample: repeat and sample additional indices
-            num_additional = max_count - current_count
+            num_additional = target_count - current_count
             additional_indices = class_indices[torch.randint(0, current_count, (num_additional,))]
             balanced_indices.append(torch.cat([class_indices, additional_indices]))
         else:
             balanced_indices.append(class_indices)
 
     all_indices = torch.cat(balanced_indices)
+
     # Shuffle
     perm = torch.randperm(len(all_indices))
     all_indices = all_indices[perm]
@@ -635,6 +652,7 @@ def _print_final_results(
 ) -> None:
     """Print final evaluation results including per-class metrics and debug grid."""
     print(f"Accuracy: {final_results['accuracy']:.4f}")
+    print(f"Balanced Accuracy: {final_results['balanced_accuracy']:.4f}")
     print(f"Loss: {final_results['loss']:.4f}")
     print(f"Number of samples: {final_results['num_samples']}")
 
@@ -690,6 +708,7 @@ def train_cognitive_map_probe(
     device: str | None = None,
     seed: int = 42,
     verbose: bool = True,
+    per_class_max_count: int | None = None
 ) -> CognitiveMapProbe:
     """Train a cognitive map probing classifier on prepared activations.
 
@@ -848,7 +867,7 @@ def train_cognitive_map_probe(
         unique, counts = torch.unique(train_labels, return_counts=True)
         print(f"  Before: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
 
-        train_activations, train_labels = _balance_classes_by_upsampling(train_activations, train_labels, seed=seed)
+        train_activations, train_labels = _balance_classes_by_upsampling(train_activations, train_labels, seed=seed, per_class_max_count=per_class_max_count)
 
         unique, counts = torch.unique(train_labels, return_counts=True)
         print(f"  After: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
@@ -905,6 +924,7 @@ def train_cognitive_map_probe(
 
     # Training loop
     best_eval_accuracy = 0.0
+    best_balanced_accuracy = 0.0
     # best_model_state = None
 
     print(f"\nTraining for {num_epochs} epochs...")
@@ -919,14 +939,17 @@ def train_cognitive_map_probe(
 
         # Track best model
         best_eval_accuracy = max(best_eval_accuracy, eval_results["accuracy"])
+        best_balanced_accuracy = max(best_balanced_accuracy, eval_results["balanced_accuracy"])
         # best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
         # Update progress bar
         epoch_iterator.set_postfix(
             {
-                "train_loss": f"{train_loss:.4f}",
+                "loss": f"{train_loss:.4f}",
                 "eval_acc": f"{eval_results['accuracy']:.4f}",
+                "bal_acc": f"{eval_results['balanced_accuracy']:.4f}",
                 "best_acc": f"{best_eval_accuracy:.4f}",
+                "best_bal": f"{best_balanced_accuracy:.4f}",
             }
         )
 
@@ -991,7 +1014,9 @@ def train_cognitive_map_probe(
         },
         results={
             "best_eval_accuracy": best_eval_accuracy,
+            "best_balanced_accuracy": best_balanced_accuracy,
             "final_accuracy": final_results["accuracy"],
+            "final_balanced_accuracy": final_results["balanced_accuracy"],
             "final_loss": final_results["loss"],
             "per_class_metrics": per_class_metrics_original,
         },
@@ -1011,5 +1036,6 @@ def train_cognitive_map_probe(
 
     print(f"\nModel saved to {final_output_path}")
     print(f"Best evaluation accuracy: {best_eval_accuracy:.4f}")
+    print(f"Best balanced accuracy: {best_balanced_accuracy:.4f}")
 
     return probe

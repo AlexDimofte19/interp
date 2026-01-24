@@ -143,11 +143,11 @@ Common token group labels used for categorization:
 
 Three types of probe object are supported:
 
-### Tile Identity Probe
+### Tile Identity Probe / Cognitive Map Probe
 
-Tile identity probes serve the purpose of decoding grid states from model activations. The contents of this probe objects are structured on three levels:
+Tile identity probes (also called cognitive map probes) serve the purpose of decoding grid states from model activations. The contents of this probe objects are structured on three levels:
 
-- The first level key format for the probe name must begin with `tile_identity_probe` and end with `r<ROW_IDX>_c<COL_IDX>`, where `<ROW_IDX>` and `<COL_IDX>` are the 0-indexed row and column indices for the corresponding tile in the current state.
+- The first level key format for the probe name must begin with `tile_identity_probe` or `cognitive_map_probe` and end with `r<ROW_IDX>_c<COL_IDX>`, where `<ROW_IDX>` and `<COL_IDX>` are the 0-indexed row and column indices for the corresponding tile in the current state.
 
 - The second level key represent the name of the layer on which the probe was applied, using the real model module names (see e.g. [https://huggingface.co/openai/gpt-oss-20b?show_file_info=model.safetensors.index.json](https://huggingface.co/openai/gpt-oss-20b?show_file_info=model.safetensors.index.json)). A specifier `.input` or `.output` should be added to indicate which activation was selected, following the `nnsight` format.
 
@@ -165,8 +165,8 @@ Example:
       "wall": 0.9971
     }
   },
-  "tile_identity_probe_another_example_r1_c3": {
-    "20": {
+  "cognitive_map_probe_l15_s0_suffix_r1_c3": {
+    "model.layers.15.output": {
       "agent": 0.0200,
       "empty": 0.1000,
       "goal": 0.8000,

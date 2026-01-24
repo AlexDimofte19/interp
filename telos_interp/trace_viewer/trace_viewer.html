@@ -1299,7 +1299,9 @@
 
         function hasTileIdentityProbes(token) {
             if (!token.probes) return false;
-            return Object.keys(token.probes).some(key => key.startsWith('tile_identity_probe'));
+            return Object.keys(token.probes).some(key =>
+                key.startsWith('tile_identity_probe') || key.startsWith('cognitive_map_probe')
+            );
         }
 
         function getAvailableLayers(token) {
@@ -1307,7 +1309,7 @@
 
             const layers = new Set();
             for (const probeKey of Object.keys(token.probes)) {
-                if (probeKey.startsWith('tile_identity_probe')) {
+                if (probeKey.startsWith('tile_identity_probe') || probeKey.startsWith('cognitive_map_probe')) {
                     const probeData = token.probes[probeKey];
                     Object.keys(probeData).forEach(layer => layers.add(layer));
                 }
@@ -1514,7 +1516,7 @@
             const tileProbes = {};
 
             for (const probeKey of Object.keys(probes)) {
-                if (probeKey.startsWith('tile_identity_probe')) {
+                if (probeKey.startsWith('tile_identity_probe') || probeKey.startsWith('cognitive_map_probe')) {
                     // Extract row and column from probe key
                     const match = probeKey.match(/r(\d+)_c(\d+)/);
                     if (match) {
