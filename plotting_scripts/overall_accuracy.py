@@ -57,7 +57,8 @@ def plot_overall_accuracy():
 
     # 2. Plot the accuracy curves
     os.makedirs(plotting_dir, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(10, 5))  # 2:1 aspect ratio
+    fig, ax = plt.subplots(figsize=(8, 5))  # 2:1 aspect ratio
+    
 
     ax.plot(
         grid_sizes,
