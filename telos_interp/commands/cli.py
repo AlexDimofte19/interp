@@ -6,12 +6,14 @@ import tyro
 
 from telos_interp.commands.apply_cognitive_map_probe import apply_cognitive_map_probe
 from telos_interp.commands.eval_cognitive_map_probe import eval_cognitive_map_probe
+from telos_interp.commands.eval_distance_probe import eval_distance_probe
 from telos_interp.commands.gather_activations import gather_activations
 from telos_interp.commands.generate_data import generate_data
 from telos_interp.commands.prepare_activations_for_probing import prepare_activations_for_probing
 from telos_interp.commands.steering import steering_cmd
 from telos_interp.commands.train_cognitive_map_probe import train_cognitive_map_probe
 from telos_interp.commands.train_distance_probe import train_distance_probe
+from telos_interp.commands.deprecated_train_distance_probe import train_distance_probe as deprecated_train_distance_probe
 from telos_interp.commands.train_probe import train_probe
 
 
@@ -37,6 +39,8 @@ def main():
             "generate_data": generate_data,
             "train_probe": train_probe,
             "train_distance_probe": train_distance_probe,
+            "eval_distance_probe": eval_distance_probe,
+            "deprecated_train_distance_probe": deprecated_train_distance_probe,
             "prepare_activations_for_probing": prepare_activations_for_probing,
             "train_cognitive_map_probe": train_cognitive_map_probe,
             "apply_cognitive_map_probe": apply_cognitive_map_probe,

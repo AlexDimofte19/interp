@@ -90,6 +90,31 @@ class MetricsAccumulator:
         }
 
 
+def _parse_category_specs(
+    prompt_prefix_indices: str | None = None,
+    prompt_suffix_indices: str | None = None,
+    grid_state_indices: str | None = None,
+    output_indices: str | None = None,
+) -> dict[str, str | None]:
+    """Build category specs dict from individual index parameters.
+
+    Args:
+        prompt_prefix_indices: Token indices for prompt_prefix (e.g., "all", "-1")
+        prompt_suffix_indices: Token indices for prompt_suffix (e.g., "-3:-1")
+        grid_state_indices: Token indices for grid_state (e.g., "all")
+        output_indices: Token indices for output (e.g., "all", "0:10")
+
+    Returns:
+        Dict mapping category names to their index specifications
+    """
+    return {
+        "prompt_prefix": prompt_prefix_indices,
+        "prompt_suffix": prompt_suffix_indices,
+        "grid_state": grid_state_indices,
+        "output": output_indices,
+    }
+
+
 def _print_metrics_table(
     metrics: dict,
     class_names: list[str],
@@ -301,12 +326,12 @@ def eval_cognitive_map_probe(
         print(f"  Normalized: {probe.normalized}")
 
     # Build category specs
-    category_specs = {
-        "prompt_prefix": prompt_prefix_indices,
-        "prompt_suffix": prompt_suffix_indices,
-        "grid_state": grid_state_indices,
-        "output": output_indices,
-    }
+    category_specs = _parse_category_specs(
+        prompt_prefix_indices=prompt_prefix_indices,
+        prompt_suffix_indices=prompt_suffix_indices,
+        grid_state_indices=grid_state_indices,
+        output_indices=output_indices,
+    )
     active_categories = {k: v for k, v in category_specs.items() if v is not None}
 
     if not active_categories:
@@ -321,11 +346,20 @@ def eval_cognitive_map_probe(
 
     size_folders = sorted([d for d in trajectories_base.iterdir() if d.is_dir() and d.name.startswith("size")])
 
+    # Check if we have size folders or if trajectories are directly in the base folder
+    single_size_mode = False
     if not size_folders:
-        raise ValueError(f"No size folders found in {trajectories_dir}")
-
-    if verbose:
-        print(f"\nFound {len(size_folders)} size folders: {[f.name for f in size_folders]}")
+        # Check if there are trajectory JSONs directly in the base folder
+        direct_trajectories = list(trajectories_base.glob("*.json"))
+        if direct_trajectories:
+            single_size_mode = True
+            if verbose:
+                print(f"\nNo size folders found. Running in single-size mode with {len(direct_trajectories)} trajectories")
+        else:
+            raise ValueError(f"No size folders or trajectory files found in {trajectories_dir}")
+    else:
+        if verbose:
+            print(f"\nFound {len(size_folders)} size folders: {[f.name for f in size_folders]}")
 
     # Get class info from probe
     num_classes = probe.num_classes
@@ -343,26 +377,18 @@ def eval_cognitive_map_probe(
         lambda: MetricsAccumulator(num_classes, class_names)
     )
 
-    # Process each size folder
+    # Process trajectories
     total_trajectories = 0
     total_steps_processed = 0
 
-    for size_folder in size_folders:
-        size_name = size_folder.name  # e.g., "size7"
-        activations_size_folder = activations_base / size_name
-
-        if not activations_size_folder.exists():
-            if verbose:
-                print(f"  Skipping {size_name}: no activations folder")
-            continue
-
-        # Find trajectory JSONs
-        trajectory_files = sorted(size_folder.glob("*.json"))
+    if single_size_mode:
+        # Process trajectories directly from base folder (no size subfolders)
+        trajectory_files = sorted(trajectories_base.glob("*.json"))
 
         if verbose:
-            print(f"\nProcessing {size_name}: {len(trajectory_files)} trajectories")
+            print(f"\nProcessing {len(trajectory_files)} trajectories from {trajectories_base}")
 
-        for traj_file in tqdm(trajectory_files, desc=f"  {size_name}", disable=not verbose):
+        for traj_file in tqdm(trajectory_files, desc="  trajectories", disable=not verbose):
             # Load trajectory
             with open(traj_file) as f:
                 trajectory_data = json.load(f)
@@ -371,9 +397,9 @@ def eval_cognitive_map_probe(
             grid_size = _extract_size_from_trajectory(trajectory_data)
             complexity = _extract_complexity_from_trajectory(trajectory_data)
 
-            # Find corresponding activations folder
+            # Find corresponding activations folder (directly in activations_base)
             traj_name = traj_file.stem
-            traj_activations_folder = activations_size_folder / traj_name
+            traj_activations_folder = activations_base / traj_name
 
             if not traj_activations_folder.exists():
                 continue
@@ -439,13 +465,112 @@ def eval_cognitive_map_probe(
                             pred_list.append(predictions[pos])
                             gt_list.append(ground_truth[pos])
 
-                    # Update all accumulators
+                    # Update accumulators (no size-based metrics in single_size_mode)
                     global_accumulator.update(pred_list, gt_list)
-                    size_accumulators[grid_size].update(pred_list, gt_list)
                     complexity_accumulators[complexity].update(pred_list, gt_list)
-                    size_complexity_accumulators[(grid_size, complexity)].update(pred_list, gt_list)
 
                     total_steps_processed += 1
+    else:
+        # Process each size folder
+        for size_folder in size_folders:
+            size_name = size_folder.name  # e.g., "size7"
+            activations_size_folder = activations_base / size_name
+
+            if not activations_size_folder.exists():
+                if verbose:
+                    print(f"  Skipping {size_name}: no activations folder")
+                continue
+
+            # Find trajectory JSONs
+            trajectory_files = sorted(size_folder.glob("*.json"))
+
+            if verbose:
+                print(f"\nProcessing {size_name}: {len(trajectory_files)} trajectories")
+
+            for traj_file in tqdm(trajectory_files, desc=f"  {size_name}", disable=not verbose):
+                # Load trajectory
+                with open(traj_file) as f:
+                    trajectory_data = json.load(f)
+
+                # Extract metadata
+                grid_size = _extract_size_from_trajectory(trajectory_data)
+                complexity = _extract_complexity_from_trajectory(trajectory_data)
+
+                # Find corresponding activations folder
+                traj_name = traj_file.stem
+                traj_activations_folder = activations_size_folder / traj_name
+
+                if not traj_activations_folder.exists():
+                    continue
+
+                # Discover available layers
+                model_folder = discover_model_folder(traj_activations_folder)
+                if model_folder is None:
+                    continue
+
+                available_layers = discover_available_layers(model_folder)
+                selected_layers = parse_index_specification(layers, available_layers)
+
+                if not selected_layers:
+                    continue
+
+                total_trajectories += 1
+
+                # Process each layer
+                for layer_idx in selected_layers:
+                    layer_folder = model_folder / f"layer_{layer_idx}"
+                    if not layer_folder.exists():
+                        continue
+
+                    available_steps = discover_available_steps(layer_folder)
+                    selected_steps = parse_index_specification(steps, available_steps)
+
+                    for step_idx in selected_steps:
+                        # Get step data from trajectory
+                        if step_idx >= len(trajectory_data.get("steps", [])):
+                            continue
+
+                        step_data = trajectory_data["steps"][step_idx]
+                        grid_state = step_data.get("grid_state", [])
+
+                        if not grid_state:
+                            continue
+
+                        # Load concatenated activations
+                        activation = _load_concatenated_activations(
+                            trajectory_folder=traj_activations_folder,
+                            layer_idx=layer_idx,
+                            step_idx=step_idx,
+                            category_specs=category_specs,
+                        )
+
+                        if activation is None:
+                            continue
+
+                        # Get predictions for all positions
+                        predictions = _apply_probe_to_all_positions(probe, activation, pad_to_size)
+
+                        # Get ground truth
+                        ground_truth = _get_ground_truth_for_step(
+                            grid_state, pad_to_size, probe.label_to_idx
+                        )
+
+                        # Collect predictions and ground truth as lists
+                        pred_list = []
+                        gt_list = []
+
+                        for pos in predictions:
+                            if pos in ground_truth:
+                                pred_list.append(predictions[pos])
+                                gt_list.append(ground_truth[pos])
+
+                        # Update all accumulators
+                        global_accumulator.update(pred_list, gt_list)
+                        size_accumulators[grid_size].update(pred_list, gt_list)
+                        complexity_accumulators[complexity].update(pred_list, gt_list)
+                        size_complexity_accumulators[(grid_size, complexity)].update(pred_list, gt_list)
+
+                        total_steps_processed += 1
 
     # Compute and print results
     if verbose:
@@ -453,24 +578,27 @@ def eval_cognitive_map_probe(
         print("EVALUATION COMPLETE")
         print("=" * 87)
         print(f"Processed {total_trajectories} trajectories, {total_steps_processed} steps")
+        if single_size_mode:
+            print("(Single-size mode: size-based metrics skipped)")
 
     # Global metrics
     global_metrics = global_accumulator.compute_metrics()
     if verbose:
         _print_metrics_table(global_metrics, class_names, probe.idx_to_label, "GLOBAL METRICS")
 
-    # Per-size metrics
+    # Per-size metrics (skip in single_size_mode)
     size_metrics = {}
-    if verbose:
-        print(f"\n{'=' * 87}")
-        print("METRICS BY SIZE")
-        print("=" * 87)
-
-    for grid_size in sorted(size_accumulators.keys()):
-        metrics = size_accumulators[grid_size].compute_metrics()
-        size_metrics[grid_size] = metrics
+    if not single_size_mode:
         if verbose:
-            _print_metrics_table(metrics, class_names, probe.idx_to_label, f"Size {grid_size}")
+            print(f"\n{'=' * 87}")
+            print("METRICS BY SIZE")
+            print("=" * 87)
+
+        for grid_size in sorted(size_accumulators.keys()):
+            metrics = size_accumulators[grid_size].compute_metrics()
+            size_metrics[grid_size] = metrics
+            if verbose:
+                _print_metrics_table(metrics, class_names, probe.idx_to_label, f"Size {grid_size}")
 
     # Per-complexity metrics
     complexity_metrics = {}
@@ -487,32 +615,32 @@ def eval_cognitive_map_probe(
                 metrics, class_names, probe.idx_to_label, f"Complexity {complexity:.2f}"
             )
 
-    # Per-size-complexity metrics
+    # Per-size-complexity metrics (skip in single_size_mode)
     size_complexity_metrics = {}
-    if verbose:
-        print(f"\n{'=' * 87}")
-        print("METRICS BY SIZE-COMPLEXITY COMBINATION")
-        print("=" * 87)
-
-    for (grid_size, complexity) in sorted(size_complexity_accumulators.keys()):
-        metrics = size_complexity_accumulators[(grid_size, complexity)].compute_metrics()
-        size_complexity_metrics[(grid_size, complexity)] = metrics
+    if not single_size_mode:
         if verbose:
-            _print_metrics_table(
-                metrics,
-                class_names,
-                probe.idx_to_label,
-                f"Size {grid_size}, Complexity {complexity:.2f}",
-            )
+            print(f"\n{'=' * 87}")
+            print("METRICS BY SIZE-COMPLEXITY COMBINATION")
+            print("=" * 87)
+
+        for (grid_size, complexity) in sorted(size_complexity_accumulators.keys()):
+            metrics = size_complexity_accumulators[(grid_size, complexity)].compute_metrics()
+            size_complexity_metrics[(grid_size, complexity)] = metrics
+            if verbose:
+                _print_metrics_table(
+                    metrics,
+                    class_names,
+                    probe.idx_to_label,
+                    f"Size {grid_size}, Complexity {complexity:.2f}",
+                )
 
     # Build results dictionary
     results = {
         "global": global_metrics,
-        "by_size": {str(k): v for k, v in size_metrics.items()},
         "by_complexity": {str(k): v for k, v in complexity_metrics.items()},
-        "by_size_complexity": {f"{s}_{c}": m for (s, c), m in size_complexity_metrics.items()},
         "total_trajectories": total_trajectories,
         "total_steps": total_steps_processed,
+        "single_size_mode": single_size_mode,
         "config": {
             "probe_path": str(probe_path_obj),
             "trajectories_dir": str(trajectories_base),
@@ -523,6 +651,11 @@ def eval_cognitive_map_probe(
             "pad_to_size": pad_to_size,
         },
     }
+
+    # Add size-based metrics only if not in single_size_mode
+    if not single_size_mode:
+        results["by_size"] = {str(k): v for k, v in size_metrics.items()}
+        results["by_size_complexity"] = {f"{s}_{c}": m for (s, c), m in size_complexity_metrics.items()}
 
     # Save JSON results
     if output_path is None:
