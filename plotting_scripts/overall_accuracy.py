@@ -27,11 +27,11 @@ mlp_results_paths = {
 }
 
 lr_results_paths = {
-    7: "../data/trajectories_test_full_with_probes/layer15/lr/pre_reasoning/size7/_eval_results.json",
-    9: "../data/trajectories_test_full_with_probes/layer15/lr/pre_reasoning/size9/_eval_results.json",
-    11: "../data/trajectories_test_full_with_probes/layer15/lr/pre_reasoning/size11/_eval_results.json",
-    13: "../data/trajectories_test_full_with_probes/layer15/lr/pre_reasoning/size13/_eval_results.json",
-    15: "../data/trajectories_test_full_with_probes/layer15/lr/pre_reasoning/size15/_eval_results.json",
+    7: "../data/trajectories_test_full_with_probes/layer15/lr_general/pre_reasoning/size7/_eval_results.json",
+    9: "../data/trajectories_test_full_with_probes/layer15/lr_general/pre_reasoning/size9/_eval_results.json",
+    11: "../data/trajectories_test_full_with_probes/layer15/lr_general/pre_reasoning/size11/_eval_results.json",
+    13: "../data/trajectories_test_full_with_probes/layer15/lr_general/pre_reasoning/size13/_eval_results.json",
+    15: "../data/trajectories_test_full_with_probes/layer15/lr_general/pre_reasoning/size15/_eval_results.json",
 }
 
 grid_sizes = [7, 9, 11, 13, 15]
