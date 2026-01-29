@@ -57,7 +57,7 @@ fix-style:
 #* Linting
 .PHONY: test
 test:
-	$(PYTHON) -m pytest -n auto -c pyproject.toml -vv
+	$(PYTHON) -m pytest -c pyproject.toml -vv
 
 #* Remove
 .PHONY: pycache-remove
@@ -69,4 +69,4 @@ build-remove:
 	rm -rf build/
 
 .PHONY: clean
-clean: pycache-remove build-remove # docker-remove
+clean: pycache-remove build-remove
