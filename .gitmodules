@@ -1,0 +1,3 @@
+[submodule "spaces/trace-viewer"]
+	path = spaces/trace-viewer
+	url = https://huggingface.co/spaces/project-telos/trace-viewer
