@@ -1,9 +1,20 @@
 import argparse
 import json
+from typing import Any
 
 import numpy as np
 import pandas as pd
-from telos_interp import probing_gpu
+
+
+def get_predicted_class(per_cell_predictions: dict[str, Any]) -> str:
+    """Get the predicted class from the predictions dictionary."""
+    max_probability = 0
+    predicted_class = None
+    for class_name, probability in per_cell_predictions.items():
+        if probability > max_probability:
+            max_probability = probability
+            predicted_class = class_name
+    return predicted_class, max_probability
 
 
 # For inspiration from reveng repo
@@ -53,7 +64,7 @@ class_to_symbol = {
 
 def get_predicted_cell_at_position(predictions: dict, xy_key: str) -> str:
     pred_xy_probabilities = predictions[xy_key]
-    predicted_class, max_probability = probing_gpu.get_predicted_class(pred_xy_probabilities)
+    predicted_class, max_probability = get_predicted_class(pred_xy_probabilities)
     return class_to_symbol[predicted_class]
 
 

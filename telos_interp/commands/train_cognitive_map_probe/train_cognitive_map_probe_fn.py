@@ -8,69 +8,24 @@ from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from telos_interp.commands.prepare_activations_for_probing import CELL_ID_TO_SYMBOL
+from telos_interp.grid_utils import CELL_ID_TO_SYMBOL
+from telos_interp.probe_models import (
+    ModelType,
+)
+from telos_interp.probe_models import (
+    create_classification_model as _create_model,
+)
+from telos_interp.training import (
+    compute_normalization_params,
+    normalize_activations,
+    resolve_device,
+    set_seed,
+)
+from telos_interp.training import (
+    train_epoch as _train_epoch,
+)
 
-# Model type literal for type hints
-ModelType = Literal["lr", "mlp"]
 ClassWeight = Literal["balanced"] | None
-
-
-class LogisticRegressionProbe(nn.Module):
-    """Logistic regression classifier for probing."""
-
-    def __init__(self, input_dim: int, num_classes: int):
-        super().__init__()
-        self.linear = nn.Linear(input_dim, num_classes)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.linear(x)
-
-
-class MLPProbe(nn.Module):
-    """Multi-layer perceptron classifier for probing."""
-
-    def __init__(
-        self,
-        input_dim: int,
-        num_classes: int,
-        hidden_dims: list[int],
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        layers = []
-        prev_dim = input_dim
-
-        for hidden_dim in hidden_dims:
-            layers.extend(
-                [
-                    nn.Linear(prev_dim, hidden_dim),
-                    nn.ReLU(),
-                    nn.Dropout(dropout),
-                ]
-            )
-            prev_dim = hidden_dim
-
-        layers.append(nn.Linear(prev_dim, num_classes))
-        self.network = nn.Sequential(*layers)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.network(x)
-
-
-def _create_model(
-    model_type: ModelType,
-    input_dim: int,
-    num_classes: int,
-    hidden_dims: list[int],
-    dropout: float,
-) -> nn.Module:
-    """Create the appropriate model based on model_type."""
-    if model_type == "lr":
-        return LogisticRegressionProbe(input_dim, num_classes)
-    elif model_type == "mlp":
-        return MLPProbe(input_dim, num_classes, hidden_dims, dropout)
-    else:
-        raise ValueError(f"Unknown model_type: {model_type}")
 
 
 class CognitiveMapProbe:
@@ -249,34 +204,6 @@ class CognitiveMapProbe:
             results=data.get("results"),
             device=torch_device,
         )
-
-
-def _train_epoch(
-    model: nn.Module,
-    dataloader: DataLoader,
-    criterion: nn.Module,
-    optimizer: optim.Optimizer,
-    device: torch.device,
-) -> float:
-    """Train for one epoch and return average loss."""
-    model.train()
-    total_loss = 0.0
-    num_batches = 0
-
-    for batch_x_raw, batch_y_raw in dataloader:
-        batch_x = batch_x_raw.to(device)
-        batch_y = batch_y_raw.to(device)
-
-        optimizer.zero_grad()
-        outputs = model(batch_x)
-        loss = criterion(outputs, batch_y)
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        num_batches += 1
-
-    return total_loss / num_batches if num_batches > 0 else 0.0
 
 
 def _print_debug_grids(
@@ -708,7 +635,7 @@ def train_cognitive_map_probe(
     device: str | None = None,
     seed: int = 42,
     verbose: bool = True,
-    per_class_max_count: int | None = None
+    per_class_max_count: int | None = None,
 ) -> CognitiveMapProbe:
     """Train a cognitive map probing classifier on prepared activations.
 
@@ -755,13 +682,10 @@ def train_cognitive_map_probe(
         Trained CognitiveMapProbe instance (also saved to output_path)
     """
     # Set random seed
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    set_seed(seed)
 
     # Determine device
-    device_str = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
-    torch_device = torch.device(device_str)
+    torch_device = resolve_device(device)
 
     print(f"Using device: {torch_device}")
 
@@ -867,7 +791,9 @@ def train_cognitive_map_probe(
         unique, counts = torch.unique(train_labels, return_counts=True)
         print(f"  Before: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
 
-        train_activations, train_labels = _balance_classes_by_upsampling(train_activations, train_labels, seed=seed, per_class_max_count=per_class_max_count)
+        train_activations, train_labels = _balance_classes_by_upsampling(
+            train_activations, train_labels, seed=seed, per_class_max_count=per_class_max_count
+        )
 
         unique, counts = torch.unique(train_labels, return_counts=True)
         print(f"  After: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
@@ -877,13 +803,9 @@ def train_cognitive_map_probe(
     scaler_mean = None
     scaler_std = None
     if normalize:
-        scaler_mean = train_activations.mean(dim=0)
-        scaler_std = train_activations.std(dim=0)
-        # Avoid division by zero
-        scaler_std = torch.where(scaler_std > 1e-8, scaler_std, torch.ones_like(scaler_std))
-        # Normalize both train and eval using training statistics
-        train_activations = (train_activations - scaler_mean) / scaler_std
-        eval_activations = (eval_activations - scaler_mean) / scaler_std
+        scaler_mean, scaler_std = compute_normalization_params(train_activations)
+        train_activations = normalize_activations(train_activations, scaler_mean, scaler_std)
+        eval_activations = normalize_activations(eval_activations, scaler_mean, scaler_std)
         print(f"Normalization enabled: computed mean/std from {train_activations.shape[0]} training samples")
 
     # Create data loaders

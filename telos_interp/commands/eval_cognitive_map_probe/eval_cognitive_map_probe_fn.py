@@ -7,20 +7,16 @@ from pathlib import Path
 import torch
 from tqdm import tqdm
 
-from telos_interp.commands.prepare_activations_for_probing import (
-    CELL_ID_TO_SYMBOL,
-    CELL_SYMBOL_TO_ID,
-    parse_grid_state,
-)
-from telos_interp.commands.prepare_activations_for_probing.prepare_activations_for_probing_utils import (
+from telos_interp.activation_loading import (
     discover_available_layers,
     discover_available_steps,
-    discover_available_token_indices,
     discover_model_folder,
-    load_activation,
+    load_concatenated_activations,
+    parse_category_specs,
     parse_index_specification,
 )
 from telos_interp.commands.train_cognitive_map_probe import CognitiveMapProbe
+from telos_interp.grid_utils import CELL_ID_TO_SYMBOL, parse_grid_state
 
 
 class MetricsAccumulator:
@@ -90,31 +86,6 @@ class MetricsAccumulator:
         }
 
 
-def _parse_category_specs(
-    prompt_prefix_indices: str | None = None,
-    prompt_suffix_indices: str | None = None,
-    grid_state_indices: str | None = None,
-    output_indices: str | None = None,
-) -> dict[str, str | None]:
-    """Build category specs dict from individual index parameters.
-
-    Args:
-        prompt_prefix_indices: Token indices for prompt_prefix (e.g., "all", "-1")
-        prompt_suffix_indices: Token indices for prompt_suffix (e.g., "-3:-1")
-        grid_state_indices: Token indices for grid_state (e.g., "all")
-        output_indices: Token indices for output (e.g., "all", "0:10")
-
-    Returns:
-        Dict mapping category names to their index specifications
-    """
-    return {
-        "prompt_prefix": prompt_prefix_indices,
-        "prompt_suffix": prompt_suffix_indices,
-        "grid_state": grid_state_indices,
-        "output": output_indices,
-    }
-
-
 def _print_metrics_table(
     metrics: dict,
     class_names: list[str],
@@ -128,7 +99,9 @@ def _print_metrics_table(
         print("=" * 87)
 
     baseline_acc = metrics.get("baseline_accuracy", 0.0)
-    print(f"Overall Accuracy: {metrics['accuracy']:.4f} (Baseline: {baseline_acc:.4f}, {metrics['total_samples']} samples)")
+    print(
+        f"Overall Accuracy: {metrics['accuracy']:.4f} (Baseline: {baseline_acc:.4f}, {metrics['total_samples']} samples)"
+    )
     print("\nPer-class metrics:")
     print("-" * 87)
     print(
@@ -147,53 +120,6 @@ def _print_metrics_table(
             f"{class_metrics['gt_support']:>12} {class_metrics['predicted']:>10}"
         )
     print("-" * 87)
-
-
-def _load_concatenated_activations(
-    trajectory_folder: Path,
-    layer_idx: int,
-    step_idx: int,
-    category_specs: dict[str, str | None],
-) -> torch.Tensor | None:
-    """Load and concatenate activations from multiple tokens for a layer/step."""
-    model_folder = discover_model_folder(trajectory_folder)
-    if model_folder is None:
-        return None
-
-    step_folder = model_folder / f"layer_{layer_idx}" / f"step_{step_idx}"
-    if not step_folder.exists():
-        return None
-
-    all_activations = []
-
-    # Process categories in consistent order
-    for category in ["prompt_prefix", "prompt_suffix", "grid_state", "output"]:
-        index_spec = category_specs.get(category)
-        if index_spec is None:
-            continue
-
-        category_folder = step_folder / category
-        if not category_folder.exists():
-            continue
-
-        available_tokens = discover_available_token_indices(category_folder)
-        if not available_tokens:
-            continue
-
-        selected_tokens = parse_index_specification(index_spec, available_tokens)
-        if not selected_tokens:
-            continue
-
-        for token_idx in selected_tokens:
-            file_path = category_folder / f"{token_idx}.pt"
-            if file_path.exists():
-                activation = load_activation(file_path)
-                all_activations.append(activation)
-
-    if not all_activations:
-        return None
-
-    return torch.cat(all_activations, dim=0)
 
 
 def _apply_probe_to_all_positions(
@@ -264,7 +190,7 @@ def _extract_size_from_trajectory(trajectory_data: dict) -> int:
     return max(width, height)
 
 
-def eval_cognitive_map_probe(
+def eval_cognitive_map_probe(  # noqa: PLR0912
     probe_path: str,
     trajectories_dir: str,
     activations_dir: str,
@@ -326,7 +252,7 @@ def eval_cognitive_map_probe(
         print(f"  Normalized: {probe.normalized}")
 
     # Build category specs
-    category_specs = _parse_category_specs(
+    category_specs = parse_category_specs(
         prompt_prefix_indices=prompt_prefix_indices,
         prompt_suffix_indices=prompt_suffix_indices,
         grid_state_indices=grid_state_indices,
@@ -354,12 +280,13 @@ def eval_cognitive_map_probe(
         if direct_trajectories:
             single_size_mode = True
             if verbose:
-                print(f"\nNo size folders found. Running in single-size mode with {len(direct_trajectories)} trajectories")
+                print(
+                    f"\nNo size folders found. Running in single-size mode with {len(direct_trajectories)} trajectories"
+                )
         else:
             raise ValueError(f"No size folders or trajectory files found in {trajectories_dir}")
-    else:
-        if verbose:
-            print(f"\nFound {len(size_folders)} size folders: {[f.name for f in size_folders]}")
+    elif verbose:
+        print(f"\nFound {len(size_folders)} size folders: {[f.name for f in size_folders]}")
 
     # Get class info from probe
     num_classes = probe.num_classes
@@ -438,7 +365,7 @@ def eval_cognitive_map_probe(
                         continue
 
                     # Load concatenated activations
-                    activation = _load_concatenated_activations(
+                    activation = load_concatenated_activations(
                         trajectory_folder=traj_activations_folder,
                         layer_idx=layer_idx,
                         step_idx=step_idx,
@@ -452,9 +379,7 @@ def eval_cognitive_map_probe(
                     predictions = _apply_probe_to_all_positions(probe, activation, pad_to_size)
 
                     # Get ground truth
-                    ground_truth = _get_ground_truth_for_step(
-                        grid_state, pad_to_size, probe.label_to_idx
-                    )
+                    ground_truth = _get_ground_truth_for_step(grid_state, pad_to_size, probe.label_to_idx)
 
                     # Collect predictions and ground truth as lists
                     pred_list = []
@@ -537,7 +462,7 @@ def eval_cognitive_map_probe(
                             continue
 
                         # Load concatenated activations
-                        activation = _load_concatenated_activations(
+                        activation = load_concatenated_activations(
                             trajectory_folder=traj_activations_folder,
                             layer_idx=layer_idx,
                             step_idx=step_idx,
@@ -551,9 +476,7 @@ def eval_cognitive_map_probe(
                         predictions = _apply_probe_to_all_positions(probe, activation, pad_to_size)
 
                         # Get ground truth
-                        ground_truth = _get_ground_truth_for_step(
-                            grid_state, pad_to_size, probe.label_to_idx
-                        )
+                        ground_truth = _get_ground_truth_for_step(grid_state, pad_to_size, probe.label_to_idx)
 
                         # Collect predictions and ground truth as lists
                         pred_list = []
@@ -611,9 +534,7 @@ def eval_cognitive_map_probe(
         metrics = complexity_accumulators[complexity].compute_metrics()
         complexity_metrics[complexity] = metrics
         if verbose:
-            _print_metrics_table(
-                metrics, class_names, probe.idx_to_label, f"Complexity {complexity:.2f}"
-            )
+            _print_metrics_table(metrics, class_names, probe.idx_to_label, f"Complexity {complexity:.2f}")
 
     # Per-size-complexity metrics (skip in single_size_mode)
     size_complexity_metrics = {}
@@ -623,7 +544,7 @@ def eval_cognitive_map_probe(
             print("METRICS BY SIZE-COMPLEXITY COMBINATION")
             print("=" * 87)
 
-        for (grid_size, complexity) in sorted(size_complexity_accumulators.keys()):
+        for grid_size, complexity in sorted(size_complexity_accumulators.keys()):
             metrics = size_complexity_accumulators[(grid_size, complexity)].compute_metrics()
             size_complexity_metrics[(grid_size, complexity)] = metrics
             if verbose:

@@ -6,7 +6,7 @@ import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from telos_interp import probing_gpu
+from prediction_visualization import get_predicted_class
 from tqdm import tqdm
 
 font_path = "../data/Roboto-Regular.ttf"
@@ -70,7 +70,7 @@ def plot_per_distance_accuracy(csv_path: str, predictions_path: str, grid_size: 
             if xy_key not in row_predictions:
                 raise ValueError(f"xy_key {xy_key} not in predictions")
             pred_xy_probabilities = row_predictions[xy_key]
-            predicted_class, max_probability = probing_gpu.get_predicted_class(pred_xy_probabilities)
+            predicted_class, max_probability = get_predicted_class(pred_xy_probabilities)
 
             if predicted_class == true_cell_type:
                 row_correctness_matrix[x, y] = 1

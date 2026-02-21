@@ -1,7 +1,7 @@
+from telos_interp.probe_models import LogisticRegressionProbe, MLPProbe
+
 from .train_cognitive_map_probe_fn import (
     CognitiveMapProbe,
-    LogisticRegressionProbe,
-    MLPProbe,
     train_cognitive_map_probe,
 )
 

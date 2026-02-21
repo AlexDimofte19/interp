@@ -6,85 +6,16 @@ from pathlib import Path
 import torch
 from tqdm import tqdm
 
-from telos_interp.commands.prepare_activations_for_probing import (
-    CELL_ID_TO_SYMBOL,
-)
-from telos_interp.commands.prepare_activations_for_probing.prepare_activations_for_probing_utils import (
-    discover_available_categories,
+from telos_interp.activation_loading import (
     discover_available_layers,
     discover_available_steps,
-    discover_available_token_indices,
     discover_model_folder,
     discover_trajectory_folders,
-    load_activation,
+    load_concatenated_activations,
     parse_index_specification,
 )
 from telos_interp.commands.train_cognitive_map_probe import CognitiveMapProbe
-
-
-def _load_concatenated_activations(
-    trajectory_folder: Path,
-    layer_idx: int,
-    step_idx: int,
-    category_specs: dict[str, str | None],
-) -> tuple[torch.Tensor | None, list[tuple[str, int]]]:
-    """Load and concatenate activations from multiple tokens for a layer/step.
-
-    This matches the concatenation order used in prepare_activations_for_probing:
-    activations are concatenated in order of categories (prompt_prefix, prompt_suffix,
-    grid_state, output), and within each category by token index.
-
-    Args:
-        trajectory_folder: Path to trajectory folder in activations directory
-        layer_idx: Layer index
-        step_idx: Step index
-        category_specs: Dict mapping category name to index specification string
-
-    Returns:
-        Tuple of:
-        - Concatenated activation tensor, or None if no activations found
-        - List of (category, token_idx) tuples for tokens that were concatenated
-    """
-    model_folder = discover_model_folder(trajectory_folder)
-    if model_folder is None:
-        return None, []
-
-    step_folder = model_folder / f"layer_{layer_idx}" / f"step_{step_idx}"
-    if not step_folder.exists():
-        return None, []
-
-    all_activations = []
-    contributing_tokens: list[tuple[str, int]] = []
-
-    # Process categories in consistent order (matching training data preparation)
-    for category in ["prompt_prefix", "prompt_suffix", "grid_state", "output"]:
-        index_spec = category_specs.get(category)
-        if index_spec is None:
-            continue
-
-        category_folder = step_folder / category
-        if not category_folder.exists():
-            continue
-
-        available_tokens = discover_available_token_indices(category_folder)
-        if not available_tokens:
-            continue
-
-        selected_tokens = parse_index_specification(index_spec, available_tokens)
-        if not selected_tokens:
-            continue
-
-        for token_idx in selected_tokens:
-            file_path = category_folder / f"{token_idx}.pt"
-            if file_path.exists():
-                activation = load_activation(file_path)
-                all_activations.append(activation)
-                contributing_tokens.append((category, token_idx))
-
-    if not all_activations:
-        return None, []
-
-    return torch.cat(all_activations, dim=0), contributing_tokens
+from telos_interp.grid_utils import CELL_ID_TO_SYMBOL
 
 
 def _load_probe(probe_path: Path) -> tuple[str, CognitiveMapProbe]:
@@ -288,11 +219,12 @@ def _process_trajectory(
 
         for step_idx in steps_to_process:
             # Load and concatenate activations from all specified tokens
-            concatenated_activation, contributing_tokens = _load_concatenated_activations(
+            concatenated_activation, contributing_tokens = load_concatenated_activations(
                 trajectory_folder=trajectory_folder,
                 layer_idx=layer_idx,
                 step_idx=step_idx,
                 category_specs=category_specs,
+                track_contributing_tokens=True,
             )
 
             if concatenated_activation is None or not contributing_tokens:
@@ -392,7 +324,7 @@ def _infer_grid_size_from_trajectory(trajectory_data: dict) -> int | None:
     return None
 
 
-def apply_cognitive_map_probe(
+def apply_cognitive_map_probe(  # noqa: PLR0912
     activations_dir: str,
     trajectories_dir: str,
     probe_path: str,

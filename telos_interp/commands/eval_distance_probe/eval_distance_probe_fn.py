@@ -7,15 +7,15 @@ from pathlib import Path
 import torch
 from tqdm import tqdm
 
-from telos_interp.commands.train_distance_probe import DistanceProbe
-from telos_interp.commands.eval_cognitive_map_probe.eval_cognitive_map_probe_fn import (
+from telos_interp.activation_loading import (
     discover_available_layers,
     discover_available_steps,
     discover_model_folder,
+    load_concatenated_activations,
+    parse_category_specs,
     parse_index_specification,
-    _parse_category_specs,
-    _load_concatenated_activations,
 )
+from telos_interp.commands.train_distance_probe import DistanceProbe
 
 
 class RegressionMetricsAccumulator:
@@ -46,7 +46,7 @@ class RegressionMetricsAccumulator:
 
         mse = ((preds - labels) ** 2).mean().item()
         mae = (preds - labels).abs().mean().item()
-        rmse = mse ** 0.5
+        rmse = mse**0.5
 
         # R² score
         ss_res = ((labels - preds) ** 2).sum().item()
@@ -94,7 +94,7 @@ def _print_metrics_table(metrics: dict, title: str) -> None:
     print("-" * 60)
 
 
-def eval_distance_probe(
+def eval_distance_probe(  # noqa: PLR0912
     trajectories_dir: str,
     activations_dir: str,
     probe_path: str,
@@ -141,7 +141,9 @@ def eval_distance_probe(
 
     # For distance probes, enforce steps="0" since astar_distance is only valid for step 0
     if steps != "0":
-        print(f"WARNING: Distance probe evaluation requires steps='0' (astar_distance is only valid for initial state).")
+        print(
+            "WARNING: Distance probe evaluation requires steps='0' (astar_distance is only valid for initial state)."
+        )
         print(f"         Overriding steps='{steps}' to steps='0'")
         steps = "0"
 
@@ -153,7 +155,7 @@ def eval_distance_probe(
     print(f"  Normalized: {probe.normalized}")
 
     # Parse category specifications
-    category_specs = _parse_category_specs(
+    category_specs = parse_category_specs(
         prompt_prefix_indices=prompt_prefix_indices,
         prompt_suffix_indices=prompt_suffix_indices,
         grid_state_indices=grid_state_indices,
@@ -178,12 +180,13 @@ def eval_distance_probe(
         if direct_trajectories:
             single_size_mode = True
             if verbose:
-                print(f"\nNo size folders found. Running in single-size mode with {len(direct_trajectories)} trajectories")
+                print(
+                    f"\nNo size folders found. Running in single-size mode with {len(direct_trajectories)} trajectories"
+                )
         else:
             raise ValueError(f"No size folders or trajectory files found in {trajectories_dir}")
-    else:
-        if verbose:
-            print(f"\nFound {len(size_folders)} size folders: {[f.name for f in size_folders]}")
+    elif verbose:
+        print(f"\nFound {len(size_folders)} size folders: {[f.name for f in size_folders]}")
 
     # Initialize accumulators
     global_accumulator = RegressionMetricsAccumulator()
@@ -248,7 +251,7 @@ def eval_distance_probe(
 
                 for step_idx in selected_steps:
                     # Load concatenated activations
-                    activation = _load_concatenated_activations(
+                    activation = load_concatenated_activations(
                         trajectory_folder=traj_activations_folder,
                         layer_idx=layer_idx,
                         step_idx=step_idx,
@@ -329,7 +332,7 @@ def eval_distance_probe(
 
                     for step_idx in selected_steps:
                         # Load concatenated activations
-                        activation = _load_concatenated_activations(
+                        activation = load_concatenated_activations(
                             trajectory_folder=traj_activations_folder,
                             layer_idx=layer_idx,
                             step_idx=step_idx,

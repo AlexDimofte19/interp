@@ -1,71 +1,27 @@
 """Train distance regression probes on prepared activations."""
 
 from pathlib import Path
-from typing import Literal
 
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-# Model type literal for type hints
-ModelType = Literal["lr", "mlp"]
-
-
-class LinearRegressionProbe(nn.Module):
-    """Linear regression probe for distance prediction."""
-
-    def __init__(self, input_dim: int):
-        super().__init__()
-        self.linear = nn.Linear(input_dim, 1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.linear(x).squeeze(-1)
-
-
-class MLPRegressionProbe(nn.Module):
-    """Multi-layer perceptron regression probe for distance prediction."""
-
-    def __init__(
-        self,
-        input_dim: int,
-        hidden_dims: list[int],
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        layers = []
-        prev_dim = input_dim
-
-        for hidden_dim in hidden_dims:
-            layers.extend(
-                [
-                    nn.Linear(prev_dim, hidden_dim),
-                    nn.ReLU(),
-                    nn.Dropout(dropout),
-                ]
-            )
-            prev_dim = hidden_dim
-
-        layers.append(nn.Linear(prev_dim, 1))
-        self.network = nn.Sequential(*layers)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.network(x).squeeze(-1)
-
-
-def _create_model(
-    model_type: ModelType,
-    input_dim: int,
-    hidden_dims: list[int],
-    dropout: float,
-) -> nn.Module:
-    """Create the appropriate model based on model_type."""
-    if model_type == "lr":
-        return LinearRegressionProbe(input_dim)
-    elif model_type == "mlp":
-        return MLPRegressionProbe(input_dim, hidden_dims, dropout)
-    else:
-        raise ValueError(f"Unknown model_type: {model_type}")
+from telos_interp.probe_models import (
+    ModelType,
+)
+from telos_interp.probe_models import (
+    create_regression_model as _create_model,
+)
+from telos_interp.training import (
+    compute_normalization_params,
+    normalize_activations,
+    resolve_device,
+    set_seed,
+)
+from telos_interp.training import (
+    train_epoch as _train_epoch,
+)
 
 
 class DistanceProbe:
@@ -226,34 +182,6 @@ class DistanceProbe:
         )
 
 
-def _train_epoch(
-    model: nn.Module,
-    dataloader: DataLoader,
-    criterion: nn.Module,
-    optimizer: optim.Optimizer,
-    device: torch.device,
-) -> float:
-    """Train for one epoch and return average loss."""
-    model.train()
-    total_loss = 0.0
-    num_batches = 0
-
-    for batch_x_raw, batch_y_raw in dataloader:
-        batch_x = batch_x_raw.to(device)
-        batch_y = batch_y_raw.to(device)
-
-        optimizer.zero_grad()
-        outputs = model(batch_x)
-        loss = criterion(outputs, batch_y)
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        num_batches += 1
-
-    return total_loss / num_batches if num_batches > 0 else 0.0
-
-
 def _evaluate(
     model: nn.Module,
     dataloader: DataLoader,
@@ -298,7 +226,7 @@ def _evaluate(
     # Compute metrics
     mse = ((preds_orig - labels_orig) ** 2).mean().item()
     mae = (preds_orig - labels_orig).abs().mean().item()
-    rmse = mse ** 0.5
+    rmse = mse**0.5
 
     # R² score
     ss_res = ((labels_orig - preds_orig) ** 2).sum().item()
@@ -318,7 +246,7 @@ def _evaluate(
             distance_buckets[int(dist)] = {
                 "mae": bucket_mae,
                 "mse": bucket_mse,
-                "rmse": bucket_mse ** 0.5,
+                "rmse": bucket_mse**0.5,
                 "count": int(mask.sum().item()),
             }
 
@@ -399,9 +327,7 @@ def _print_final_results(
         print("-" * 60)
         for dist in sorted(final_results["per_distance_metrics"].keys()):
             metrics = final_results["per_distance_metrics"][dist]
-            print(
-                f"{dist:<10} {metrics['mae']:>10.4f} {metrics['rmse']:>10.4f} {metrics['count']:>10}"
-            )
+            print(f"{dist:<10} {metrics['mae']:>10.4f} {metrics['rmse']:>10.4f} {metrics['count']:>10}")
         print("-" * 60)
 
 
@@ -464,13 +390,10 @@ def train_distance_probe(
         Trained DistanceProbe instance (also saved to output_path)
     """
     # Set random seed
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    set_seed(seed)
 
     # Determine device
-    device_str = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
-    torch_device = torch.device(device_str)
+    torch_device = resolve_device(device)
 
     print(f"Using device: {torch_device}")
 
@@ -529,14 +452,12 @@ def train_distance_probe(
     scaler_mean = None
     scaler_std = None
     if normalize:
-        scaler_mean = train_activations.mean(dim=0)
-        scaler_std = train_activations.std(dim=0)
-        # Avoid division by zero
-        scaler_std = torch.where(scaler_std > 1e-8, scaler_std, torch.ones_like(scaler_std))
-        # Normalize both train and eval using training statistics
-        train_activations = (train_activations - scaler_mean) / scaler_std
-        eval_activations = (eval_activations - scaler_mean) / scaler_std
-        print(f"Activation normalization enabled: computed mean/std from {train_activations.shape[0]} training samples")
+        scaler_mean, scaler_std = compute_normalization_params(train_activations)
+        train_activations = normalize_activations(train_activations, scaler_mean, scaler_std)
+        eval_activations = normalize_activations(eval_activations, scaler_mean, scaler_std)
+        print(
+            f"Activation normalization enabled: computed mean/std from {train_activations.shape[0]} training samples"
+        )
 
     # Compute label normalization parameters
     label_mean = None

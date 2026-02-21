@@ -8,13 +8,9 @@ from telos_interp.commands.apply_cognitive_map_probe import apply_cognitive_map_
 from telos_interp.commands.eval_cognitive_map_probe import eval_cognitive_map_probe
 from telos_interp.commands.eval_distance_probe import eval_distance_probe
 from telos_interp.commands.gather_activations import gather_activations
-from telos_interp.commands.generate_data import generate_data
 from telos_interp.commands.prepare_activations_for_probing import prepare_activations_for_probing
-from telos_interp.commands.steering import steering_cmd
 from telos_interp.commands.train_cognitive_map_probe import train_cognitive_map_probe
 from telos_interp.commands.train_distance_probe import train_distance_probe
-from telos_interp.commands.deprecated_train_distance_probe import train_distance_probe as deprecated_train_distance_probe
-from telos_interp.commands.train_probe import train_probe
 
 
 def main():
@@ -23,29 +19,22 @@ def main():
     Configures logging and sets up the CLI with available subcommands using tyro.
     Currently supports the following subcommands:
     - gather_activations: Gather model activations from various data formats
-    - generate_data: Generate datasets of prompts and responses for training probes
-    - train_probe: Train and apply probing classifiers on model activations
     - train_distance_probe: Train and apply distance regression probes
     - prepare_activations_for_probing: Extract and concatenate activations for cognitive map probing
     - train_cognitive_map_probe: Train cognitive map probing classifiers (LR or MLP)
     - apply_cognitive_map_probe: Apply trained probes to trajectories and store predictions
     - eval_cognitive_map_probe: Evaluate probes on test trajectories with detailed metrics
-    - steering: Compute and apply steering vectors for model generation
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     tyro.extras.subcommand_cli_from_dict(
         {
             "gather_activations": gather_activations,
-            "generate_data": generate_data,
-            "train_probe": train_probe,
             "train_distance_probe": train_distance_probe,
             "eval_distance_probe": eval_distance_probe,
-            "deprecated_train_distance_probe": deprecated_train_distance_probe,
             "prepare_activations_for_probing": prepare_activations_for_probing,
             "train_cognitive_map_probe": train_cognitive_map_probe,
             "apply_cognitive_map_probe": apply_cognitive_map_probe,
             "eval_cognitive_map_probe": eval_cognitive_map_probe,
-            "steering": steering_cmd,
         }
     )
 
