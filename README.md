@@ -6,6 +6,8 @@
 
 Paper: [arxiv.org/abs/2602.08964](https://arxiv.org/abs/2602.08964)
 
+Data and trained probes: [huggingface.co/project-telos](https://huggingface.co/project-telos)
+
 ## Citation
 
 ```bibtex
@@ -35,9 +37,38 @@ pip install -e .
 pip install -e ".[vllm]"
 ```
 
+## Data and Trained Probes
+
+Pre-computed trajectories, activations, trained probes, and evaluation results are available on the [project-telos](https://huggingface.co/project-telos) HuggingFace organization.
+
+**Trained probes:**
+
+| Repository | Description |
+|------------|-------------|
+| [cognitive_map_probes](https://huggingface.co/project-telos/cognitive_map_probes) | Trained cell identity classification probes |
+| [distance_probes](https://huggingface.co/project-telos/distance_probes) | Trained A* distance regression probes |
+| [decoder_probes](https://huggingface.co/project-telos/decoder_probes) | Trained decoder probes |
+
+**Datasets:**
+
+| Repository | Description |
+|------------|-------------|
+| [trajectories_train_single_step](https://huggingface.co/datasets/project-telos/trajectories_train_single_step) | Training trajectories (single step) |
+| [trajectories_test_full](https://huggingface.co/datasets/project-telos/trajectories_test_full) | Test trajectories (full episodes) |
+| [trajectories_test_full_with_cognitive_map_probes](https://huggingface.co/datasets/project-telos/trajectories_test_full_with_cognitive_map_probes) | Test trajectories with probe predictions |
+| [trajectories_key_door_100](https://huggingface.co/datasets/project-telos/trajectories_key_door_100) | Key-door environment trajectories |
+| [trajectories_key_no_door_100](https://huggingface.co/datasets/project-telos/trajectories_key_no_door_100) | Key-no-door environment trajectories |
+| [probes_train_single_step](https://huggingface.co/datasets/project-telos/probes_train_single_step) | Prepared probe training data |
+| [activations_test_full](https://huggingface.co/datasets/project-telos/activations_test_full) | Extracted test activations |
+| [activations_key_door_env_100](https://huggingface.co/datasets/project-telos/activations_key_door_env_100) | Key-door environment activations |
+| [cognitive_map_probes_results](https://huggingface.co/datasets/project-telos/cognitive_map_probes_results) | Cell identity probe evaluation results |
+| [distance_probes_results](https://huggingface.co/datasets/project-telos/distance_probes_results) | Distance probe evaluation results |
+
 ## Reproduction
 
 The analysis pipeline has four stages. Each stage uses a CLI command provided by the `interp-cli` tool. See [`telos_interp/commands/README.md`](telos_interp/commands/README.md) for full documentation of all commands and options.
+
+To use pre-computed data, download the relevant datasets from the HuggingFace organization above and point the CLI commands to the downloaded directories.
 
 ### 1. Gather activations
 
