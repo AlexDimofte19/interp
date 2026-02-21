@@ -1,0 +1,52 @@
+cff-version: 1.2.0
+title: "A Behavioural and Representational Evaluation of Goal-Directedness in Language Model Agents"
+message: "If you use this software, please cite the associated paper."
+type: software
+license: Apache-2.0
+authors:
+  - family-names: Arghal
+    given-names: Raghu
+  - family-names: Chen
+    given-names: Fade
+  - family-names: Dalton
+    given-names: Niall
+  - family-names: Kortukov
+    given-names: Evgenii
+  - family-names: McNamara
+    given-names: Calum
+  - family-names: Nalmpantis
+    given-names: Angelos
+  - family-names: Nirvaan
+    given-names: Moksh
+  - family-names: Sarti
+    given-names: Gabriele
+    orcid: "https://orcid.org/0000-0003-4519-6640"
+  - family-names: Giulianelli
+    given-names: Mario
+    orcid: "https://orcid.org/0000-0003-3065-3811"
+date-released: "2026-02-09"
+url: "https://github.com/SPAR-Telos/interp"
+preferred-citation:
+  type: article
+  title: "A Behavioural and Representational Evaluation of Goal-Directedness in Language Model Agents"
+  authors:
+    - family-names: Arghal
+      given-names: Raghu
+    - family-names: Chen
+      given-names: Fade
+    - family-names: Dalton
+      given-names: Niall
+    - family-names: Kortukov
+      given-names: Evgenii
+    - family-names: McNamara
+      given-names: Calum
+    - family-names: Nalmpantis
+      given-names: Angelos
+    - family-names: Nirvaan
+      given-names: Moksh
+    - family-names: Sarti
+      given-names: Gabriele
+    - family-names: Giulianelli
+      given-names: Mario
+  year: 2026
+  url: "https://arxiv.org/abs/2602.08964"

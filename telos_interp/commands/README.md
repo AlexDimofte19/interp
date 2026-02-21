@@ -1,6 +1,6 @@
-# interp-cli_interp Commands
+# telos-interp Commands
 
-This folder contains CLI commands for the interp-cli_interp package. Commands are invoked via the `interp-cli` CLI.
+This folder contains CLI commands for the telos-interp package. Commands are invoked via the `interp-cli` CLI.
 
 ## Command Pipeline
 

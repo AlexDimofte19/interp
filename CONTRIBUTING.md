@@ -75,13 +75,12 @@ This configuration will automatically format your Python code and organize impor
 ```
 ├── telos_interp/          # Main package source code
 │   └── commands/          # CLI commands
-│       └── cli.py         # Main CLI application using Typer
+│       └── cli.py         # Main CLI application using Tyro
 ├── tests/                 # Test files
+├── configs/               # Probe training configuration files
 ├── pyproject.toml         # Project configuration and dependencies
 ├── Makefile              # Development commands
-├── .pre-commit-config.yaml # Pre-commit hooks configuration
-├── requirements.txt       # User dependencies
-└── requirements-dev.txt   # Development dependencies
+└── .pre-commit-config.yaml # Pre-commit hooks configuration
 ```
 
 ## Development Workflow
