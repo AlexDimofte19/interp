@@ -5,9 +5,18 @@ from typing import Literal
 
 import torch
 from torch import nn, optim
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 from tqdm import tqdm
 
+from telos_interp.commands.prepare_activations_for_probing.manifest_loader import (
+    GridTileCompactDataset,
+    IndexedGridTileCompactDataset,
+    build_flat_grid_tile,
+    detect_format,
+    load_grid_tile_compact,
+    load_v3_manifest,
+    resolve_manifest_path,
+)
 from telos_interp.grid_utils import CELL_ID_TO_SYMBOL
 from telos_interp.probe_models import (
     ModelType,
@@ -457,14 +466,14 @@ def _build_indices_for_trajectories(
     return torch.cat(indices_list)
 
 
-def _load_and_preprocess_train_data(
+def _load_and_preprocess_train_data_v1(
     train_path: Path,
     verbose: bool,
-) -> tuple[torch.Tensor, torch.Tensor, dict, int | None]:
-    """Load training data and filter NaN values.
+) -> dict:
+    """Load legacy v1 training data and filter NaN values.
 
-    Returns:
-        Tuple of (activations, labels, train_data_dict, num_cells_per_trajectory)
+    Returns a dict with keys: format=1, activations (N, D+2), labels (N,),
+    train_data (raw loaded dict), num_cells_per_trajectory (int | None).
     """
     if verbose:
         print(f"Loading training data from {train_path}")
@@ -500,7 +509,82 @@ def _load_and_preprocess_train_data(
             print(f"Remaining samples: {activations.shape[0]}")
 
     num_cells_per_trajectory = train_data.get("num_cells_per_trajectory")
-    return activations, labels, train_data, num_cells_per_trajectory
+    return {
+        "format": 1,
+        "activations": activations,
+        "labels": labels,
+        "train_data": train_data,
+        "num_cells_per_trajectory": num_cells_per_trajectory,
+    }
+
+
+def _load_and_preprocess_train_data_v3(
+    train_path: Path,
+    verbose: bool,
+) -> dict:
+    """Load v3 training data (manifest dir) and filter NaN trajectories.
+
+    NaN filter operates per-trajectory: if a trajectory's activation has any
+    NaN, drop the matching row of base_act/positions/labels. The trainer body
+    consumes the compact dict throughout subset/split.
+
+    Returns a dict with keys: format=3, compact, manifest, num_cells_per_trajectory.
+    """
+    if verbose:
+        print(f"Loading training data from {train_path}")
+
+    manifest_path = resolve_manifest_path(train_path)
+    manifest = load_v3_manifest(manifest_path)
+
+    probe_type = manifest.get("probe_type")
+    if probe_type != "grid_tile":
+        raise ValueError(
+            f"Expected probe_type='grid_tile', got '{probe_type}'. This command only supports grid_tile probe data."
+        )
+
+    compact = load_grid_tile_compact(manifest, manifest_path)
+
+    if verbose:
+        num_trajectories = compact["base_act"].shape[0]
+        print(f"Loaded {num_trajectories} trajectories ({num_trajectories * compact['C']} cells)")
+        print(f"Activation dimension (without position): {compact['D']}")
+        print(f"Number of unique labels: {compact['labels'].unique().shape[0]}")
+
+    # Per-trajectory NaN filter: drop trajectories whose activation has any NaN.
+    nan_mask = torch.isnan(compact["base_act"]).any(dim=1)
+    num_nan = nan_mask.sum().item()
+    if num_nan > 0:
+        keep_mask = ~nan_mask
+        compact["base_act"] = compact["base_act"][keep_mask]
+        compact["positions"] = compact["positions"][keep_mask]
+        compact["labels"] = compact["labels"][keep_mask]
+        compact["trajectory_names"] = [n for n, k in zip(compact["trajectory_names"], keep_mask.tolist()) if k]
+        if compact.get("sizes") is not None:
+            compact["sizes"] = [s for s, k in zip(compact["sizes"], keep_mask.tolist()) if k]
+        if verbose:
+            num_trajectories = compact["base_act"].shape[0]
+            print(
+                f"WARNING: Found {num_nan} trajectories with NaN activations, filtering them out. "
+                f"Remaining trajectories: {num_trajectories}"
+            )
+
+    return {
+        "format": 3,
+        "compact": compact,
+        "manifest": manifest,
+        "num_cells_per_trajectory": compact["C"],
+    }
+
+
+def _load_and_preprocess_train_data(
+    train_path: Path,
+    verbose: bool,
+) -> dict:
+    """Detect format (v1 .pt or v3 manifest dir) and dispatch."""
+    fmt = detect_format(train_path)
+    if fmt == 3:
+        return _load_and_preprocess_train_data_v3(train_path, verbose)
+    return _load_and_preprocess_train_data_v1(train_path, verbose)
 
 
 def _remap_labels(
@@ -526,15 +610,15 @@ def _remap_labels(
     return remapped_labels, num_classes, label_to_idx, idx_to_label
 
 
-def _load_separate_eval_data(
+def _load_separate_eval_data_v1(
     eval_path: Path,
     label_to_idx: dict[int, int],
     verbose: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Load and process separate evaluation data.
+    """Load and process separate evaluation data from a legacy v1 .pt file.
 
     Returns:
-        Tuple of (eval_activations, eval_labels)
+        Tuple of (eval_activations, eval_labels) — flat (N, D+2) and (N,).
     """
     if verbose:
         print(f"Loading evaluation data from {eval_path}")
@@ -566,6 +650,341 @@ def _load_separate_eval_data(
         print(f"Loaded {eval_activations.shape[0]} evaluation samples")
 
     return eval_activations, eval_labels
+
+
+def _load_separate_eval_data_v3(
+    eval_path: Path,
+    label_to_idx: dict[int, int],
+    verbose: bool,
+) -> dict:
+    """Load and process separate evaluation data from a v3 manifest dir.
+
+    Applies the same NaN filter as the train loader and remaps cell labels using
+    the training label_to_idx. Cells whose original label isn't in label_to_idx
+    are masked out via a per-cell valid mask (kept inside the compact dict).
+
+    Returns a compact dict with the same shape as the train compact (sans
+    `format` / `manifest`), augmented with `valid_cell_mask: (T, C) bool` so
+    the dataset knows which cells to materialize.
+    """
+    if verbose:
+        print(f"Loading evaluation data from {eval_path}")
+
+    manifest_path = resolve_manifest_path(eval_path)
+    manifest = load_v3_manifest(manifest_path)
+
+    probe_type = manifest.get("probe_type")
+    if probe_type != "grid_tile":
+        raise ValueError(f"Expected probe_type='grid_tile' in eval manifest, got '{probe_type}'.")
+
+    compact = load_grid_tile_compact(manifest, manifest_path)
+
+    # NaN filter on trajectories
+    nan_mask = torch.isnan(compact["base_act"]).any(dim=1)
+    if nan_mask.any():
+        keep_mask = ~nan_mask
+        compact["base_act"] = compact["base_act"][keep_mask]
+        compact["positions"] = compact["positions"][keep_mask]
+        compact["labels"] = compact["labels"][keep_mask]
+        compact["trajectory_names"] = [n for n, k in zip(compact["trajectory_names"], keep_mask.tolist()) if k]
+        if compact.get("sizes") is not None:
+            compact["sizes"] = [s for s, k in zip(compact["sizes"], keep_mask.tolist()) if k]
+
+    # Remap labels using training label_to_idx; cells with unknown labels are masked.
+    raw_labels = compact["labels"]
+    remapped = torch.full_like(raw_labels, -1)
+    valid_cell_mask = torch.zeros_like(raw_labels, dtype=torch.bool)
+    for original, idx in label_to_idx.items():
+        match = raw_labels == original
+        remapped[match] = idx
+        valid_cell_mask |= match
+    compact["labels"] = remapped
+    compact["valid_cell_mask"] = valid_cell_mask
+
+    num_kept = int(valid_cell_mask.sum().item())
+    num_total = int(valid_cell_mask.numel())
+    if verbose:
+        if num_kept < num_total:
+            print(
+                f"WARNING: {num_total - num_kept} eval cells have labels not in training; "
+                f"they will be excluded from the eval set."
+            )
+        print(f"Loaded {num_kept} valid evaluation cells across {compact['base_act'].shape[0]} trajectories")
+
+    return compact
+
+
+def _prepare_train_eval_v1(
+    load_result: dict,
+    eval_data_path: str | None,
+    eval_split: float,
+    subset: float,
+    balance_classes: bool,
+    normalize: bool,
+    per_class_max_count: int | None,
+    seed: int,
+    verbose: bool,
+) -> dict:
+    """V1 (legacy flat .pt) flow: subset, remap, split, balance, normalize, build TensorDatasets."""
+    activations = load_result["activations"]
+    labels = load_result["labels"]
+    num_cells_per_trajectory = load_result["num_cells_per_trajectory"]
+
+    # Subset
+    if num_cells_per_trajectory is not None and num_cells_per_trajectory > 0:
+        num_trajectories = len(activations) // num_cells_per_trajectory
+        num_trajectories_to_keep = max(1, int(num_trajectories * subset))
+        trajectory_perm = torch.randperm(num_trajectories)
+        selected_trajectories = trajectory_perm[:num_trajectories_to_keep]
+        selected_indices = _build_indices_for_trajectories(selected_trajectories, num_cells_per_trajectory)
+        activations = activations[selected_indices]
+        labels = labels[selected_indices]
+        print(f"Subset: keeping {num_trajectories_to_keep}/{num_trajectories} trajectories ({subset * 100:.1f}%)")
+        print(f"  Remaining samples: {len(activations)}")
+    else:
+        perm = torch.randperm(len(activations))
+        num_samples_to_keep = max(1, int(len(activations) * subset))
+        activations = activations[perm[:num_samples_to_keep]]
+        labels = labels[perm[:num_samples_to_keep]]
+        print(f"Subset: keeping {num_samples_to_keep} samples ({subset * 100:.1f}%)")
+
+    # Remap labels
+    remapped_labels, num_classes, label_to_idx, idx_to_label = _remap_labels(labels, verbose)
+
+    # Debug snapshot
+    debug_trajectory_activations = None
+    debug_trajectory_positions = None
+    debug_trajectory_labels = None
+    if num_cells_per_trajectory is not None and num_cells_per_trajectory <= len(activations):
+        debug_trajectory_activations = activations[:num_cells_per_trajectory].clone()
+        debug_trajectory_positions = activations[:num_cells_per_trajectory, -2:].clone()
+        debug_trajectory_labels = remapped_labels[:num_cells_per_trajectory].clone()
+
+    # Train/eval split
+    if eval_data_path is None:
+        num_samples = activations.shape[0]
+        if num_cells_per_trajectory is not None and num_cells_per_trajectory > 0:
+            num_trajectories = num_samples // num_cells_per_trajectory
+            trajectory_perm = torch.randperm(num_trajectories)
+            num_train_trajectories = int(num_trajectories * (1 - eval_split))
+            train_trajectory_ids = trajectory_perm[:num_train_trajectories]
+            eval_trajectory_ids = trajectory_perm[num_train_trajectories:]
+            train_indices = _build_indices_for_trajectories(train_trajectory_ids, num_cells_per_trajectory)
+            eval_indices = _build_indices_for_trajectories(eval_trajectory_ids, num_cells_per_trajectory)
+            print(f"Split by trajectories: {len(train_trajectory_ids)} train, {len(eval_trajectory_ids)} eval")
+        else:
+            indices = torch.randperm(num_samples)
+            split_idx = int(num_samples * (1 - eval_split))
+            train_indices = indices[:split_idx]
+            eval_indices = indices[split_idx:]
+        train_activations = activations[train_indices]
+        train_labels = remapped_labels[train_indices]
+        eval_activations = activations[eval_indices]
+        eval_labels = remapped_labels[eval_indices]
+        print(f"Split: {train_activations.shape[0]} train, {eval_activations.shape[0]} eval")
+    else:
+        train_activations = activations
+        train_labels = remapped_labels
+        eval_path = Path(eval_data_path)
+        if not eval_path.exists():
+            raise FileNotFoundError(f"Evaluation data not found: {eval_path}")
+        if detect_format(eval_path) != 1:
+            raise ValueError("Train data is v1 (legacy .pt) but eval data is v3 — formats must match.")
+        eval_activations, eval_labels = _load_separate_eval_data_v1(eval_path, label_to_idx, verbose)
+
+    # Class balancing
+    if balance_classes:
+        print("Balancing classes by upsampling...")
+        unique, counts = torch.unique(train_labels, return_counts=True)
+        print(f"  Before: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
+        train_activations, train_labels = _balance_classes_by_upsampling(
+            train_activations, train_labels, seed=seed, per_class_max_count=per_class_max_count
+        )
+        unique, counts = torch.unique(train_labels, return_counts=True)
+        print(f"  After: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
+        print(f"  New training set size: {train_activations.shape[0]}")
+
+    # Normalization
+    scaler_mean = None
+    scaler_std = None
+    if normalize:
+        scaler_mean, scaler_std = compute_normalization_params(train_activations)
+        train_activations = normalize_activations(train_activations, scaler_mean, scaler_std)
+        eval_activations = normalize_activations(eval_activations, scaler_mean, scaler_std)
+        print(f"Normalization enabled: computed mean/std from {train_activations.shape[0]} training samples")
+
+    train_dataset = TensorDataset(train_activations.float(), train_labels.long())
+    eval_dataset = TensorDataset(eval_activations.float(), eval_labels.long())
+
+    return {
+        "train_dataset": train_dataset,
+        "eval_dataset": eval_dataset,
+        "num_classes": num_classes,
+        "label_to_idx": label_to_idx,
+        "idx_to_label": idx_to_label,
+        "scaler_mean": scaler_mean,
+        "scaler_std": scaler_std,
+        "debug_trajectory_activations": debug_trajectory_activations,
+        "debug_trajectory_positions": debug_trajectory_positions,
+        "debug_trajectory_labels": debug_trajectory_labels,
+        "train_labels_for_weights": train_labels,
+        "input_dim": train_activations.shape[1],
+    }
+
+
+def _prepare_train_eval_v3(
+    load_result: dict,
+    eval_data_path: str | None,
+    eval_split: float,
+    subset: float,
+    balance_classes: bool,
+    normalize: bool,
+    per_class_max_count: int | None,
+    seed: int,
+    verbose: bool,
+) -> dict:
+    """V3 (manifest dir) flow: operate on compact (T, D) + (T, C, 2) + (T, C) tensors throughout.
+
+    Default builds a `GridTileCompactDataset` that materializes (D+2,) rows on the fly
+    so peak training-time RAM is ~T*D*4 bytes regardless of C. The class-balanced branch
+    materializes the flat (T*C, D+2) tensor and reverts to v1 memory characteristics.
+    """
+    compact = load_result["compact"]
+    cells_per_trajectory = compact["C"]
+    activation_dim = compact["D"]
+    num_trajectories = compact["base_act"].shape[0]
+
+    # Subset by trajectory
+    num_to_keep = max(1, int(num_trajectories * subset))
+    perm = torch.randperm(num_trajectories)
+    keep_idx = perm[:num_to_keep]
+    base_act = compact["base_act"][keep_idx]
+    positions = compact["positions"][keep_idx]
+    raw_labels = compact["labels"][keep_idx]
+    print(f"Subset: keeping {num_to_keep}/{num_trajectories} trajectories ({subset * 100:.1f}%)")
+    print(f"  Remaining samples: {num_to_keep * cells_per_trajectory}")
+
+    # Remap labels (flatten -> remap -> reshape)
+    flat_labels_for_remap = raw_labels.reshape(-1)
+    remapped_flat, num_classes, label_to_idx, idx_to_label = _remap_labels(flat_labels_for_remap, verbose)
+    remapped_labels = remapped_flat.reshape(raw_labels.shape)
+
+    # Debug snapshot from first trajectory (data already shuffled by subset)
+    debug_trajectory_activations = None
+    debug_trajectory_positions = None
+    debug_trajectory_labels = None
+    if num_to_keep > 0:
+        first_act = base_act[0]                           # (D,)
+        first_pos_float = positions[0].float()            # (C, 2)
+        # Reconstruct (C, D+2) for the model. This stores positions un-normalized;
+        # if normalization is on we'll compose the position-pad-normalized version
+        # back in the main body before calling the model.
+        debug_trajectory_activations = torch.cat(
+            [first_act.unsqueeze(0).expand(cells_per_trajectory, activation_dim), first_pos_float],
+            dim=1,
+        ).clone()                                          # (C, D+2)
+        debug_trajectory_positions = positions[0].clone()  # (C, 2) original ints
+        debug_trajectory_labels = remapped_labels[0].clone()  # (C,)
+
+    # Train/eval split (trajectory-level)
+    if eval_data_path is None:
+        T = base_act.shape[0]
+        traj_perm = torch.randperm(T)
+        num_train = int(T * (1 - eval_split))
+        train_idx = traj_perm[:num_train]
+        eval_idx = traj_perm[num_train:]
+
+        train_base_act = base_act[train_idx]
+        train_positions = positions[train_idx]
+        train_labels_2d = remapped_labels[train_idx]
+        eval_base_act = base_act[eval_idx]
+        eval_positions = positions[eval_idx]
+        eval_labels_2d = remapped_labels[eval_idx]
+        eval_valid_cell_mask = None
+        print(f"Split by trajectories: {len(train_idx)} train, {len(eval_idx)} eval")
+    else:
+        train_base_act = base_act
+        train_positions = positions
+        train_labels_2d = remapped_labels
+
+        eval_path = Path(eval_data_path)
+        if not eval_path.exists():
+            raise FileNotFoundError(f"Evaluation data not found: {eval_path}")
+        if detect_format(eval_path) != 3:
+            raise ValueError("Train data is v3 (manifest dir) but eval data is v1 — formats must match.")
+        eval_compact = _load_separate_eval_data_v3(eval_path, label_to_idx, verbose)
+        eval_base_act = eval_compact["base_act"]
+        eval_positions = eval_compact["positions"]
+        eval_labels_2d = eval_compact["labels"]
+        eval_valid_cell_mask = eval_compact.get("valid_cell_mask")
+
+    # Class balancing — materialize flat. Memory regresses to v1.
+    train_flat_x: torch.Tensor | None = None
+    train_flat_y: torch.Tensor | None = None
+    if balance_classes:
+        print("Balancing classes by upsampling...")
+        train_flat_x, train_flat_y = build_flat_grid_tile(train_base_act, train_positions, train_labels_2d)
+        unique, counts = torch.unique(train_flat_y, return_counts=True)
+        print(f"  Before: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
+        train_flat_x, train_flat_y = _balance_classes_by_upsampling(
+            train_flat_x, train_flat_y, seed=seed, per_class_max_count=per_class_max_count
+        )
+        unique, counts = torch.unique(train_flat_y, return_counts=True)
+        print(f"  After: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
+        print(f"  New training set size: {train_flat_x.shape[0]}")
+
+    # Normalization (D-dim only; positions stay un-normalized)
+    scaler_mean = None
+    scaler_std = None
+    if normalize:
+        if balance_classes:
+            scaler_mean_act, scaler_std_act = compute_normalization_params(train_flat_x[:, :activation_dim])
+            train_flat_x[:, :activation_dim] = normalize_activations(
+                train_flat_x[:, :activation_dim], scaler_mean_act, scaler_std_act
+            )
+            n_normalized = train_flat_x.shape[0]
+        else:
+            scaler_mean_act, scaler_std_act = compute_normalization_params(train_base_act)
+            train_base_act = normalize_activations(train_base_act, scaler_mean_act, scaler_std_act)
+            n_normalized = train_base_act.shape[0]
+        eval_base_act = normalize_activations(eval_base_act, scaler_mean_act, scaler_std_act)
+        # Pad to (D+2,) so the saved probe applies an identity transform on the position cols
+        # — and so the body's debug-display code, which normalizes (debug - scaler_mean) / scaler_std,
+        # handles the v3 debug snapshot the same way as v1.
+        scaler_mean = torch.cat([scaler_mean_act, torch.zeros(2, dtype=scaler_mean_act.dtype)])
+        scaler_std = torch.cat([scaler_std_act, torch.ones(2, dtype=scaler_std_act.dtype)])
+        print(f"Normalization enabled: computed mean/std from {n_normalized} training samples")
+
+    # Build datasets
+    if balance_classes:
+        train_dataset: Dataset = TensorDataset(train_flat_x.float(), train_flat_y.long())
+        train_labels_for_weights = train_flat_y
+    else:
+        train_dataset = GridTileCompactDataset(train_base_act, train_positions, train_labels_2d)
+        train_labels_for_weights = train_labels_2d.reshape(-1)
+
+    if eval_valid_cell_mask is not None:
+        flat_indices = torch.nonzero(eval_valid_cell_mask.reshape(-1), as_tuple=True)[0]
+        eval_dataset: Dataset = IndexedGridTileCompactDataset(
+            eval_base_act, eval_positions, eval_labels_2d, flat_indices
+        )
+    else:
+        eval_dataset = GridTileCompactDataset(eval_base_act, eval_positions, eval_labels_2d)
+
+    return {
+        "train_dataset": train_dataset,
+        "eval_dataset": eval_dataset,
+        "num_classes": num_classes,
+        "label_to_idx": label_to_idx,
+        "idx_to_label": idx_to_label,
+        "scaler_mean": scaler_mean,
+        "scaler_std": scaler_std,
+        "debug_trajectory_activations": debug_trajectory_activations,
+        "debug_trajectory_positions": debug_trajectory_positions,
+        "debug_trajectory_labels": debug_trajectory_labels,
+        "train_labels_for_weights": train_labels_for_weights,
+        "input_dim": activation_dim + 2,
+    }
 
 
 def _print_final_results(
@@ -694,129 +1113,57 @@ def train_cognitive_map_probe(
     if not train_path.exists():
         raise FileNotFoundError(f"Training data not found: {train_path}")
 
-    activations, labels, train_data, num_cells_per_trajectory = _load_and_preprocess_train_data(train_path, verbose)
-
-    # Validate and apply subset parameter
     if not 0.0 < subset <= 1.0:
         raise ValueError(f"subset must be in (0.0, 1.0], got {subset}")
 
-    # If subset is 1.0, no subsetting is applied. In any case, shuffle the trajectories.
-    if num_cells_per_trajectory is not None and num_cells_per_trajectory > 0:
-        # Subset by complete trajectories, randomly selected (not just first N)
-        num_trajectories = len(activations) // num_cells_per_trajectory
-        num_trajectories_to_keep = max(1, int(num_trajectories * subset))
+    load_result = _load_and_preprocess_train_data(train_path, verbose)
 
-        # Shuffle trajectory indices and select subset
-        trajectory_perm = torch.randperm(num_trajectories)
-        selected_trajectories = trajectory_perm[:num_trajectories_to_keep]
-
-        # Build sample indices and reorder data by selected trajectories
-        selected_indices = _build_indices_for_trajectories(selected_trajectories, num_cells_per_trajectory)
-        activations = activations[selected_indices]
-        labels = labels[selected_indices]
-
-        print(f"Subset: keeping {num_trajectories_to_keep}/{num_trajectories} trajectories ({subset * 100:.1f}%)")
-        print(f"  Remaining samples: {len(activations)}")
+    if load_result["format"] == 3:
+        bundle = _prepare_train_eval_v3(
+            load_result=load_result,
+            eval_data_path=eval_data_path,
+            eval_split=eval_split,
+            subset=subset,
+            balance_classes=balance_classes,
+            normalize=normalize,
+            per_class_max_count=per_class_max_count,
+            seed=seed,
+            verbose=verbose,
+        )
     else:
-        # Fallback: shuffle then subset by samples if no trajectory info
-        perm = torch.randperm(len(activations))
-        num_samples_to_keep = max(1, int(len(activations) * subset))
-        activations = activations[perm[:num_samples_to_keep]]
-        labels = labels[perm[:num_samples_to_keep]]
-        print(f"Subset: keeping {num_samples_to_keep} samples ({subset * 100:.1f}%)")
+        bundle = _prepare_train_eval_v1(
+            load_result=load_result,
+            eval_data_path=eval_data_path,
+            eval_split=eval_split,
+            subset=subset,
+            balance_classes=balance_classes,
+            normalize=normalize,
+            per_class_max_count=per_class_max_count,
+            seed=seed,
+            verbose=verbose,
+        )
 
-    # Remap labels to only include classes present in the data
-    remapped_labels, num_classes, label_to_idx, idx_to_label = _remap_labels(labels, verbose)
-
-    # Save first trajectory's data for debug visualization
-    # Data is already shuffled at trajectory level, so first trajectory is random
-    debug_trajectory_activations = None
-    debug_trajectory_positions = None
-    debug_trajectory_labels = None
-    if num_cells_per_trajectory is not None and num_cells_per_trajectory <= len(activations):
-        debug_idx_start = 0
-        debug_idx_end = num_cells_per_trajectory
-        debug_trajectory_activations = activations[debug_idx_start:debug_idx_end].clone()
-        # Save positions separately (last 2 columns) before any normalization
-        debug_trajectory_positions = activations[debug_idx_start:debug_idx_end, -2:].clone()
-        debug_trajectory_labels = remapped_labels[debug_idx_start:debug_idx_end].clone()
+    train_dataset = bundle["train_dataset"]
+    eval_dataset = bundle["eval_dataset"]
+    num_classes = bundle["num_classes"]
+    label_to_idx = bundle["label_to_idx"]
+    idx_to_label = bundle["idx_to_label"]
+    scaler_mean = bundle["scaler_mean"]
+    scaler_std = bundle["scaler_std"]
+    debug_trajectory_activations = bundle["debug_trajectory_activations"]
+    debug_trajectory_positions = bundle["debug_trajectory_positions"]
+    debug_trajectory_labels = bundle["debug_trajectory_labels"]
+    train_labels = bundle["train_labels_for_weights"]
+    input_dim = bundle["input_dim"]
 
     # Parse hidden dimensions
     hidden_dims_list = [int(d.strip()) for d in hidden_dims.split(",") if d.strip()]
 
-    # Split data if no separate eval file provided
-    if eval_data_path is None:
-        num_samples = activations.shape[0]
-
-        if num_cells_per_trajectory is not None and num_cells_per_trajectory > 0:
-            # Split by complete trajectories - no trajectory appears in both sets
-            num_trajectories = num_samples // num_cells_per_trajectory
-            trajectory_perm = torch.randperm(num_trajectories)
-            num_train_trajectories = int(num_trajectories * (1 - eval_split))
-
-            train_trajectory_ids = trajectory_perm[:num_train_trajectories]
-            eval_trajectory_ids = trajectory_perm[num_train_trajectories:]
-
-            train_indices = _build_indices_for_trajectories(train_trajectory_ids, num_cells_per_trajectory)
-            eval_indices = _build_indices_for_trajectories(eval_trajectory_ids, num_cells_per_trajectory)
-
-            print(f"Split by trajectories: {len(train_trajectory_ids)} train, {len(eval_trajectory_ids)} eval")
-        else:
-            # Fallback: shuffle samples if no trajectory info
-            indices = torch.randperm(num_samples)
-            split_idx = int(num_samples * (1 - eval_split))
-            train_indices = indices[:split_idx]
-            eval_indices = indices[split_idx:]
-
-        train_activations = activations[train_indices]
-        train_labels = remapped_labels[train_indices]
-        eval_activations = activations[eval_indices]
-        eval_labels = remapped_labels[eval_indices]
-
-        print(f"Split: {train_activations.shape[0]} train, {eval_activations.shape[0]} eval")
-    else:
-        train_activations = activations
-        train_labels = remapped_labels
-
-        # Load evaluation data
-        eval_path = Path(eval_data_path)
-        if not eval_path.exists():
-            raise FileNotFoundError(f"Evaluation data not found: {eval_path}")
-
-        eval_activations, eval_labels = _load_separate_eval_data(eval_path, label_to_idx, verbose)
-
-    # Apply class balancing by upsampling if requested
-    if balance_classes:
-        print("Balancing classes by upsampling...")
-        unique, counts = torch.unique(train_labels, return_counts=True)
-        print(f"  Before: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
-
-        train_activations, train_labels = _balance_classes_by_upsampling(
-            train_activations, train_labels, seed=seed, per_class_max_count=per_class_max_count
-        )
-
-        unique, counts = torch.unique(train_labels, return_counts=True)
-        print(f"  After: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
-        print(f"  New training set size: {train_activations.shape[0]}")
-
-    # Compute normalization parameters from training data (before creating loaders)
-    scaler_mean = None
-    scaler_std = None
-    if normalize:
-        scaler_mean, scaler_std = compute_normalization_params(train_activations)
-        train_activations = normalize_activations(train_activations, scaler_mean, scaler_std)
-        eval_activations = normalize_activations(eval_activations, scaler_mean, scaler_std)
-        print(f"Normalization enabled: computed mean/std from {train_activations.shape[0]} training samples")
-
     # Create data loaders
-    train_dataset = TensorDataset(train_activations.float(), train_labels.long())
-    eval_dataset = TensorDataset(eval_activations.float(), eval_labels.long())
-
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False)
 
     # Create model
-    input_dim = train_activations.shape[1]
     model = _create_model(
         model_type=model_type,
         input_dim=input_dim,

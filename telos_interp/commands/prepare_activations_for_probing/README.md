@@ -8,12 +8,15 @@ This command loads activations from the nested folder structure produced by `gat
 
 ## Probe Types
 
+The trainer's logical view of each probe type is given below. The on-disk layout (v3 manifest dir) is described under **Output Format**.
+
 ### `grid_tile` (default)
 
 Predicts grid cell identity from activations.
 
-- **Activations**: `(N, activation_dim + 2)` — activation vector concatenated with `[row_id, col_id]`
-- **Labels**: `(N,)` — grid tile identity (cell type)
+- **Per-trajectory activation**: `(D,)` — one shared activation per trajectory, written once.
+- **Per-cell metadata** (in manifest): `positions` `(C, 2)` and `labels` `(C,)` for each trajectory.
+- **Trainer input rows**: `(activation_dim + 2,)` — activation concatenated with `[row_id, col_id]`, materialized lazily by `GridTileCompactDataset`.
 
 Cell type mapping:
 | Symbol | ID | Meaning |
@@ -31,15 +34,17 @@ Cell type mapping:
 
 Predicts A* distance to goal from activations.
 
-- **Activations**: `(num_trajectories, activation_dim)` — raw activation vectors
-- **Labels**: `(num_trajectories,)` — A* distance from `grid_params.astar_distance`
+- **Per-trajectory activation**: `(D,)`.
+- **Label**: int A* distance from `grid_params.astar_distance` (in manifest as `astar_distance`).
+- **Trainer input rows**: `(D,)` activation, `(T,)` labels.
 
 ### `action_sequence`
 
 Predicts the sequence of actions taken in a trajectory.
 
-- **Activations**: `(num_trajectories, activation_dim)` — raw activation vectors
-- **Labels**: `(num_trajectories, max_seq_len)` — action sequences, padded with -1
+- **Per-trajectory activation**: `(D,)`.
+- **Label**: variable-length action list (in manifest as `actions`); loader pads to `max_seq_len` with -1.
+- **Trainer input rows**: `(D,)` activation, `(T, max_seq_len)` labels.
 
 Action mapping: `{LEFT: 0, TOP: 1, RIGHT: 2, DOWN: 3}`
 
@@ -77,9 +82,9 @@ trajectories_dir/
 
 In multi-size mode:
 - Each size folder is processed
-- Results are merged into a single output file
+- Results are merged into a single manifest with per-size subdirs under `activations/`
 - `pad_to_size` is auto-set to the maximum size for consistent merging
-- A `size_labels` tensor tracks which size each sample came from
+- Each manifest entry carries a `size: int` field
 
 ## Parameters
 
@@ -97,7 +102,7 @@ In multi-size mode:
 | `prompt_suffix_indices` | str \| None | None | Token indices for prompt_suffix |
 | `grid_state_indices` | str \| None | None | Token indices for grid_state |
 | `output_indices` | str \| None | None | Token indices for output |
-| `output_path` | str \| None | None | Output file path (auto-generated if None) |
+| `output_path` | str \| None | None | Output **directory** (auto-named under `activations_dir` if None). If you pass a path ending in `.pt`, the suffix is stripped with a warning. |
 | `verbose` | bool | False | Print detailed progress |
 | `seed` | int | 42 | Random seed for reproducibility |
 
@@ -169,39 +174,78 @@ interp-cli prepare_activations_for_probing \
     --probe-type grid_tile \
     --layers "7,15,23,31" \
     --output-indices -1 \
-    --output-path /path/to/output/my_activations.pt
+    --output-path /path/to/output/my_activations
 ```
 
 ## Output Format
 
-The output `.pt` file contains a dictionary with:
+The command writes a **directory** (not a single `.pt`):
 
-```python
+```
+{output_dir}/
+  manifest.json
+  activations/
+    {trajectory_name_1}.pt              # tensor of shape (D,)
+    {trajectory_name_2}.pt
+    ...
+```
+
+In multi-size mode the per-trajectory `.pt` files are namespaced by size:
+
+```
+{output_dir}/
+  manifest.json
+  activations/
+    size5/{trajectory_name_a}.pt
+    size7/{trajectory_name_b}.pt
+    ...
+```
+
+Each per-trajectory `.pt` holds a single `(D,)` activation tensor — there is no per-cell replication on disk. For `grid_tile`, the trainer assembles `[activation, row, col]` rows lazily via `GridTileCompactDataset` (see `manifest_loader.py`).
+
+### `manifest.json` schema
+
+```jsonc
 {
-    "activations": torch.Tensor,  # Shape depends on probe_type
-    "labels": torch.Tensor,       # Shape depends on probe_type
-    "trajectory_names": list[str],
-    "activation_dim": int,
-    "probe_type": str,
-    "config": dict,               # All configuration parameters
-
-    # For grid_tile:
-    "num_cells_per_trajectory": int,
-
-    # For action_sequence:
-    "sequence_lengths": torch.Tensor,
-    "action_to_id": dict,
-
-    # For multi-size mode:
-    "size_labels": torch.Tensor,
-    "sizes": list[str],
-    "per_size_info": dict,
+  "format_version": 3,
+  "probe_type": "grid_tile",                 // or "distance" / "action_sequence"
+  "activation_dim": 131072,
+  "num_cells_per_trajectory": 225,           // grid_tile only
+  "max_seq_len": 14,                         // action_sequence only
+  "action_to_id": {"LEFT": 0, ...},          // action_sequence only
+  "sizes": ["size5", "size7"],               // multi-size only
+  "per_size_info": {                         // multi-size only
+    "size5": {"num_trajectories": 100, "num_cells_per_trajectory": 225},
+    "size7": {"num_trajectories": 80,  "num_cells_per_trajectory": 225}
+  },
+  "loading_spec": { /* echoes layers/steps/*_indices */ },
+  "config":       { /* mirrors v1's "config" */ },
+  "trajectories": [
+    {
+      "name": "traj_0001",
+      "size": 5,                             // multi-size only
+      "act_path": "activations/size5/traj_0001.pt",
+      "positions": [[0,0],[0,1],...],        // grid_tile: list of [row, col]
+      "labels":    [3, 1, 7, 3, ...],        // grid_tile: list of cell-ids
+      "astar_distance": 12,                  // distance: int
+      "actions":   [0, 2, 1, 3]              // action_sequence: list of action ids
+    },
+    ...
+  ]
 }
 ```
 
+`act_path` is **always relative to `manifest.json`**, so the directory is portable: rename or move it without breaking references.
+
+### Format versions
+
+- **v3** (current): manifest dir + per-trajectory `(D,)` `.pt` files. Avoids the per-cell activation replication that made v1 prepare RAM scale as `T × C × D`.
+- **v1** (legacy): single monolithic `.pt` containing a flat `(N, D+2)` activations tensor. Trainers still load v1 files via a backward-compatible dispatch.
+
 ## Notes
 
-- At least one of `prompt_prefix_indices`, `prompt_suffix_indices`, `grid_state_indices`, or `output_indices` must be specified
-- For `grid_tile` mode, the activation vector includes position information `[row_id, col_id]` at the end
-- Class balancing finds the minimum count across all cell types and samples equally from each
-- When `balance_classes_per_trajectory` and `max_positions_per_trajectory` are both set, `max_positions` is adjusted to be divisible by the number of classes
+- At least one of `prompt_prefix_indices`, `prompt_suffix_indices`, `grid_state_indices`, or `output_indices` must be specified.
+- The activation vector itself is stored once per trajectory; per-cell `[row_id, col_id]` is folded in at training time.
+- Class balancing finds the minimum count across all cell types and samples equally from each.
+- When `balance_classes_per_trajectory` and `max_positions_per_trajectory` are both set, `max_positions` is adjusted to be divisible by the number of classes.
+- NaN filtering still happens on the trainer side (a trajectory whose activation contains a NaN is dropped at load time, not at prepare time).
