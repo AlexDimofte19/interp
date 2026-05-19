@@ -97,23 +97,26 @@ def plot_per_layer_metrics():
                 f"{height * 100:.0f}",
                 ha="center",
                 va="bottom",
-                fontsize=14,
+                fontsize=20,
                 fontweight="bold",
                 color=class_colors[cls],
             )
 
-    ax_recall.set_ylabel("Recall (= Accuracy)", fontsize=18)
+    ax_recall.set_ylabel("Recall", fontsize=26)
     ax_recall.set_ylim(0, 1.15)
-    ax_recall.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+    ax_recall.set_yticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
     ax_recall.tick_params(axis="both", labelsize=12)
     ax_recall.grid(True, axis="y", linestyle="--", alpha=0.4)
     ax_recall.set_axisbelow(True)
     ax_recall.legend(
         loc="upper center",
-        fontsize=14,
+        fontsize=20,
         ncols=5,
         frameon=False,
-        bbox_to_anchor=(0.5, 1.22),
+        bbox_to_anchor=(0.5, 1.30),
+        columnspacing=0.8,
+        handletextpad=0.4,
+        handlelength=1.6,
     )
 
     ax_recall.spines[['right', 'top']].set_visible(False)
@@ -138,29 +141,29 @@ def plot_per_layer_metrics():
                 f"{height * 100:.0f}",
                 ha="center",
                 va="bottom",
-                fontsize=14,
+                fontsize=20,
                 fontweight="bold",
                 color=class_colors[cls],
             )
 
-    ax_precision.set_ylabel("Precision", fontsize=18)
+    ax_precision.set_ylabel("Precision", fontsize=26)
     ax_precision.set_ylim(0, 1.10)
-    ax_precision.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+    ax_precision.set_yticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
     ax_precision.tick_params(axis="y", labelsize=12)
-    ax_precision.tick_params(axis="x", labelsize=15)
+    ax_precision.tick_params(axis="x", labelsize=18)
     ax_precision.grid(True, axis="y", linestyle="--", alpha=0.4)
     ax_precision.set_axisbelow(True)
 
     # X-axis labels
     ax_precision.set_xticks(x)
     ax_precision.set_xticklabels(layers)
-    ax_precision.set_xlabel("Layer", fontsize=18)
+    ax_precision.set_xlabel("Layer", fontsize=26)
 
     ax_precision.spines[['right', 'top']].set_visible(False)
 
     plt.tight_layout()
 
-    results_path = os.path.join(plotting_dir, "per_layer_metrics.png")
+    results_path = os.path.join(plotting_dir, "per_layer_metrics_large.png")
     plt.savefig(results_path, dpi=300, bbox_inches="tight")
     pdf_path = results_path.replace(".png", ".pdf")
     plt.savefig(pdf_path, format="pdf", bbox_inches="tight")

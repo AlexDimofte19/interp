@@ -1,6 +1,6 @@
-# Script to plot per-class precision and recall for MLP probes.
+# Script to plot precision and recall before vs after reasoning.
 # Two stacked bar plots: top is recall (=accuracy), bottom is precision.
-# X-axis is grid size, each grid size has 4 bars (one per class).
+# X-axis is reasoning stage (before/after), each stage has 5 bars (one per class + overall).
 
 import json
 import os
@@ -20,15 +20,14 @@ plt.rcParams.update(
 )
 
 mlp_results_paths = {
-    7: "../data/trajectories_test_full_with_probes/layer15/mlp_general/pre_reasoning/size7/_eval_results.json",
-    9: "../data/trajectories_test_full_with_probes/layer15/mlp_general/pre_reasoning/size9/_eval_results.json",
-    11: "../data/trajectories_test_full_with_probes/layer15/mlp_general/pre_reasoning/size11/_eval_results.json",
-    13: "../data/trajectories_test_full_with_probes/layer15/mlp_general/pre_reasoning/size13/_eval_results.json",
-    15: "../data/trajectories_test_full_with_probes/layer15/mlp_general/pre_reasoning/size15/_eval_results.json",
+    "before_reasoning": "../data/trajectories_test_full_with_probes/layer15/mlp_general/pre_reasoning/size11/_eval_results.json",
+    "after_reasoning": "../data/trajectories_test_full_with_probes/layer15/mlp_general/post_reasoning/size11/_eval_results.json",
 }
 
-grid_sizes = [7, 9, 11, 13, 15]
+reasoning_stages = ["before_reasoning", "after_reasoning"]
+stage_labels = ["Before Reasoning", "After Reasoning"]
 classes = ["wall", "empty", "agent", "goal"]
+classes_with_overall = ["wall", "empty", "agent", "goal", "overall"]
 plotting_dir = "plots"
 
 # Colors for each class
@@ -37,37 +36,49 @@ class_colors = {
     "empty": "#3498DB",     # blue
     "agent": "#E74C3C",     # red
     "goal": "#27AE60",      # green
+    "overall": "#9B59B6",   # purple
 }
 
 
-def plot_per_class_metrics():
+def compute_overall_precision(data):
+    """Compute overall precision from per_class_counts."""
+    counts = data["per_class_counts"]
+    total_correct = sum(counts[cls]["correct"] for cls in classes)
+    total_predicted = sum(counts[cls]["predicted"] for cls in classes)
+    return total_correct / total_predicted if total_predicted > 0 else 0.0
+
+
+def plot_post_reasoning_metrics():
     # 1. Load the data
     # Structure: {class_name: {"precision": [...], "recall": [...]}}
-    metrics_data = {cls: {"precision": [], "recall": []} for cls in classes}
+    metrics_data = {cls: {"precision": [], "recall": []} for cls in classes_with_overall}
 
-    for size in grid_sizes:
-        with open(mlp_results_paths[size]) as f:
+    for stage in reasoning_stages:
+        with open(mlp_results_paths[stage]) as f:
             data = json.load(f)
             for cls in classes:
                 metrics_data[cls]["precision"].append(data["per_class_precision"][cls])
                 metrics_data[cls]["recall"].append(data["per_class_recall"][cls])
+            # Add overall metrics
+            metrics_data["overall"]["recall"].append(data["overall_accuracy"])
+            metrics_data["overall"]["precision"].append(compute_overall_precision(data))
 
     # Convert to numpy arrays
-    for cls in classes:
+    for cls in classes_with_overall:
         metrics_data[cls]["precision"] = np.array(metrics_data[cls]["precision"])
         metrics_data[cls]["recall"] = np.array(metrics_data[cls]["recall"])
 
     # 2. Create the figure with two subplots
     os.makedirs(plotting_dir, exist_ok=True)
-    fig, (ax_recall, ax_precision) = plt.subplots(2, 1, figsize=(10, 5), sharex=True)
+    fig, (ax_recall, ax_precision) = plt.subplots(2, 1, figsize=(8, 5), sharex=True)
 
-    # Bar positioning
-    x = np.arange(len(grid_sizes))
-    bar_width = 0.20
-    offsets = np.array([-1.5, -0.5, 0.5, 1.5]) * bar_width
+    # Bar positioning (5 bars per stage)
+    x = np.arange(len(reasoning_stages))
+    bar_width = 0.15
+    offsets = np.array([-2, -1, 0, 1, 2]) * bar_width
 
     # --- Top plot: Recall (= Accuracy) ---
-    for i, cls in enumerate(classes):
+    for i, cls in enumerate(classes_with_overall):
         bars = ax_recall.bar(
             x + offsets[i],
             metrics_data[cls]["recall"],
@@ -80,23 +91,19 @@ def plot_per_class_metrics():
         # Add value labels on top of bars
         for bar in bars:
             height = bar.get_height()
-            if height > 0.995:
-                shift = -0.05
-            else:
-                shift = 0
             ax_recall.text(
-                bar.get_x() + (bar.get_width() / 2) + shift ,
+                bar.get_x() + bar.get_width() / 2,
                 height + 0.02,
                 f"{height * 100:.0f}",
                 ha="center",
                 va="bottom",
-                fontsize=20,
+                fontsize=22,
                 fontweight="bold",
                 color=class_colors[cls],
             )
 
     ax_recall.set_ylabel("Recall", fontsize=26)
-    ax_recall.set_ylim(0, 1.20)
+    ax_recall.set_ylim(0, 1.15)
     ax_recall.set_yticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
     ax_recall.tick_params(axis="both", labelsize=12)
     ax_recall.grid(True, axis="y", linestyle="--", alpha=0.4)
@@ -104,15 +111,19 @@ def plot_per_class_metrics():
     ax_recall.legend(
         loc="upper center",
         fontsize=20,
-        ncols=4,
+        ncols=5,
         frameon=False,
-        bbox_to_anchor=(0.5, 1.36),
+        bbox_to_anchor=(0.5, 1.27),
+        columnspacing=0.8,
+        handletextpad=0.4,
+        handlelength=1.4,
+
     )
 
     ax_recall.spines[['right', 'top']].set_visible(False)
 
     # --- Bottom plot: Precision ---
-    for i, cls in enumerate(classes):
+    for i, cls in enumerate(classes_with_overall):
         bars = ax_precision.bar(
             x + offsets[i],
             metrics_data[cls]["precision"],
@@ -131,29 +142,29 @@ def plot_per_class_metrics():
                 f"{height * 100:.0f}",
                 ha="center",
                 va="bottom",
-                fontsize=20,
+                fontsize=22,
                 fontweight="bold",
                 color=class_colors[cls],
             )
 
     ax_precision.set_ylabel("Precision", fontsize=26)
-    ax_precision.set_ylim(0, 1.15)
+    ax_precision.set_ylim(0, 1.10)
     ax_precision.set_yticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
-    ax_precision.tick_params(axis="y", labelsize=12)
-    ax_precision.tick_params(axis="x", labelsize=20)
+    ax_precision.tick_params(axis="y", labelsize=14)
+    ax_precision.tick_params(axis="x", labelsize=22)
     ax_precision.grid(True, axis="y", linestyle="--", alpha=0.4)
     ax_precision.set_axisbelow(True)
 
     # X-axis labels
     ax_precision.set_xticks(x)
-    ax_precision.set_xticklabels(grid_sizes)
-    ax_precision.set_xlabel("Grid Size", fontsize=30)
-
+    ax_precision.set_xticklabels(stage_labels)
+    # ax_precision.set_xlabel("Reasoning Stage", fontsize=16)
+# 
     ax_precision.spines[['right', 'top']].set_visible(False)
 
     plt.tight_layout()
 
-    results_path = os.path.join(plotting_dir, "per_class_metrics_large.png")
+    results_path = os.path.join(plotting_dir, "post_reasoning_metrics_large.png")
     plt.savefig(results_path, dpi=300, bbox_inches="tight")
     pdf_path = results_path.replace(".png", ".pdf")
     plt.savefig(pdf_path, format="pdf", bbox_inches="tight")
@@ -163,4 +174,4 @@ def plot_per_class_metrics():
 
 
 if __name__ == "__main__":
-    plot_per_class_metrics()
+    plot_post_reasoning_metrics()
