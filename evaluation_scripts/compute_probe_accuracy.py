@@ -155,7 +155,7 @@ def compute_accuracy(
         
         steps = data.get("steps", [])
         
-        for step in steps:
+        for step_idx,step in enumerate(steps):
             grid_state = step.get("grid_state")
             tokens = step.get(token_key)
             
@@ -168,7 +168,7 @@ def compute_accuracy(
             # Find probes in tokens
             probes = find_probes_in_tokens(tokens)
             if not probes:
-                continue
+                raise ValueError(f"No probes found in {json_file.name}, step {step_idx}")
             
             # Extract predictions
             predictions = extract_probe_predictions(probes)
@@ -176,7 +176,7 @@ def compute_accuracy(
             # Compare predictions to ground truth
             for (row, col), true_class in ground_truth.items():
                 if (row, col) not in predictions:
-                    continue
+                    raise ValueError(f"No prediction for cell ({row}, {col}) in {json_file.name}")
                 
                 pred_class = predictions[(row, col)]
                 

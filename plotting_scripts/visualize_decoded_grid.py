@@ -118,7 +118,7 @@ def build_predicted_grid(
             else:
                 symbol = "?"
             row_parts.append(symbol)
-        lines.append(" ".join(row_parts) + " ")
+        lines.append("  ".join(row_parts) + " ")
     
     return lines
 
