@@ -359,6 +359,38 @@ def _evaluate(
     }
 
 
+def _get_balanced_indices(
+    labels: torch.Tensor,
+    seed: int = 42,
+    per_class_max_count: int | None = None,
+) -> torch.Tensor:
+    """Return shuffled flat indices that balance classes, without materializing data."""
+    torch.manual_seed(seed)
+    unique_classes = torch.unique(labels)
+    class_counts = {c.item(): (labels == c).sum().item() for c in unique_classes}
+    target_count = max(class_counts.values())
+    if per_class_max_count is not None:
+        target_count = min(target_count, per_class_max_count)
+
+    balanced_indices = []
+    for class_id in unique_classes:
+        class_indices = torch.where(labels == class_id)[0]
+        current_count = len(class_indices)
+        if current_count > target_count:
+            perm = torch.randperm(current_count)[:target_count]
+            balanced_indices.append(class_indices[perm])
+        elif current_count < target_count:
+            num_additional = target_count - current_count
+            additional_indices = class_indices[torch.randint(0, current_count, (num_additional,))]
+            balanced_indices.append(torch.cat([class_indices, additional_indices]))
+        else:
+            balanced_indices.append(class_indices)
+
+    all_indices = torch.cat(balanced_indices)
+    perm = torch.randperm(len(all_indices))
+    return all_indices[perm]
+
+
 def _balance_classes_by_upsampling(
     activations: torch.Tensor,
     labels: torch.Tensor,
@@ -918,35 +950,26 @@ def _prepare_train_eval_v3(
         eval_labels_2d = eval_compact["labels"]
         eval_valid_cell_mask = eval_compact.get("valid_cell_mask")
 
-    # Class balancing — materialize flat. Memory regresses to v1.
-    train_flat_x: torch.Tensor | None = None
-    train_flat_y: torch.Tensor | None = None
+    # Class balancing — compute indices only, no data materialization.
+    balanced_flat_indices: torch.Tensor | None = None
     if balance_classes:
         print("Balancing classes by upsampling...")
-        train_flat_x, train_flat_y = build_flat_grid_tile(train_base_act, train_positions, train_labels_2d)
-        unique, counts = torch.unique(train_flat_y, return_counts=True)
+        flat_labels = train_labels_2d.reshape(-1)
+        unique, counts = torch.unique(flat_labels, return_counts=True)
         print(f"  Before: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
-        train_flat_x, train_flat_y = _balance_classes_by_upsampling(
-            train_flat_x, train_flat_y, seed=seed, per_class_max_count=per_class_max_count
-        )
-        unique, counts = torch.unique(train_flat_y, return_counts=True)
+        balanced_flat_indices = _get_balanced_indices(flat_labels, seed=seed, per_class_max_count=per_class_max_count)
+        unique, counts = torch.unique(flat_labels[balanced_flat_indices], return_counts=True)
         print(f"  After: {dict(zip(unique.tolist(), counts.tolist(), strict=False))}")
-        print(f"  New training set size: {train_flat_x.shape[0]}")
+        print(f"  New training set size: {balanced_flat_indices.shape[0]}")
 
-    # Normalization (D-dim only; positions stay un-normalized)
+    # Normalization (D-dim only; positions stay un-normalized).
+    # Always normalize train_base_act in-place so the lazy dataset sees normalized activations.
     scaler_mean = None
     scaler_std = None
     if normalize:
-        if balance_classes:
-            scaler_mean_act, scaler_std_act = compute_normalization_params(train_flat_x[:, :activation_dim])
-            train_flat_x[:, :activation_dim] = normalize_activations(
-                train_flat_x[:, :activation_dim], scaler_mean_act, scaler_std_act
-            )
-            n_normalized = train_flat_x.shape[0]
-        else:
-            scaler_mean_act, scaler_std_act = compute_normalization_params(train_base_act)
-            train_base_act = normalize_activations(train_base_act, scaler_mean_act, scaler_std_act)
-            n_normalized = train_base_act.shape[0]
+        scaler_mean_act, scaler_std_act = compute_normalization_params(train_base_act)
+        train_base_act = normalize_activations(train_base_act, scaler_mean_act, scaler_std_act)
+        n_normalized = train_base_act.shape[0]
         eval_base_act = normalize_activations(eval_base_act, scaler_mean_act, scaler_std_act)
         # Pad to (D+2,) so the saved probe applies an identity transform on the position cols
         # — and so the body's debug-display code, which normalizes (debug - scaler_mean) / scaler_std,
@@ -957,8 +980,10 @@ def _prepare_train_eval_v3(
 
     # Build datasets
     if balance_classes:
-        train_dataset: Dataset = TensorDataset(train_flat_x.float(), train_flat_y.long())
-        train_labels_for_weights = train_flat_y
+        train_dataset: Dataset = IndexedGridTileCompactDataset(
+            train_base_act, train_positions, train_labels_2d, balanced_flat_indices
+        )
+        train_labels_for_weights = train_labels_2d.reshape(-1)[balanced_flat_indices]
     else:
         train_dataset = GridTileCompactDataset(train_base_act, train_positions, train_labels_2d)
         train_labels_for_weights = train_labels_2d.reshape(-1)
