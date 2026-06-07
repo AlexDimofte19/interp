@@ -203,7 +203,7 @@ def _process_single_folder(
             if verbose:
                 print(f"  Skipped: trajectory JSON not found at {trajectory_json_path}")
             continue
-        with open(trajectory_json_path) as f:
+        with open(trajectory_json_path, encoding="utf-8") as f:
             trajectory_data = json.load(f)
 
         # 2. Extract probe-type-specific labels.
@@ -628,7 +628,7 @@ def _build_config(
 def _write_manifest(manifest: dict, manifest_path: Path) -> None:
     """Write manifest.json. Uses no indentation to keep the file small for large T."""
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(manifest_path, "w") as f:
+    with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f)
 
 
