@@ -201,3 +201,79 @@ def generate_output_filename(
         parts.append(f"output_{idx_clean}")
 
     return "_".join(parts) + ".pt"
+
+
+def discover_output_token_files(
+    trajectory_folder: Path,
+    layers: str,
+    steps: str,
+    output_indices: str,
+    verbose: bool = False,
+) -> list[tuple[int, int, int, Path]]:
+    """Enumerate gathered `output`-category token activation files for a trajectory.
+
+    Used by the `next_action` probe mode, where each gathered token activation is a
+    separate training sample (no concatenation). Only paths are enumerated here — the
+    caller is responsible for loading tensors. The `output` category is assumed to hold
+    the reasoning-chain EOS tokens (gather with `output_indices="eos"`).
+
+    Args:
+        trajectory_folder: Path to the trajectory folder.
+        layers: Layer index specification (e.g., "all", "7"). A single layer is expected.
+        steps: Step index specification (e.g., "0").
+        output_indices: Token index specification within the `output` category (e.g., "all").
+        verbose: Print progress information.
+
+    Returns:
+        List of (layer_idx, step_idx, token_idx, abs_path) tuples, sorted by
+        (layer, step, token). Empty if nothing is found.
+    """
+    model_folder = discover_model_folder(trajectory_folder)
+    if model_folder is None:
+        if verbose:
+            print(f"  Warning: No model folder found in {trajectory_folder}")
+        return []
+
+    available_layers = discover_available_layers(model_folder)
+    if not available_layers:
+        if verbose:
+            print(f"  Warning: No layers found in {model_folder}")
+        return []
+
+    selected_layers = parse_index_specification(layers, available_layers)
+    if not selected_layers:
+        if verbose:
+            print(f"  Warning: No matching layers for spec '{layers}'")
+        return []
+
+    results: list[tuple[int, int, int, Path]] = []
+
+    for layer_idx in selected_layers:
+        layer_folder = model_folder / f"layer_{layer_idx}"
+        if not layer_folder.exists():
+            continue
+
+        available_steps = discover_available_steps(layer_folder)
+        if not available_steps:
+            continue
+
+        selected_steps = parse_index_specification(steps, available_steps)
+        if not selected_steps:
+            continue
+
+        for step_idx in selected_steps:
+            category_folder = layer_folder / f"step_{step_idx}" / "output"
+            if not category_folder.exists():
+                continue
+
+            available_tokens = discover_available_token_indices(category_folder)
+            if not available_tokens:
+                continue
+
+            selected_tokens = parse_index_specification(output_indices, available_tokens)
+            for token_idx in selected_tokens:
+                file_path = category_folder / f"{token_idx}.pt"
+                if file_path.exists():
+                    results.append((layer_idx, step_idx, token_idx, file_path))
+
+    return sorted(results, key=lambda r: (r[0], r[1], r[2]))

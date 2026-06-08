@@ -154,6 +154,42 @@ def load_action_sequence_compact(manifest: dict, manifest_path: Path) -> dict:
     }
 
 
+def load_next_action_compact(manifest: dict, manifest_path: Path) -> dict:
+    """Load a next_action manifest into compact tensors.
+
+    Unlike the other probe types, next_action manifests do not copy activations: each
+    entry under "samples" references an existing gathered token .pt file (relative to
+    `activations_root`) and carries a single action label. Each token is an i.i.d.
+    sample, so this returns flat (N, D) activations and (N,) labels with no trajectory
+    grouping.
+
+    Returns:
+        Dict with keys:
+            base_act: (N, D) float32 — one row per token sample
+            labels: (N,) int64 — action id per sample
+            D: int — activation dimension
+    """
+    entries = manifest["samples"]
+    num_samples = len(entries)
+    activation_dim = manifest["activation_dim"]
+    root = Path(manifest["activations_root"])
+
+    base_act = torch.empty((num_samples, activation_dim), dtype=torch.float32)
+    labels = torch.empty((num_samples,), dtype=torch.int64)
+    for i, entry in enumerate(entries):
+        act_path = Path(entry["act_path"])
+        full_path = act_path if act_path.is_absolute() else root / act_path
+        act = torch.load(full_path, map_location="cpu", weights_only=True)
+        base_act[i] = act.float()
+        labels[i] = int(entry["label"])
+
+    return {
+        "base_act": base_act,
+        "labels": labels,
+        "D": activation_dim,
+    }
+
+
 class GridTileCompactDataset(Dataset):
     """Materializes [activation, row, col] rows on the fly from compact tensors.
 

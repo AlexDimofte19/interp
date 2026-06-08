@@ -48,6 +48,26 @@ Predicts the sequence of actions taken in a trajectory.
 
 Action mapping: `{LEFT: 0, TOP: 1, RIGHT: 2, DOWN: 3}`
 
+### `next_action`
+
+Predicts the agent's next action from a **single end-of-sentence (EOS) token activation**
+taken from the reasoning chain. Each gathered EOS token becomes one i.i.d. training sample,
+and every EOS token from a trajectory shares that trajectory's `agent_action` label.
+
+- **Sample = one token**: each entry references an **existing** gathered token `.pt` file —
+  **no activations are copied** and no new `.pt` files are written. The output directory
+  contains only `manifest.json`.
+- **Source tokens**: the `output` category only (the reasoning chain). EOS filtering happens
+  at **gather time**, so you must run `gather_activations` with `--output-indices eos`; this
+  mode then consumes whatever `output` tokens were gathered.
+- **Single layer assumed**: pass a single layer via `--layers`. (If more than one layer is
+  selected, one sample is emitted per `(token, layer)`.)
+- **Label**: the trajectory's `agent_action` (read from the selected step), mapped via
+  `{LEFT: 0, UP: 1, RIGHT: 2, DOWN: 3}` (`TOP` is accepted as an alias for `UP`).
+- **Trainer input rows**: `(D,)` activation (`D = hidden_dim`), `(N,)` labels.
+
+Trained with the `train_next_action_probe` command.
+
 ## Folder Modes
 
 ### Single-folder mode
@@ -92,7 +112,7 @@ In multi-size mode:
 |-----------|------|---------|-------------|
 | `activations_dir` | str | required | Directory containing activation folders |
 | `trajectories_dir` | str | required | Directory containing trajectory JSON files |
-| `probe_type` | str | "grid_tile" | Type of probe: "grid_tile", "distance", or "action_sequence" |
+| `probe_type` | str | "grid_tile" | Type of probe: "grid_tile", "distance", "action_sequence", or "next_action" |
 | `layers` | str | "all" | Layer indices to extract |
 | `steps` | str | "0" | Step indices (first step used for grid parsing) |
 | `pad_to_size` | int \| None | None | Pad grid to this size (auto-detected if None) |
@@ -154,6 +174,25 @@ interp-cli prepare_activations_for_probing \
     --output-indices -1
 ```
 
+### Next action probing (single EOS token → action)
+
+Gather first with EOS output tokens, then prepare a single layer:
+
+```bash
+# 1. gather only sentence-ending output tokens
+interp-cli gather_activations ... --output-indices eos
+
+# 2. prepare next_action samples (manifest only; no .pt files copied)
+interp-cli prepare_activations_for_probing \
+    --activations-dir /path/to/activations/size11 \
+    --trajectories-dir /path/to/trajectories/size11 \
+    --probe-type next_action \
+    --layers 15 \
+    --steps 0 \
+    --output-indices all \
+    --verbose
+```
+
 ### Multi-size mode (automatic)
 
 ```bash
@@ -203,6 +242,10 @@ In multi-size mode the per-trajectory `.pt` files are namespaced by size:
 
 Each per-trajectory `.pt` holds a single `(D,)` activation tensor — there is no per-cell replication on disk. For `grid_tile`, the trainer assembles `[activation, row, col]` rows lazily via `GridTileCompactDataset` (see `manifest_loader.py`).
 
+**Exception — `next_action`:** this mode writes **no** `activations/` directory at all. The
+output is just `manifest.json`, whose `samples` entries point at the existing gathered token
+`.pt` files (relative to `activations_root`). Nothing is copied.
+
 ### `manifest.json` schema
 
 ```jsonc
@@ -237,6 +280,36 @@ Each per-trajectory `.pt` holds a single `(D,)` activation tensor — there is n
 
 `act_path` is **always relative to `manifest.json`**, so the directory is portable: rename or move it without breaking references.
 
+#### `next_action` manifest schema
+
+`next_action` uses a different, token-level schema (key `samples`, not `trajectories`) and
+references existing gathered files rather than copied ones:
+
+```jsonc
+{
+  "format_version": 3,
+  "probe_type": "next_action",
+  "activation_dim": 2880,                       // hidden_dim (one token, one layer)
+  "activations_root": "/abs/path/to/activations_dir",  // samples are relative to this
+  "action_to_id": {"LEFT": 0, "UP": 1, "TOP": 1, "RIGHT": 2, "DOWN": 3},
+  "loading_spec": { /* ... */ },
+  "config":       { /* ... */ },
+  "samples": [
+    {
+      "name": "traj_0001",                      // trajectory the token came from
+      "act_path": "traj_0001/<model>/layer_15/step_0/output/532.pt",
+      "label": 1,                               // action id (e.g. UP)
+      "layer": 15, "step": 0, "token_id": 532, "category": "output",
+      "size": 11                                // multi-size only
+    },
+    ...
+  ]
+}
+```
+
+Here `act_path` is relative to `activations_root` (the original gather location), since nothing
+is copied into the output directory.
+
 ### Format versions
 
 - **v3** (current): manifest dir + per-trajectory `(D,)` `.pt` files. Avoids the per-cell activation replication that made v1 prepare RAM scale as `T × C × D`.
@@ -245,6 +318,7 @@ Each per-trajectory `.pt` holds a single `(D,)` activation tensor — there is n
 ## Notes
 
 - At least one of `prompt_prefix_indices`, `prompt_suffix_indices`, `grid_state_indices`, or `output_indices` must be specified.
+- `next_action` requires `output_indices` to be set and ignores the other category indices; it expects the `output` tokens to have been gathered with `--output-indices eos`, and a single `--layers` value.
 - The activation vector itself is stored once per trajectory; per-cell `[row_id, col_id]` is folded in at training time.
 - Class balancing finds the minimum count across all cell types and samples equally from each.
 - When `balance_classes_per_trajectory` and `max_positions_per_trajectory` are both set, `max_positions` is adjusted to be divisible by the number of classes.

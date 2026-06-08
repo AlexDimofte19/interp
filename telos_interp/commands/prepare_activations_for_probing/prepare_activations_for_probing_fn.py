@@ -22,8 +22,10 @@ import torch
 from tqdm import tqdm
 
 from .prepare_activations_for_probing_utils import (
+    discover_output_token_files,
     discover_trajectory_folders,
     generate_output_filename,
+    load_activation,
     load_activations_for_trajectory,
     parse_grid_state_from_trajectory,
 )
@@ -36,8 +38,19 @@ ACTION_TO_ID = {
     "DOWN": 3,
 }
 
+# Action name to ID mapping for the next_action probe type. The trajectory data uses
+# "UP" (not "TOP"); "TOP" is kept as an alias mapping to the same id. Canonical id->name
+# is {0: LEFT, 1: UP, 2: RIGHT, 3: DOWN}.
+NEXT_ACTION_TO_ID = {
+    "LEFT": 0,
+    "UP": 1,
+    "TOP": 1,
+    "RIGHT": 2,
+    "DOWN": 3,
+}
+
 # Probe type literal for type hints
-ProbeType = Literal["grid_tile", "distance", "action_sequence"]
+ProbeType = Literal["grid_tile", "distance", "action_sequence", "next_action"]
 
 # Manifest format version. v1 = legacy single .pt; v3 = manifest dir.
 PREPARED_FORMAT_VERSION = 3
@@ -161,6 +174,7 @@ def _process_single_folder(
     output_indices: str | None,
     size_name: str | None,
     manifest_root: Path,
+    activations_root: Path,
     verbose: bool,
 ) -> tuple[list[dict], int, int | None, int | None, int | None]:
     """Process trajectories in a single folder; write per-trajectory .pt files.
@@ -173,13 +187,17 @@ def _process_single_folder(
         size_name: Multi-size folder name (e.g., "size5"); None in single-size mode.
         manifest_root: The output directory containing manifest.json. Used to
             compute `act_path` relative to the manifest's parent.
+        activations_root: The top-level activations directory. For the `next_action`
+            mode, token `act_path`s are stored relative to this (no files are copied).
         Other args: see `prepare_activations_for_probing`.
 
     Returns:
         Tuple of (manifest_entries, skipped_count, activation_dim,
                   num_cells_per_trajectory_or_None, max_seq_len_or_None)
     """
-    output_acts_dir.mkdir(parents=True, exist_ok=True)
+    # next_action references existing token files in place, so it writes no activations.
+    if probe_type != "next_action":
+        output_acts_dir.mkdir(parents=True, exist_ok=True)
 
     trajectory_folders = discover_trajectory_folders(activations_dir_path)
     if not trajectory_folders:
@@ -205,6 +223,54 @@ def _process_single_folder(
             continue
         with open(trajectory_json_path, encoding="utf-8") as f:
             trajectory_data = json.load(f)
+
+        # next_action mode: emit one manifest entry per gathered EOS token, each
+        # referencing the existing token .pt file (no new files written). All tokens
+        # from this trajectory share the trajectory's agent_action label.
+        if probe_type == "next_action":
+            steps_list = trajectory_data.get("steps", [])
+            if grid_step_idx >= len(steps_list):
+                skipped += 1
+                if verbose:
+                    print(f"  Skipped: step {grid_step_idx} out of range ({len(steps_list)} steps)")
+                continue
+            agent_action = steps_list[grid_step_idx].get("agent_action")
+            action_id = NEXT_ACTION_TO_ID.get(agent_action.upper()) if agent_action else None
+            if action_id is None:
+                skipped += 1
+                if verbose:
+                    print(f"  Skipped: missing/unknown agent_action '{agent_action}'")
+                continue
+
+            token_files = discover_output_token_files(
+                trajectory_folder=trajectory_folder,
+                layers=layers,
+                steps=steps,
+                output_indices=output_indices,
+                verbose=verbose,
+            )
+            if not token_files:
+                skipped += 1
+                if verbose:
+                    print("  Skipped: no output token activations found")
+                continue
+
+            for layer_idx, step_idx, token_idx, abs_path in token_files:
+                if activation_dim is None:
+                    activation_dim = int(load_activation(abs_path).shape[0])
+                entry = {
+                    "name": trajectory_folder.name,
+                    "act_path": abs_path.relative_to(activations_root).as_posix(),
+                    "label": action_id,
+                    "layer": layer_idx,
+                    "step": step_idx,
+                    "token_id": token_idx,
+                    "category": "output",
+                }
+                if size_name is not None:
+                    entry["size"] = int(size_name.replace("size", ""))
+                manifest_entries.append(entry)
+            continue
 
         # 2. Extract probe-type-specific labels.
         per_type_fields: dict
@@ -442,6 +508,10 @@ def prepare_activations_for_probing(
     - "distance": One activation per trajectory; label is astar_distance from grid_params.
     - "action_sequence": One activation per trajectory; label is the agent action sequence
       mapped via {LEFT=0, TOP=1, RIGHT=2, DOWN=3}.
+    - "next_action": One sample per gathered EOS token (in the `output` category), each
+      referencing the existing token .pt file (no files are copied) and labeled with the
+      trajectory's agent_action mapped via {LEFT=0, UP=1, RIGHT=2, DOWN=3}. Requires
+      output_indices to be set and assumes a single layer. Gather with output_indices="eos".
 
     Modes:
     1. Single-folder mode: activations_dir contains trajectory folders directly.
@@ -500,6 +570,19 @@ def prepare_activations_for_probing(
             "At least one of prompt_prefix_indices, prompt_suffix_indices, "
             "grid_state_indices, or output_indices must be specified"
         )
+
+    # next_action reads only the EOS reasoning tokens in the `output` category.
+    if probe_type == "next_action":
+        if output_indices is None:
+            raise ValueError(
+                "probe_type='next_action' requires output_indices to be set (e.g. 'all'); "
+                "the reasoning-chain EOS tokens live in the 'output' category."
+            )
+        if any(x is not None for x in [prompt_prefix_indices, prompt_suffix_indices, grid_state_indices]):
+            print(
+                "WARNING: probe_type='next_action' only uses output_indices; "
+                "prompt_prefix/prompt_suffix/grid_state indices are ignored."
+            )
 
     # For distance probes, enforce steps="0" since astar_distance is only valid for step 0
     if probe_type == "distance" and steps != "0":
@@ -692,6 +775,7 @@ def _process_single_size_mode(
         output_indices=output_indices,
         size_name=None,
         manifest_root=output_dir,
+        activations_root=activations_dir_path,
         verbose=verbose,
     )
 
@@ -720,20 +804,29 @@ def _process_single_size_mode(
             grid_state_indices=grid_state_indices,
             output_indices=output_indices,
         ),
-        "trajectories": manifest_entries,
     }
-    if probe_type == "grid_tile":
-        manifest["num_cells_per_trajectory"] = num_cells_per_trajectory
-    elif probe_type == "action_sequence":
-        manifest["max_seq_len"] = max_seq_len
-        manifest["action_to_id"] = ACTION_TO_ID
+    if probe_type == "next_action":
+        # Token-level samples referencing existing files; nothing is copied.
+        manifest["activations_root"] = str(activations_dir_path.resolve())
+        manifest["action_to_id"] = NEXT_ACTION_TO_ID
+        manifest["samples"] = manifest_entries
+    else:
+        manifest["trajectories"] = manifest_entries
+        if probe_type == "grid_tile":
+            manifest["num_cells_per_trajectory"] = num_cells_per_trajectory
+        elif probe_type == "action_sequence":
+            manifest["max_seq_len"] = max_seq_len
+            manifest["action_to_id"] = ACTION_TO_ID
 
     # Write manifest.
     manifest_path = output_dir / "manifest.json"
     _write_manifest(manifest, manifest_path)
 
     # Print summary.
-    print(f"\nProcessed {len(manifest_entries)} trajectories")
+    if probe_type == "next_action":
+        print(f"\nCollected {len(manifest_entries)} token samples")
+    else:
+        print(f"\nProcessed {len(manifest_entries)} trajectories")
     print(f"Activation dimension: {activation_dim}")
     if probe_type == "grid_tile":
         print(f"Cells per trajectory: {num_cells_per_trajectory}")
@@ -741,7 +834,8 @@ def _process_single_size_mode(
         print(f"Max sequence length: {max_seq_len}")
     print(f"\nSaved to {output_dir}")
     print(f"  manifest: {manifest_path}")
-    print(f"  per-trajectory activations: {output_acts_dir}")
+    if probe_type != "next_action":
+        print(f"  per-trajectory activations: {output_acts_dir}")
     print(f"Successfully processed: {len(manifest_entries)}, skipped: {skipped}")
 
 
@@ -832,6 +926,7 @@ def _process_multi_size_mode(
             output_indices=output_indices,
             size_name=size_name,
             manifest_root=output_dir,
+            activations_root=activations_dir_path,
             verbose=verbose,
         )
 
@@ -915,13 +1010,18 @@ def _process_multi_size_mode(
             grid_state_indices=grid_state_indices,
             output_indices=output_indices,
         ),
-        "trajectories": merged_entries,
     }
-    if probe_type == "grid_tile":
-        manifest["num_cells_per_trajectory"] = num_cells_per_trajectory
-    elif probe_type == "action_sequence":
-        manifest["max_seq_len"] = max_seq_len_seen
-        manifest["action_to_id"] = ACTION_TO_ID
+    if probe_type == "next_action":
+        manifest["activations_root"] = str(activations_dir_path.resolve())
+        manifest["action_to_id"] = NEXT_ACTION_TO_ID
+        manifest["samples"] = merged_entries
+    else:
+        manifest["trajectories"] = merged_entries
+        if probe_type == "grid_tile":
+            manifest["num_cells_per_trajectory"] = num_cells_per_trajectory
+        elif probe_type == "action_sequence":
+            manifest["max_seq_len"] = max_seq_len_seen
+            manifest["action_to_id"] = ACTION_TO_ID
 
     manifest_path = output_dir / "manifest.json"
     _write_manifest(manifest, manifest_path)
