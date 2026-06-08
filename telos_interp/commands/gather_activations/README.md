@@ -109,11 +109,11 @@ interp-cli gather_activations \
 - All trajectory files must use the same model
 - Existing output folders are skipped (allows resuming interrupted extractions)
 - Out-of-bounds step indices are clamped, so "0:10" works even if fewer steps exist
-- The command uses `nnterp.StandardizedTransformer` for model loading
+- The command loads the model with `transformers.AutoModelForCausalLM` and captures activations via PyTorch forward hooks on the decoder blocks (the raw residual-stream output of each layer)
 
 ### Multi-GPU Warning
 
-**Important**: When using `device_map="auto"` with multiple GPUs, activations may contain NaN values due to issues with how nnterp/nnsight handles MoE (Mixture of Experts) models across devices.
+**Important**: When using `device_map="auto"` with multiple GPUs, activations may contain NaN values due to how some MoE (Mixture of Experts) models behave when sharded across devices.
 
 **Recommended**: Always use a single GPU for activation extraction:
 

@@ -5,7 +5,7 @@ from glob import glob
 from pathlib import Path
 
 import torch
-from nnterp import StandardizedTransformer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 
 from .gather_activations_utils import (
@@ -41,7 +41,7 @@ def _resolve_torch_dtype(torch_dtype: str, model_id: str) -> torch.dtype | None:
 
 def _process_single_trajectory(
     trajectory: dict,
-    model: StandardizedTransformer,
+    model: torch.nn.Module,
     output_base: Path,
     layer_indices: list[int],
     step_indices: list[int],
@@ -121,7 +121,7 @@ def _process_single_trajectory(
 def _process_single_step(
     trajectory: dict,
     step: dict,
-    model: StandardizedTransformer,
+    model: torch.nn.Module,
     output_base: Path,
     layer_indices: list[int],
     n_prefix: int,
@@ -287,15 +287,13 @@ def extract_activations_from_trajectories(
     # Determine torch_dtype
     resolved_dtype = _resolve_torch_dtype(torch_dtype, model_id)
 
-    # Load model using nnterp.
-    # dispatch=True forces a full from_pretrained load at construction time. Without it,
-    # nnsight loads the model on the `meta` device and materializes weights lazily on the
-    # first .trace() call; for MXFP4 models like gpt-oss-20b that are dequantized to bf16,
-    # that lazy path leaves some expert/router weights stranded on meta, causing
-    # "Cannot copy out of meta tensor; no data!" during tracing.
-    model = StandardizedTransformer(
-        model_id, device_map=device_map, torch_dtype=resolved_dtype, dispatch=True
-    )
+    # Load the model directly with transformers — no nnsight/nnterp tracing layer.
+    # Activations are captured later via PyTorch forward hooks in extract_activations_single_pass.
+    dtype = resolved_dtype if resolved_dtype is not None else "auto"
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForCausalLM.from_pretrained(model_id, device_map=device_map, dtype=dtype)
+    model.eval()
+    model.tokenizer = tokenizer  # attach so the debug decode paths keep working
 
     num_layers = model.config.num_hidden_layers
     print(f"Model has {num_layers} layers")
