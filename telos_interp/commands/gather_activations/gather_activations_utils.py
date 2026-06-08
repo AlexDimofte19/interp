@@ -71,6 +71,30 @@ def get_indices_for_token_group(tokens: list[dict], group_name: str) -> list[int
     return sorted(indices)
 
 
+_EOS_PUNCTUATION = {".", "!", "?"}
+_BPE_TRAILING = "Ċ\n "
+
+
+def get_indices_for_eos_tokens(tokens: list[dict]) -> list[int]:
+    """Get token indices where decoded text ends a sentence.
+
+    Detects tokens whose text ends with '.', '!', or '?' after stripping
+    trailing BPE whitespace/newline artifacts ('Ċ', newline, space).
+
+    Args:
+        tokens: List of token dicts with 'id' and 'token' keys
+
+    Returns:
+        Sorted list of token indices at sentence endings (may be empty)
+    """
+    indices = []
+    for token in tokens:
+        text = token.get("token", "").rstrip(_BPE_TRAILING)
+        if text and text[-1] in _EOS_PUNCTUATION:
+            indices.append(token["id"])
+    return sorted(indices)
+
+
 def parse_list_of_integers(value: str) -> list[int]:
     """Parse a comma-separated string of integers into a list.
 
@@ -244,7 +268,7 @@ def extract_activations_single_pass(
             torch.cuda.synchronize(device_idx)
 
     with torch.no_grad():
-        with model.trace(input_ids):
+        with model.trace(input_ids, scan=False):
             for layer_idx in layer_indices:
                 layer_output = model.layers_output[layer_idx]
                 for token_idx in valid_indices:
@@ -348,7 +372,11 @@ def resolve_token_indices(
     Returns:
         List of token indices to extract
     """
-    if is_token_group_specification(spec):
+    if spec.strip().lower() == "eos":
+        indices = get_indices_for_eos_tokens(tokens)
+        print(f"      EOS mode: {len(indices)} sentence-ending tokens in {category_name}")
+        return indices
+    elif is_token_group_specification(spec):
         group_name = spec.lstrip("@").strip()
         indices = get_indices_for_token_group(tokens, group_name)
         print(f"      Token group '{group_name}' matched {len(indices)} tokens in {category_name}")
