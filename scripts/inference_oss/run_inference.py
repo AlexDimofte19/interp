@@ -27,7 +27,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from telos_interp.commands.gather_activations.gather_activations_fn import _resolve_torch_dtype
 
 DEFAULT_TRAJECTORY = str(Path(__file__).with_name("together_ai_openai_gpt-oss-20b_size11_comp1.0_987.json"))
-DEFAULT_OUTPUT = str(Path(__file__).with_name("inference_results.json"))
+DEFAULT_OUTPUT_DIR = str(Path(__file__).with_name("inference_results"))
 
 # Harmony stop tokens (present in the gpt-oss tokenizer vocabulary).
 HARMONY_STOP_TOKENS = ("<|return|>", "<|end|>", "<|call|>")
@@ -115,8 +115,8 @@ def parse_action(text: str) -> str | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("trajectory_paths", nargs="*", default=[DEFAULT_TRAJECTORY], help="Trajectory JSON file(s); glob patterns supported.")
-    parser.add_argument("--output", default=DEFAULT_OUTPUT, help="Path to write the results JSON.")
+    parser.add_argument("--trajectory-paths", nargs="+", default=[DEFAULT_TRAJECTORY], help="Trajectory JSON file(s), directory, or glob pattern(s).")
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory to write per-file results JSON into.")
     parser.add_argument("--max-new-tokens", type=int, default=8, help="Max tokens to generate for the action value.")
     parser.add_argument("--device-map", default="auto", help="device_map for model loading.")
     parser.add_argument("--torch-dtype", default="auto", help="Torch dtype: auto, bfloat16, or float16.")
@@ -166,7 +166,9 @@ def main() -> None:
     stop_ids = resolve_stop_ids(tokenizer)
     print(f"Harmony stop token ids: {stop_ids}")
 
-    results: list[dict] = []
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     overall_correct = 0
     overall_total = 0
 
@@ -180,6 +182,7 @@ def main() -> None:
         top_p = model_params.get("top_p", 1.0)
 
         file_stem = Path(traj_path).stem
+        file_results: list[dict] = []
         file_correct = 0
         file_total = 0
 
@@ -210,7 +213,7 @@ def main() -> None:
 
             file_total += 1
             file_correct += int(correct)
-            results.append({
+            file_results.append({
                 "file": file_stem,
                 "step_id": step["step_id"],
                 "model_action": model_action,
@@ -219,18 +222,19 @@ def main() -> None:
                 "raw_output": raw_output,
             })
 
+        acc = file_correct / file_total if file_total else 0.0
+        file_acc = {"file": file_stem, "correct": file_correct, "total": file_total, "accuracy": acc}
+        out_path = output_dir / f"{file_stem}.json"
+        with open(out_path, "w") as f:
+            json.dump({"summary": file_acc, "steps": file_results}, f, indent=2)
+
         overall_correct += file_correct
         overall_total += file_total
-        acc = file_correct / file_total if file_total else 0.0
-        print(f"  {file_stem}: {file_correct}/{file_total} correct ({acc:.1%})")
-
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, "w") as f:
-        json.dump(results, f, indent=2)
+        print(f"  {file_stem}: {file_correct}/{file_total} correct ({acc:.1%}) -> {out_path}")
 
     overall_acc = overall_correct / overall_total if overall_total else 0.0
     print(f"\nOverall: {overall_correct}/{overall_total} correct ({overall_acc:.1%})")
-    print(f"Results written to {args.output}")
+    print(f"Results written to {output_dir}/")
 
 
 if __name__ == "__main__":
