@@ -108,8 +108,11 @@ def get_final_prefix_ids(output_tokens: list[dict]) -> list[int] | None:
 def reasoning_eos_positions(output_tokens: list[dict]) -> list[int]:
     """Positions of reasoning sentence-ends, via gather_activations' EOS detector.
 
-    Restricted to the analysis region. The end-of-reasoning position is always included
-    as a final cutoff even if it does not end in sentence punctuation.
+    Restricted to the analysis region. Always includes a no-reasoning cutoff (the
+    analysis-header ``<|message|>``, just before the first reasoning token) as the first
+    position, so sentence_idx 0 is inference with zero reasoning. The end-of-reasoning
+    position is always included as the final cutoff even if it does not end in sentence
+    punctuation.
     """
     ana = analysis_positions(output_tokens)
     if not ana:
@@ -119,7 +122,10 @@ def reasoning_eos_positions(output_tokens: list[dict]) -> list[int]:
     positions = [p for p in get_indices_for_eos_tokens(output_tokens) if p in ana_set]
     if last_analysis not in positions:
         positions.append(last_analysis)
-    return sorted(positions)
+    no_reasoning = min(ana) - 1  # analysis header <|message|>; keeps empty analysis channel
+    if no_reasoning >= 0:
+        positions.append(no_reasoning)
+    return sorted(set(positions))
 
 
 def build_prompt_ids_at(trajectory: dict, step: dict, eos_pos: int, final_prefix: list[int]) -> list[int]:
