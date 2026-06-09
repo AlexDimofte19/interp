@@ -25,10 +25,9 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from telos_interp.commands.gather_activations.gather_activations_fn import _resolve_torch_dtype
-from telos_interp.commands.gather_activations.gather_activations_utils import sanitize_model_id
 
 DEFAULT_TRAJECTORY = str(Path(__file__).with_name("together_ai_openai_gpt-oss-20b_size11_comp1.0_987.json"))
-DEFAULT_OUTPUT_DIR = str(Path(__file__).with_name("inference_results"))
+DEFAULT_OUTPUT = str(Path(__file__).with_name("inference_results.json"))
 
 # Harmony stop tokens (present in the gpt-oss tokenizer vocabulary).
 HARMONY_STOP_TOKENS = ("<|return|>", "<|end|>", "<|call|>")
@@ -117,8 +116,7 @@ def parse_action(text: str) -> str | None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("trajectory_paths", nargs="*", default=[DEFAULT_TRAJECTORY], help="Trajectory JSON file(s); glob patterns supported.")
-    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Base directory for results; mirrors the size*/ trajectory layout.")
-    parser.add_argument("--overwrite", action="store_true", help="Re-run trajectories whose results file already exists (default: skip).")
+    parser.add_argument("--output", default=DEFAULT_OUTPUT, help="Path to write the results JSON.")
     parser.add_argument("--max-new-tokens", type=int, default=8, help="Max tokens to generate for the action value.")
     parser.add_argument("--device-map", default="auto", help="device_map for model loading.")
     parser.add_argument("--torch-dtype", default="auto", help="Torch dtype: auto, bfloat16, or float16.")
@@ -168,23 +166,11 @@ def main() -> None:
     stop_ids = resolve_stop_ids(tokenizer)
     print(f"Harmony stop token ids: {stop_ids}")
 
-    # Mirror the trajectories layout: {output_dir}/{model}/{size}/{file_stem}.json,
-    # where {size} is the trajectory file's parent directory (e.g. "size11"). This
-    # parallels gather_activations, which keeps one output folder per trajectory.
-    output_root = Path(args.output_dir) / sanitize_model_id(model_id)
-
+    results: list[dict] = []
     overall_correct = 0
     overall_total = 0
 
     for traj_path in paths:
-        file_stem = Path(traj_path).stem
-        size_dir = Path(traj_path).parent.name
-        result_path = output_root / size_dir / f"{file_stem}.json"
-
-        if result_path.exists() and not args.overwrite:
-            print(f"  Skipping {size_dir}/{file_stem} (results exist; use --overwrite)")
-            continue
-
         with open(traj_path) as f:
             trajectory = json.load(f)
 
@@ -193,7 +179,7 @@ def main() -> None:
         temperature = model_params.get("temperature", 1.0)
         top_p = model_params.get("top_p", 1.0)
 
-        step_results: list[dict] = []
+        file_stem = Path(traj_path).stem
         file_correct = 0
         file_total = 0
 
@@ -224,7 +210,8 @@ def main() -> None:
 
             file_total += 1
             file_correct += int(correct)
-            step_results.append({
+            results.append({
+                "file": file_stem,
                 "step_id": step["step_id"],
                 "model_action": model_action,
                 "ground_truth": ground_truth,
@@ -235,23 +222,15 @@ def main() -> None:
         overall_correct += file_correct
         overall_total += file_total
         acc = file_correct / file_total if file_total else 0.0
-        print(f"  {size_dir}/{file_stem}: {file_correct}/{file_total} correct ({acc:.1%})")
+        print(f"  {file_stem}: {file_correct}/{file_total} correct ({acc:.1%})")
 
-        result_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(result_path, "w") as f:
-            json.dump({
-                "file": file_stem,
-                "size": size_dir,
-                "model_id": model_id,
-                "n_correct": file_correct,
-                "n_total": file_total,
-                "accuracy": acc,
-                "steps": step_results,
-            }, f, indent=2)
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    with open(args.output, "w") as f:
+        json.dump(results, f, indent=2)
 
     overall_acc = overall_correct / overall_total if overall_total else 0.0
     print(f"\nOverall: {overall_correct}/{overall_total} correct ({overall_acc:.1%})")
-    print(f"Results written under {output_root}/")
+    print(f"Results written to {args.output}")
 
 
 if __name__ == "__main__":
