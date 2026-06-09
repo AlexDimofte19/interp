@@ -231,11 +231,22 @@ def evaluate_step(
                 max_new_tokens=max_new_tokens,
                 eos_token_id=stop_ids or None,
                 pad_token_id=tokenizer.eos_token_id,
+                return_dict_in_generate=True,
+                output_logits=True,
             )
-        new_tokens = generated[0, input_ids.shape[1]:]
+        new_tokens = generated.sequences[0, input_ids.shape[1]:]
         raw_output = tokenizer.decode(new_tokens, skip_special_tokens=False)
         model_action = parse_action(raw_output)
         correct = model_action == ground_truth
+        # The final-channel prefix primes `... "action": "`, so the first generated token
+        # *is* the action value. Record the model's raw probability for that token (its
+        # confidence in the answer it gave), matching the trajectory's `probabilities`.
+        answer_prob = answer_token = None
+        if len(new_tokens) > 0:
+            first_probs = torch.softmax(generated.logits[0][0].float(), dim=-1)
+            first_token_id = int(new_tokens[0])
+            answer_prob = float(first_probs[first_token_id])
+            answer_token = tokenizer.decode(new_tokens[:1], skip_special_tokens=False)
         corrects.append(correct)
         sentence_evals.append({
             "sentence_idx": sentence_idx,
@@ -243,6 +254,8 @@ def evaluate_step(
             "n_prompt_tokens": len(prompt_ids),
             "model_action": model_action,
             "correct": correct,
+            "answer_token": answer_token,
+            "answer_prob": answer_prob,
             "raw_output": raw_output,
         })
 
