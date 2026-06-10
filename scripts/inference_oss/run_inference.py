@@ -189,6 +189,21 @@ def parse_action(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _build_padded_batch(prompts: list[list[int]], pad_id: int, device) -> tuple[torch.Tensor, torch.Tensor]:
+    """Left-pad a list of token-id lists into (input_ids, attention_mask) on ``device``.
+
+    Left padding keeps each row's real last token at position -1, so the next-token
+    logits line up across the batch regardless of differing prompt lengths.
+    """
+    max_len = max(len(p) for p in prompts)
+    input_ids = torch.full((len(prompts), max_len), pad_id, dtype=torch.long)
+    attention_mask = torch.zeros((len(prompts), max_len), dtype=torch.long)
+    for i, p in enumerate(prompts):
+        input_ids[i, max_len - len(p):] = torch.tensor(p, dtype=torch.long)
+        attention_mask[i, max_len - len(p):] = 1
+    return input_ids.to(device), attention_mask.to(device)
+
+
 def evaluate_step(
     trajectory: dict,
     step: dict,
@@ -197,15 +212,17 @@ def evaluate_step(
     tokenizer,
     model_device,
     stop_ids: list[int],
-    seed: int,
-    temperature: float,
-    top_p: float,
+    batch_size: int,
     max_new_tokens: int,
 ) -> dict | None:
     """Re-ask for the action at every reasoning sentence boundary of a single step.
 
     Returns a step record (with per-sentence evals and commitment metrics), or ``None``
     if the step has no reconstructable reasoning/action.
+
+    All sentence cutoffs of the step are evaluated together: their prompts are
+    left-padded into batches of ``batch_size`` and decoded greedily, so each
+    ``model.generate`` handles many cutoffs at once instead of one at a time.
     """
     output_tokens = step["output_tokens"]
     final_prefix = get_final_prefix_ids(output_tokens)
@@ -215,48 +232,58 @@ def evaluate_step(
 
     ground_truth = step["agent_action"]
     n_sentences = len(eos_positions)
-    sentence_evals: list[dict] = []
-    corrects: list[bool] = []
 
-    for sentence_idx, eos_pos in enumerate(eos_positions):
-        prompt_ids = build_prompt_ids_at(trajectory, step, eos_pos, final_prefix)
-        input_ids = torch.tensor([prompt_ids], device=model_device)
-        torch.manual_seed(seed)
+    # One prompt per reasoning sentence cutoff.
+    prompts = [build_prompt_ids_at(trajectory, step, eos_pos, final_prefix) for eos_pos in eos_positions]
+
+    # Per-cutoff results, filled in batches and kept aligned with ``prompts``.
+    model_actions: list[str | None] = []
+    answer_tokens: list[str | None] = []
+    answer_probs: list[float | None] = []
+    raw_outputs: list[str] = []
+
+    for start in range(0, len(prompts), batch_size):
+        chunk = prompts[start : start + batch_size]
+        input_ids, attention_mask = _build_padded_batch(chunk, tokenizer.eos_token_id, model_device)
         with torch.no_grad():
             generated = model.generate(
                 input_ids,
-                do_sample=True,
-                temperature=temperature,
-                top_p=top_p,
+                attention_mask=attention_mask,
+                do_sample=False,
                 max_new_tokens=max_new_tokens,
                 eos_token_id=stop_ids or None,
                 pad_token_id=tokenizer.eos_token_id,
                 return_dict_in_generate=True,
                 output_logits=True,
             )
-        new_tokens = generated.sequences[0, input_ids.shape[1]:]
-        raw_output = tokenizer.decode(new_tokens, skip_special_tokens=False)
-        model_action = parse_action(raw_output)
-        correct = model_action == ground_truth
+        new_tokens = generated.sequences[:, input_ids.shape[1]:]
         # The final-channel prefix primes `... "action": "`, so the first generated token
         # *is* the action value. Record the model's raw probability for that token (its
         # confidence in the answer it gave), matching the trajectory's `probabilities`.
-        answer_prob = answer_token = None
-        if len(new_tokens) > 0:
-            first_probs = torch.softmax(generated.logits[0][0].float(), dim=-1)
-            first_token_id = int(new_tokens[0])
-            answer_prob = float(first_probs[first_token_id])
-            answer_token = tokenizer.decode(new_tokens[:1], skip_special_tokens=False)
+        first_probs = torch.softmax(generated.logits[0].float(), dim=-1)
+        for i in range(len(chunk)):
+            raw_output = tokenizer.decode(new_tokens[i], skip_special_tokens=False)
+            first_token_id = int(new_tokens[i, 0])
+            raw_outputs.append(raw_output)
+            model_actions.append(parse_action(raw_output))
+            answer_tokens.append(tokenizer.decode(new_tokens[i, :1], skip_special_tokens=False))
+            answer_probs.append(float(first_probs[i, first_token_id]))
+
+    sentence_evals: list[dict] = []
+    corrects: list[bool] = []
+    for sentence_idx, eos_pos in enumerate(eos_positions):
+        model_action = model_actions[sentence_idx]
+        correct = model_action == ground_truth
         corrects.append(correct)
         sentence_evals.append({
             "sentence_idx": sentence_idx,
             "eos_token_pos": eos_pos,
-            "n_prompt_tokens": len(prompt_ids),
+            "n_prompt_tokens": len(prompts[sentence_idx]),
             "model_action": model_action,
             "correct": correct,
-            "answer_token": answer_token,
-            "answer_prob": answer_prob,
-            "raw_output": raw_output,
+            "answer_token": answer_tokens[sentence_idx],
+            "answer_prob": answer_probs[sentence_idx],
+            "raw_output": raw_outputs[sentence_idx],
         })
 
     first_correct, convinced = commitment_metrics(corrects)
@@ -308,7 +335,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--trajectory-paths", nargs="+", default=[DEFAULT_TRAJECTORY], help="Trajectory JSON file(s), directory, or glob pattern(s).")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory to write per-file results JSON into.")
-    parser.add_argument("--max-new-tokens", type=int, default=8, help="Max tokens to generate for the action value.")
+    parser.add_argument("--max-new-tokens", type=int, default=1, help="Max tokens to generate for the action value (the action is a single token, so 1 suffices).")
+    parser.add_argument("--batch-size", type=int, default=16, help="Number of reasoning-sentence cutoffs to evaluate per batched generate call.")
     parser.add_argument("--device-map", default="auto", help="device_map for model loading.")
     parser.add_argument("--torch-dtype", default="auto", help="Torch dtype: auto, bfloat16, or float16.")
     parser.add_argument("--dry-run", action="store_true", help="Print the first step's sentence cutoffs and prompt tails, then exit (no generation).")
@@ -377,11 +405,6 @@ def main() -> None:
         with open(traj_path) as f:
             trajectory = json.load(f)
 
-        model_params = trajectory["model_params"]
-        seed = model_params.get("seed", 0)
-        temperature = model_params.get("temperature", 1.0)
-        top_p = model_params.get("top_p", 1.0)
-
         file_stem = Path(traj_path).stem
         step_records: list[dict] = []
 
@@ -393,9 +416,7 @@ def main() -> None:
                 tokenizer=tokenizer,
                 model_device=model_device,
                 stop_ids=stop_ids,
-                seed=seed,
-                temperature=temperature,
-                top_p=top_p,
+                batch_size=args.batch_size,
                 max_new_tokens=args.max_new_tokens,
             )
             if record is None:
