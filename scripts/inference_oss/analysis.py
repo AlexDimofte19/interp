@@ -4,7 +4,7 @@
 a list of ``steps`` (every step holding per-sentence ``sentence_evals`` with
 ``answer_prob`` and the commitment indices ``first_correct_sentence_idx`` /
 ``convinced_sentence_idx``). This script walks the ``<input-folder>/size*/*.json``
-layout, pools those records across the dataset, and emits six figures:
+layout, pools those records across the dataset, and emits ten figures:
 
 1. Mean fraction-of-sentences to first-correct vs. to convinced (whole dataset).
 2. Sentence accuracy per size (bar).
@@ -14,10 +14,21 @@ layout, pools those records across the dataset, and emits six figures:
    (steps first-correct at sentence 0 / never correct are skipped).
 5. Percent of steps first-correct with no reasoning (sentence 0), per size (bar).
 6. Percent of steps convinced with no reasoning (sentence 0), per size (bar).
+7. Heatmap of mean convinced fraction over (grid complexity x size).
+8. Heatmap of mean first-correct fraction over (grid complexity x size).
+9. Heatmap of percent convinced with no reasoning over (grid complexity x size).
+10. Heatmap of percent first-correct with no reasoning over (grid complexity x size).
+
+The heatmaps need each step's grid complexity (density), which lives in the source
+trajectory files (``grid_params.grid_complexity``) rather than the results JSON. Pass
+``--trajectory-folder`` to read it from there, matched to results by filename stem; if
+omitted (or a trajectory is missing) the complexity falls back to the ``comp<X>`` marker
+in the filename.
 
 Run on the host with the results, e.g.:
     python scripts/inference_oss/analysis.py \
         --input-folder scripts/inference_oss/inference_results \
+        --trajectory-folder data/reveng/trajectories_train_single_step \
         --output-dir scripts/inference_oss/analysis_plots
 """
 
@@ -37,6 +48,7 @@ DEFAULT_INPUT = str(Path(__file__).with_name("inference_results"))
 DEFAULT_OUTPUT = str(Path(__file__).with_name("analysis_plots"))
 
 SIZE_RE = re.compile(r"size(\d+)")
+COMP_RE = re.compile(r"comp(\d+(?:\.\d+)?)")
 
 
 def parse_size(path: Path) -> int | None:
@@ -52,11 +64,47 @@ def parse_size(path: Path) -> int | None:
     return None
 
 
-def load_steps(input_folder: str) -> list[dict]:
+def parse_complexity(path: Path) -> float | None:
+    """Grid complexity (density) read from a ``comp<X>`` segment of the path.
+
+    A fallback for when no trajectory folder is given: the trajectory filenames encode
+    the complexity (e.g. ``..._size11_comp1.0_987.json``). Returns ``None`` if absent.
+    """
+    for part in (*path.parts[::-1], path.stem):
+        m = COMP_RE.search(part)
+        if m:
+            return round(float(m.group(1)), 1)
+    return None
+
+
+def load_complexity_map(trajectory_folder: str) -> dict[str, float]:
+    """Map each trajectory file stem to its ``grid_params.grid_complexity``.
+
+    Results files written by ``run_inference.py`` keep the trajectory's filename stem, so
+    this stem is the join key back to the source grid complexity.
+    """
+    root = Path(trajectory_folder)
+    mapping: dict[str, float] = {}
+    for fp in sorted(root.rglob("*.json")):
+        try:
+            with open(fp) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        grid_params = data.get("grid_params") if isinstance(data, dict) else None
+        if grid_params and "grid_complexity" in grid_params:
+            mapping[fp.stem] = round(float(grid_params["grid_complexity"]), 1)
+    return mapping
+
+
+def load_steps(input_folder: str, complexity_map: dict[str, float] | None = None) -> list[dict]:
     """Flatten every results JSON under ``input_folder`` into per-step records.
 
     Each record carries the step's commitment indices, fractions, and a light view of
-    its ``sentence_evals`` (sentence_idx, correct, answer_prob), plus the parsed size.
+    its ``sentence_evals`` (sentence_idx, correct, answer_prob), plus the parsed size and
+    grid complexity. Complexity comes from ``complexity_map`` (built from the trajectory
+    files, keyed by filename stem) when available, otherwise from the ``comp<X>`` marker
+    in the results filename.
     """
     root = Path(input_folder)
     files = sorted(root.rglob("*.json"))
@@ -70,6 +118,9 @@ def load_steps(input_folder: str) -> list[dict]:
         if not (isinstance(data, dict) and "steps" in data):
             continue  # not a run_inference results file
         size = parse_size(fp)
+        complexity = (complexity_map or {}).get(fp.stem)
+        if complexity is None:
+            complexity = parse_complexity(fp)
         for step in data["steps"]:
             evals = [
                 {
@@ -81,6 +132,7 @@ def load_steps(input_folder: str) -> list[dict]:
             ]
             records.append({
                 "size": size,
+                "complexity": complexity,
                 "first_correct_idx": step["first_correct_sentence_idx"],
                 "convinced_idx": step["convinced_sentence_idx"],
                 "first_correct_fraction": step["first_correct_fraction"],
@@ -204,17 +256,86 @@ def plot_no_reasoning_share(records: list[dict], output_dir: Path, idx_key: str,
     _save(fig, output_dir, name)
 
 
+def _heatmap_grid(records: list[dict], value_fn) -> tuple[list[int], list[float], np.ndarray]:
+    """Bucket records into (complexity, size) cells and reduce each with ``value_fn``.
+
+    ``value_fn`` takes the list of records in a cell and returns a float (or ``None`` for
+    an empty/undefined cell). Returns the sorted sizes (columns), sorted complexities
+    (rows), and the value matrix with ``np.nan`` for empty/undefined cells.
+    """
+    cells: dict[tuple[float, int], list[dict]] = {}
+    for r in records:
+        if r["size"] is None or r["complexity"] is None:
+            continue
+        cells.setdefault((r["complexity"], r["size"]), []).append(r)
+
+    sizes = sorted({s for (_, s) in cells})
+    comps = sorted({c for (c, _) in cells})
+    matrix = np.full((len(comps), len(sizes)), np.nan)
+    for i, c in enumerate(comps):
+        for j, s in enumerate(sizes):
+            recs = cells.get((c, s))
+            if recs:
+                v = value_fn(recs)
+                if v is not None:
+                    matrix[i, j] = v
+    return sizes, comps, matrix
+
+
+def plot_heatmap(records: list[dict], output_dir: Path, value_fn, title: str, cbar_label: str, name: str, fmt: str, vmin: float, vmax: float) -> None:
+    """Graphs 7-10: a (grid complexity x size) heatmap of a per-cell statistic."""
+    sizes, comps, matrix = _heatmap_grid(records, value_fn)
+    if not sizes or not comps:
+        print(f"  skip {name}: no records with both a size and a complexity")
+        return
+
+    fig, ax = plt.subplots(figsize=(1.1 * len(sizes) + 3, 0.9 * len(comps) + 2))
+    sns.heatmap(
+        matrix,
+        ax=ax,
+        annot=True,
+        fmt=fmt,
+        cmap="viridis",
+        vmin=vmin,
+        vmax=vmax,
+        mask=np.isnan(matrix),  # leave empty cells blank instead of printing "nan"
+        xticklabels=[str(s) for s in sizes],
+        yticklabels=[f"{c:.1f}" for c in comps],
+        cbar_kws={"label": cbar_label},
+    )
+    ax.set_xlabel("Maze size")
+    ax.set_ylabel("Grid complexity (density)")
+    ax.set_title(title)
+    ax.invert_yaxis()  # lowest complexity at the bottom of the y axis
+    _save(fig, output_dir, name)
+
+
+def _cell_mean_fraction(recs: list[dict], key: str) -> float | None:
+    return _mean([r[key] for r in recs])
+
+
+def _cell_pct_idx_zero(recs: list[dict], key: str) -> float | None:
+    return 100.0 * sum(1 for r in recs if r[key] == 0) / len(recs) if recs else None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--input-folder", default=DEFAULT_INPUT, help="Folder with <size*>/*.json results from run_inference.py.")
+    parser.add_argument("--trajectory-folder", default=None, help="Folder with the source trajectory JSONs (for grid_complexity); falls back to the comp<X> filename marker if omitted.")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT, help="Directory to write the PNG figures into.")
     args = parser.parse_args()
 
     sns.set_theme(style="whitegrid")
 
-    records = load_steps(args.input_folder)
+    complexity_map: dict[str, float] | None = None
+    if args.trajectory_folder:
+        complexity_map = load_complexity_map(args.trajectory_folder)
+        print(f"Read grid complexity for {len(complexity_map)} trajectories from {args.trajectory_folder}")
+
+    records = load_steps(args.input_folder, complexity_map)
     n_sized = sum(1 for r in records if r["size"] is not None)
-    print(f"Loaded {len(records)} steps ({n_sized} with a parseable size) from {args.input_folder}")
+    n_comp = sum(1 for r in records if r["complexity"] is not None)
+    print(f"Loaded {len(records)} steps ({n_sized} with a parseable size, {n_comp} with a complexity) from {args.input_folder}")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -225,6 +346,26 @@ def main() -> None:
     plot_prob_around_commitment(records, output_dir, "first_correct_idx", "first correct", "4_answer_prob_around_first_correct.png")
     plot_no_reasoning_share(records, output_dir, "first_correct_idx", "first correct", "5_first_correct_no_reasoning_per_size.png")
     plot_no_reasoning_share(records, output_dir, "convinced_idx", "convinced", "6_convinced_no_reasoning_per_size.png")
+    plot_heatmap(
+        records, output_dir, lambda recs: _cell_mean_fraction(recs, "convinced_fraction"),
+        "Mean convinced fraction by complexity and size", "Mean convinced fraction",
+        "7_convinced_fraction_heatmap.png", fmt=".2f", vmin=0.0, vmax=1.0,
+    )
+    plot_heatmap(
+        records, output_dir, lambda recs: _cell_mean_fraction(recs, "first_correct_fraction"),
+        "Mean first-correct fraction by complexity and size", "Mean first-correct fraction",
+        "8_first_correct_fraction_heatmap.png", fmt=".2f", vmin=0.0, vmax=1.0,
+    )
+    plot_heatmap(
+        records, output_dir, lambda recs: _cell_pct_idx_zero(recs, "convinced_idx"),
+        "Convinced with no reasoning by complexity and size", "% convinced with no reasoning",
+        "9_convinced_no_reasoning_heatmap.png", fmt=".0f", vmin=0.0, vmax=100.0,
+    )
+    plot_heatmap(
+        records, output_dir, lambda recs: _cell_pct_idx_zero(recs, "first_correct_idx"),
+        "First-correct with no reasoning by complexity and size", "% first-correct with no reasoning",
+        "10_first_correct_no_reasoning_heatmap.png", fmt=".0f", vmin=0.0, vmax=100.0,
+    )
 
     print(f"Figures written to {output_dir}/")
 
