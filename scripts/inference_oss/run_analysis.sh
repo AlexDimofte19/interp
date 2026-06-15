@@ -15,7 +15,7 @@ mkdir -p "$LOG_DIR" "$OUTPUT_DIR"
 LOG_FILE="$LOG_DIR/analysis_$(date +%Y%m%d_%H%M%S).txt"
 echo "=== START: $(date) ===" > "$LOG_FILE"
 
-python interp/scripts/inference_oss/analysis.py \
+python analysis.py \
         --input-folder "$INPUT_DIR" \
         --trajectory-folder "$TRAJECTORY_DIR" \
         --output-dir "$OUTPUT_DIR" \
