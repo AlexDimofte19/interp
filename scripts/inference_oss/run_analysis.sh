@@ -23,4 +23,3 @@ python analysis.py \
 
 echo "=== END: $(date) (exit code: $?) ===" >> "$LOG_FILE"
 
-runpodctl stop pod "$RUNPOD_POD_ID"
