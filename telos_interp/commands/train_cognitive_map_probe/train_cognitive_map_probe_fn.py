@@ -30,9 +30,6 @@ from telos_interp.training import (
     resolve_device,
     set_seed,
 )
-from telos_interp.training import (
-    train_epoch as _train_epoch,
-)
 
 ClassWeight = Literal["balanced"] | None
 
@@ -275,53 +272,105 @@ def _print_debug_grids(
     print("=" * 60 + "\n")
 
 
+def _iter_index_batches(
+    x: torch.Tensor,
+    y: torch.Tensor,
+    batch_size: int,
+    device: torch.device,
+    shuffle: bool,
+):
+    """Yield (batch_x, batch_y) by slicing CPU tensors directly.
+
+    Avoids DataLoader/TensorDataset collate overhead: a single vectorized
+    gather per batch, then one transfer. Inputs are kept in their stored
+    dtype (float16) and cast to float32 on-device per batch to halve the
+    host->device transfer volume.
+    """
+    n = x.shape[0]
+    if shuffle:
+        # Build the permutation on the tensor's own device so that, when the
+        # data is GPU-resident, the gather happens entirely on the GPU.
+        order = torch.randperm(n, device=x.device)
+    else:
+        order = None
+
+    for start in range(0, n, batch_size):
+        if order is None:
+            batch_x = x[start : start + batch_size]
+            batch_y = y[start : start + batch_size]
+        else:
+            idx = order[start : start + batch_size]
+            batch_x = x[idx]
+            batch_y = y[idx]
+        batch_x = batch_x.to(device, non_blocking=True).float()
+        batch_y = batch_y.to(device, non_blocking=True)
+        yield batch_x, batch_y
+
+
+def _train_one_epoch(
+    model: nn.Module,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    criterion: nn.Module,
+    optimizer: optim.Optimizer,
+    device: torch.device,
+    batch_size: int,
+) -> float:
+    """Train one epoch using direct index-batching. Returns average loss."""
+    model.train()
+    total_loss = torch.zeros((), device=device)
+    num_batches = 0
+
+    for batch_x, batch_y in _iter_index_batches(x, y, batch_size, device, shuffle=True):
+        optimizer.zero_grad(set_to_none=True)
+        outputs = model(batch_x)
+        loss = criterion(outputs, batch_y)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.detach()
+        num_batches += 1
+
+    return (total_loss / num_batches).item() if num_batches > 0 else 0.0
+
+
 def _evaluate(
     model: nn.Module,
-    dataloader: DataLoader,
+    x: torch.Tensor,
+    y: torch.Tensor,
     criterion: nn.Module,
     device: torch.device,
     num_classes: int,
+    batch_size: int,
 ) -> dict:
     """Evaluate model and return metrics."""
     model.eval()
-    total_loss = 0.0
-    correct = 0
-    total = 0
+    total_loss = torch.zeros((), device=device)
     num_batches = 0
 
-    # Per-class metrics: true positives, ground truth count, predicted count
-    class_tp = torch.zeros(num_classes)
-    class_gt_support = torch.zeros(num_classes)
-    class_pred_count = torch.zeros(num_classes)
-
-    all_preds = []
-    all_labels = []
+    # Confusion matrix accumulated on-device: rows = ground truth, cols = prediction.
+    confusion = torch.zeros(num_classes, num_classes, dtype=torch.long, device=device)
 
     with torch.no_grad():
-        for batch_x_raw, batch_y_raw in dataloader:
-            batch_x = batch_x_raw.to(device)
-            batch_y = batch_y_raw.to(device)
-
+        for batch_x, batch_y in _iter_index_batches(x, y, batch_size, device, shuffle=False):
             outputs = model(batch_x)
             loss = criterion(outputs, batch_y)
 
-            total_loss += loss.item()
+            total_loss += loss.detach()
             num_batches += 1
 
-            _, predicted = torch.max(outputs, 1)
-            total += batch_y.size(0)
-            correct += (predicted == batch_y).sum().item()
+            predicted = torch.argmax(outputs, dim=1)
+            flat = batch_y * num_classes + predicted
+            confusion += torch.bincount(flat, minlength=num_classes * num_classes).reshape(
+                num_classes, num_classes
+            )
 
-            all_preds.extend(predicted.cpu().tolist())
-            all_labels.extend(batch_y.cpu().tolist())
-
-            # Per-class metrics
-            for i in range(num_classes):
-                gt_mask = batch_y == i
-                pred_mask = predicted == i
-                class_gt_support[i] += gt_mask.sum().item()
-                class_pred_count[i] += pred_mask.sum().item()
-                class_tp[i] += (gt_mask & pred_mask).sum().item()
+    confusion = confusion.cpu()
+    class_tp = confusion.diag().to(torch.float64)
+    class_gt_support = confusion.sum(dim=1).to(torch.float64)
+    class_pred_count = confusion.sum(dim=0).to(torch.float64)
+    total = int(confusion.sum().item())
+    correct = int(class_tp.sum().item())
 
     # Compute per-class precision, recall, F1, accuracy
     per_class_metrics = {}
@@ -349,13 +398,11 @@ def _evaluate(
     balanced_accuracy = sum(per_class_accuracies) / len(per_class_accuracies) if per_class_accuracies else 0.0
 
     return {
-        "loss": total_loss / num_batches if num_batches > 0 else 0.0,
+        "loss": (total_loss / num_batches).item() if num_batches > 0 else 0.0,
         "accuracy": correct / total if total > 0 else 0.0,
         "balanced_accuracy": balanced_accuracy,
         "per_class_metrics": per_class_metrics,
         "num_samples": total,
-        "predictions": all_preds,
-        "labels": all_labels,
     }
 
 
@@ -465,11 +512,11 @@ def _compute_class_weights(
         Tensor of class weights
     """
     class_weights = torch.zeros(num_classes, dtype=torch.float32)
-    unique_classes, class_counts = torch.unique(labels, return_counts=True)
+    unique_classes, class_counts = torch.unique(labels.cpu(), return_counts=True)
     n_samples = len(labels)
 
     for class_id, count in zip(unique_classes, class_counts, strict=False):
-        class_weights[class_id] = n_samples / (num_classes * count.float())
+        class_weights[int(class_id)] = n_samples / (num_classes * count.float())
 
     return class_weights.to(device)
 
@@ -1072,6 +1119,8 @@ def train_cognitive_map_probe(
     hidden_dims: str = "512,256",
     dropout: float = 0.1,
     eval_split: float = 0.2,
+    eval_every: int = 1,
+    data_on_gpu: bool = False,
     subset: float = 1.0,
     class_weight: ClassWeight = None,
     balance_classes: bool = False,
@@ -1106,6 +1155,15 @@ def train_cognitive_map_probe(
         dropout: Dropout rate for MLP (ignored for lr)
         eval_split: Fraction of training data to use for validation
             (only used if eval_data_path is not provided)
+        eval_every: Run evaluation every N epochs (default 1). The final
+            epoch is always evaluated. Larger values speed up training by
+            skipping the eval pass on intermediate epochs.
+        data_on_gpu: If True, load the entire training tensor onto the GPU
+            once (eliminating per-batch PCIe transfer and moving the shuffle
+            gather onto the GPU). The eval set is still streamed from CPU.
+            Requires a CUDA device with enough free memory for the float16
+            train tensor plus headroom; raises a clear error otherwise.
+            Pin the GPU with CUDA_VISIBLE_DEVICES on a shared node.
         subset: Fraction of full trajectories to use (0.0 to 1.0, default 1.0).
             Applied before train/eval split. If the data has trajectory info,
             subsets by complete trajectories; otherwise subsets by samples.
@@ -1223,29 +1281,38 @@ def train_cognitive_map_probe(
 
     print(f"\nTraining for {num_epochs} epochs...")
 
+    if eval_every < 1:
+        raise ValueError(f"eval_every must be >= 1, got {eval_every}")
+
     epoch_iterator = tqdm(range(num_epochs), desc="Training", disable=not verbose)
 
-    for _ in epoch_iterator:
-        train_loss = _train_epoch(model, train_loader, criterion, optimizer, torch_device)
+    eval_results = None
+    for epoch in epoch_iterator:
+        train_loss = _train_one_epoch(
+            model, train_activations, train_labels, criterion, optimizer, torch_device, batch_size
+        )
 
-        # Evaluate
-        eval_results = _evaluate(model, eval_loader, criterion, torch_device, num_classes)
-
-        # Track best model
-        best_eval_accuracy = max(best_eval_accuracy, eval_results["accuracy"])
-        best_balanced_accuracy = max(best_balanced_accuracy, eval_results["balanced_accuracy"])
-        # best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        # Evaluate every eval_every epochs; always evaluate the final epoch.
+        is_last_epoch = epoch == num_epochs - 1
+        if (epoch + 1) % eval_every == 0 or is_last_epoch:
+            eval_results = _evaluate(
+                model, eval_activations, eval_labels, criterion, torch_device, num_classes, batch_size
+            )
+            best_eval_accuracy = max(best_eval_accuracy, eval_results["accuracy"])
+            best_balanced_accuracy = max(best_balanced_accuracy, eval_results["balanced_accuracy"])
 
         # Update progress bar
-        epoch_iterator.set_postfix(
-            {
-                "loss": f"{train_loss:.4f}",
-                "eval_acc": f"{eval_results['accuracy']:.4f}",
-                "bal_acc": f"{eval_results['balanced_accuracy']:.4f}",
-                "best_acc": f"{best_eval_accuracy:.4f}",
-                "best_bal": f"{best_balanced_accuracy:.4f}",
-            }
-        )
+        postfix = {"loss": f"{train_loss:.4f}"}
+        if eval_results is not None:
+            postfix.update(
+                {
+                    "eval_acc": f"{eval_results['accuracy']:.4f}",
+                    "bal_acc": f"{eval_results['balanced_accuracy']:.4f}",
+                    "best_acc": f"{best_eval_accuracy:.4f}",
+                    "best_bal": f"{best_balanced_accuracy:.4f}",
+                }
+            )
+        epoch_iterator.set_postfix(postfix)
 
     # Restore best model
     # if best_model_state is not None:
@@ -1256,7 +1323,9 @@ def train_cognitive_map_probe(
     print("FINAL EVALUATION (best model)")
     print("=" * 60)
 
-    final_results = _evaluate(model, eval_loader, criterion, torch_device, num_classes)
+    final_results = _evaluate(
+        model, eval_activations, eval_labels, criterion, torch_device, num_classes, batch_size
+    )
 
     if verbose:
         # Normalize debug activations if normalization is enabled (model expects normalized input)
@@ -1300,6 +1369,8 @@ def train_cognitive_map_probe(
             "hidden_dims": hidden_dims,
             "dropout": dropout,
             "eval_split": eval_split,
+            "eval_every": eval_every,
+            "data_on_gpu": data_on_gpu,
             "subset": subset,
             "class_weight": class_weight,
             "balance_classes": balance_classes,
