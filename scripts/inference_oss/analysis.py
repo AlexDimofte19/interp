@@ -4,7 +4,7 @@
 a list of ``steps`` (every step holding per-sentence ``sentence_evals`` with
 ``answer_prob`` and the commitment indices ``first_correct_sentence_idx`` /
 ``convinced_sentence_idx``). This script walks the ``<input-folder>/size*/*.json``
-layout, pools those records across the dataset, and emits ten figures:
+layout, pools those records across the dataset, and emits thirteen figures:
 
 1. Mean fraction-of-sentences to first-correct vs. to convinced (whole dataset).
 2. Sentence accuracy per size (bar).
@@ -18,6 +18,10 @@ layout, pools those records across the dataset, and emits ten figures:
 8. Heatmap of mean first-correct fraction over (grid complexity x size).
 9. Heatmap of percent convinced with no reasoning over (grid complexity x size).
 10. Heatmap of percent first-correct with no reasoning over (grid complexity x size).
+11. Percent of steps convinced / first-correct *before the full reasoning chain* (bar,
+    whole dataset, SD bars).
+12. Heatmap of percent convinced before the full reasoning chain (grid complexity x size).
+13. Heatmap of percent first-correct before the full reasoning chain (grid complexity x size).
 
 The heatmaps need each step's grid complexity (density), which lives in the source
 trajectory files (``grid_params.grid_complexity``) rather than the results JSON. Pass
@@ -351,6 +355,46 @@ def plot_heatmap(records: list[dict], output_dir: Path, cell_fn, title: str, cba
     _save(fig, output_dir, name)
 
 
+def _before_full_flag(record: dict, idx_key: str) -> float:
+    """1.0 if the step committed *before* the full reasoning chain, else 0.0.
+
+    The last cutoff (index ``n_sentences - 1``) is the full reasoning, so a commitment
+    index that is present and strictly below it means the model was already committed
+    without needing the whole chain. Never-committed (``None``) counts as 0.0.
+    """
+    idx = record[idx_key]
+    if idx is None:
+        return 0.0
+    return 1.0 if idx < record["n_sentences"] - 1 else 0.0
+
+
+def plot_committed_before_full(records: list[dict], output_dir: Path) -> None:
+    """Graph 11: percent of steps committed before the full reasoning chain (dataset-wide)."""
+    fc_m, fc_sd = _mean_sd([_before_full_flag(r, "first_correct_idx") for r in records])
+    cv_m, cv_sd = _mean_sd([_before_full_flag(r, "convinced_idx") for r in records])
+    labels = ["First correct", "Convinced"]
+    values = [100.0 * (fc_m or 0.0), 100.0 * (cv_m or 0.0)]
+    errors = [100.0 * (fc_sd or 0.0), 100.0 * (cv_sd or 0.0)]
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    sns.barplot(x=labels, y=values, ax=ax, palette="muted")
+    ax.errorbar(range(len(values)), values, yerr=errors, fmt="none", ecolor="black", capsize=4)
+    ax.set_ylim(0, 100)
+    ax.set_ylabel("% of steps committed before full reasoning")
+    ax.set_title("Committed before the full reasoning chain (whole dataset)")
+    for i, (v, e) in enumerate(zip(values, errors)):
+        ax.text(i, min(v + e + 1, 98), f"{v:.0f}%", ha="center")
+    _save(fig, output_dir, "11_committed_before_full_reasoning.png")
+
+
+def _cell_pct_before_full(recs: list[dict], key: str) -> tuple[float | None, float | None]:
+    mean, sd = _mean_sd([_before_full_flag(r, key) for r in recs])
+    return (
+        mean * 100.0 if mean is not None else None,
+        sd * 100.0 if sd is not None else None,
+    )
+
+
 def _cell_mean_fraction(recs: list[dict], key: str) -> tuple[float | None, float | None]:
     return _mean_sd([r[key] for r in recs])
 
@@ -410,6 +454,17 @@ def main() -> None:
         records, output_dir, lambda recs: _cell_pct_idx_zero(recs, "first_correct_idx"),
         "First-correct with no reasoning by complexity and size", "% first-correct with no reasoning",
         "10_first_correct_no_reasoning_heatmap.png", precision=0, vmin=0.0, vmax=100.0,
+    )
+    plot_committed_before_full(records, output_dir)
+    plot_heatmap(
+        records, output_dir, lambda recs: _cell_pct_before_full(recs, "convinced_idx"),
+        "Convinced before full reasoning by complexity and size", "% convinced before full reasoning",
+        "12_convinced_before_full_heatmap.png", precision=0, vmin=0.0, vmax=100.0,
+    )
+    plot_heatmap(
+        records, output_dir, lambda recs: _cell_pct_before_full(recs, "first_correct_idx"),
+        "First-correct before full reasoning by complexity and size", "% first-correct before full reasoning",
+        "13_first_correct_before_full_heatmap.png", precision=0, vmin=0.0, vmax=100.0,
     )
 
     print(f"Figures written to {output_dir}/")
