@@ -248,10 +248,14 @@ def generate_actions(
     results: list[dict | None] = [None] * len(prompts)
     order = sorted(range(len(prompts)), key=lambda i: len(prompts[i]))
 
-    for start in range(0, len(order), batch_size):
+    n_batches = (len(prompts) + batch_size - 1) // batch_size
+    print(f"    Generating actions for {len(prompts)} prompt(s) in {n_batches} batch(es) of up to {batch_size}")
+
+    for batch_no, start in enumerate(range(0, len(order), batch_size), start=1):
         idxs = order[start : start + batch_size]
         chunk = [prompts[i] for i in idxs]
         input_ids, attention_mask = _build_padded_batch(chunk, tokenizer.eos_token_id, model_device)
+        print(f"      batch {batch_no}/{n_batches}: {len(chunk)} prompt(s), padded to {input_ids.shape[1]} tokens")
         with torch.no_grad():
             generated = model.generate(
                 input_ids,
@@ -377,6 +381,8 @@ def _flush_window(
     if not window_files:
         return
 
+    stems = ", ".join(fw["file_stem"] for fw in window_files)
+    print(f"  Flushing window: {len(window_files)} file(s), {len(window_prompts)} prompt(s) [{stems}]")
     results = generate_actions(
         window_prompts,
         model=model,
@@ -498,8 +504,10 @@ def main() -> None:
             trajectory = json.load(f)
 
         file_stem = Path(traj_path).stem
+        print(f"  Loaded {file_stem}: {len(trajectory['steps'])} step(s)")
 
         # ``spans`` records each step's slice [start, end) into the shared window prompt list.
+        window_start = len(window_prompts)
         spans: list[tuple[dict, int, int]] = []
         for step in trajectory["steps"]:
             built = build_step_prompts(trajectory, step)
@@ -514,6 +522,8 @@ def main() -> None:
             print(f"  WARNING: no usable steps in {file_stem}; no output written")
             continue
 
+        n_cutoffs = len(window_prompts) - window_start
+        print(f"    {file_stem}: {len(spans)} usable step(s), {n_cutoffs} cutoff(s) added (window now {len(window_prompts)}/{max_window_prompts})")
         window_files.append({"file_stem": file_stem, "out_path": output_dir / f"{file_stem}.json", "spans": spans})
 
         if len(window_prompts) >= max_window_prompts:
