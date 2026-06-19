@@ -204,25 +204,13 @@ def _build_padded_batch(prompts: list[list[int]], pad_id: int, device) -> tuple[
     return input_ids.to(device), attention_mask.to(device)
 
 
-def evaluate_step(
-    trajectory: dict,
-    step: dict,
-    *,
-    model,
-    tokenizer,
-    model_device,
-    stop_ids: list[int],
-    batch_size: int,
-    max_new_tokens: int,
-) -> dict | None:
-    """Re-ask for the action at every reasoning sentence boundary of a single step.
+def build_step_prompts(trajectory: dict, step: dict) -> tuple[dict, list[list[int]]] | None:
+    """Build one prompt per reasoning sentence cutoff for a single step.
 
-    Returns a step record (with per-sentence evals and commitment metrics), or ``None``
-    if the step has no reconstructable reasoning/action.
-
-    All sentence cutoffs of the step are evaluated together: their prompts are
-    left-padded into batches of ``batch_size`` and decoded greedily, so each
-    ``model.generate`` handles many cutoffs at once instead of one at a time.
+    Returns ``(meta, prompts)`` where ``prompts`` is aligned with ``meta["eos_positions"]``,
+    or ``None`` if the step has no reconstructable reasoning/action. ``meta`` carries the
+    step identity needed to assemble the record later, so generation can be decoupled from
+    step boundaries (see ``generate_actions``).
     """
     output_tokens = step["output_tokens"]
     final_prefix = get_final_prefix_ids(output_tokens)
@@ -230,20 +218,39 @@ def evaluate_step(
     if final_prefix is None or not eos_positions:
         return None
 
-    ground_truth = step["agent_action"]
-    n_sentences = len(eos_positions)
-
-    # One prompt per reasoning sentence cutoff.
     prompts = [build_prompt_ids_at(trajectory, step, eos_pos, final_prefix) for eos_pos in eos_positions]
+    meta = {
+        "step_id": step["step_id"],
+        "ground_truth": step["agent_action"],
+        "eos_positions": eos_positions,
+    }
+    return meta, prompts
 
-    # Per-cutoff results, filled in batches and kept aligned with ``prompts``.
-    model_actions: list[str | None] = []
-    answer_tokens: list[str | None] = []
-    answer_probs: list[float | None] = []
-    raw_outputs: list[str] = []
 
-    for start in range(0, len(prompts), batch_size):
-        chunk = prompts[start : start + batch_size]
+def generate_actions(
+    prompts: list[list[int]],
+    *,
+    model,
+    tokenizer,
+    model_device,
+    stop_ids: list[int],
+    batch_size: int,
+    max_new_tokens: int,
+) -> list[dict]:
+    """Greedily decode the action for a flat list of prompts; results align with ``prompts``.
+
+    Prompts are left-padded into batches of ``batch_size`` and decoded greedily, so each
+    ``model.generate`` handles many cutoffs at once regardless of which step they came from.
+    Prompts are processed in length-sorted order so each batch is roughly length-uniform
+    (minimizing wasted compute on padding), then results are scattered back to the original
+    positions.
+    """
+    results: list[dict | None] = [None] * len(prompts)
+    order = sorted(range(len(prompts)), key=lambda i: len(prompts[i]))
+
+    for start in range(0, len(order), batch_size):
+        idxs = order[start : start + batch_size]
+        chunk = [prompts[i] for i in idxs]
         input_ids, attention_mask = _build_padded_batch(chunk, tokenizer.eos_token_id, model_device)
         with torch.no_grad():
             generated = model.generate(
@@ -261,34 +268,47 @@ def evaluate_step(
         # *is* the action value. Record the model's raw probability for that token (its
         # confidence in the answer it gave), matching the trajectory's `probabilities`.
         first_probs = torch.softmax(generated.logits[0].float(), dim=-1)
-        for i in range(len(chunk)):
-            raw_output = tokenizer.decode(new_tokens[i], skip_special_tokens=False)
-            first_token_id = int(new_tokens[i, 0])
-            raw_outputs.append(raw_output)
-            model_actions.append(parse_action(raw_output))
-            answer_tokens.append(tokenizer.decode(new_tokens[i, :1], skip_special_tokens=False))
-            answer_probs.append(float(first_probs[i, first_token_id]))
+        for j, orig_i in enumerate(idxs):
+            raw_output = tokenizer.decode(new_tokens[j], skip_special_tokens=False)
+            first_token_id = int(new_tokens[j, 0])
+            results[orig_i] = {
+                "model_action": parse_action(raw_output),
+                "answer_token": tokenizer.decode(new_tokens[j, :1], skip_special_tokens=False),
+                "answer_prob": float(first_probs[j, first_token_id]),
+                "raw_output": raw_output,
+            }
+
+    return results  # type: ignore[return-value]  # every slot is filled above
+
+
+def assemble_step_record(meta: dict, prompts: list[list[int]], results: list[dict]) -> dict:
+    """Build a step record (per-sentence evals + commitment metrics) from this step's slice.
+
+    ``prompts`` and ``results`` are this step's cutoffs in ``meta["eos_positions"]`` order.
+    """
+    ground_truth = meta["ground_truth"]
+    eos_positions = meta["eos_positions"]
+    n_sentences = len(eos_positions)
 
     sentence_evals: list[dict] = []
     corrects: list[bool] = []
-    for sentence_idx, eos_pos in enumerate(eos_positions):
-        model_action = model_actions[sentence_idx]
-        correct = model_action == ground_truth
+    for sentence_idx, (eos_pos, prompt, res) in enumerate(zip(eos_positions, prompts, results, strict=True)):
+        correct = res["model_action"] == ground_truth
         corrects.append(correct)
         sentence_evals.append({
             "sentence_idx": sentence_idx,
             "eos_token_pos": eos_pos,
-            "n_prompt_tokens": len(prompts[sentence_idx]),
-            "model_action": model_action,
+            "n_prompt_tokens": len(prompt),
+            "model_action": res["model_action"],
             "correct": correct,
-            "answer_token": answer_tokens[sentence_idx],
-            "answer_prob": answer_probs[sentence_idx],
-            "raw_output": raw_outputs[sentence_idx],
+            "answer_token": res["answer_token"],
+            "answer_prob": res["answer_prob"],
+            "raw_output": res["raw_output"],
         })
 
     first_correct, convinced = commitment_metrics(corrects)
     return {
-        "step_id": step["step_id"],
+        "step_id": meta["step_id"],
         "ground_truth": ground_truth,
         "n_reasoning_sentences": n_sentences,
         "first_correct_sentence_idx": first_correct,
@@ -342,25 +362,13 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print the first step's sentence cutoffs and prompt tails, then exit (no generation).")
     args = parser.parse_args()
 
-    candidate_paths = expand_paths(args.trajectory_paths)
 
-    # Keep only files that actually look like trajectories (recursive globbing of a
-    # directory may turn up results files or other JSON).
-    paths: list[str] = []
-    first_traj: dict | None = None
-    for path in candidate_paths:
-        with open(path) as f:
-            data = json.load(f)
-        if is_trajectory(data):
-            paths.append(path)
-            if first_traj is None:
-                first_traj = data
-        else:
-            print(f"  Skipping non-trajectory JSON: {path}")
-
+    paths = expand_paths(args.trajectory_paths)
     if not paths:
         raise ValueError(f"No valid trajectory files found in: {args.trajectory_paths}")
-
+    with open(paths[0]) as f:
+        first_traj = json.load(f)
+        
     print(f"Found {len(paths)} trajectory file(s) to process")
     model_id = first_traj["model_params"]["model_id"]
 
@@ -406,27 +414,36 @@ def main() -> None:
             trajectory = json.load(f)
 
         file_stem = Path(traj_path).stem
-        step_records: list[dict] = []
 
+        # Flatten every step's sentence cutoffs into one prompt list so batches can cross
+        # step boundaries (kept full even when individual steps have few cutoffs). ``spans``
+        # records each step's contiguous slice [start, end) for scattering results back.
+        flat_prompts: list[list[int]] = []
+        spans: list[tuple[dict, int, int]] = []
         for step in trajectory["steps"]:
-            record = evaluate_step(
-                trajectory,
-                step,
-                model=model,
-                tokenizer=tokenizer,
-                model_device=model_device,
-                stop_ids=stop_ids,
-                batch_size=args.batch_size,
-                max_new_tokens=args.max_new_tokens,
-            )
-            if record is None:
+            built = build_step_prompts(trajectory, step)
+            if built is None:
                 print(f"  WARNING: no reconstructable reasoning/action in {file_stem} step {step['step_id']}; skipping")
                 continue
-            step_records.append(record)
+            meta, prompts = built
+            spans.append((meta, len(flat_prompts), len(flat_prompts) + len(prompts)))
+            flat_prompts.extend(prompts)
 
-        if not step_records:
+        if not flat_prompts:
             print(f"  WARNING: no usable steps in {file_stem}; no output written")
             continue
+
+        results = generate_actions(
+            flat_prompts,
+            model=model,
+            tokenizer=tokenizer,
+            model_device=model_device,
+            stop_ids=stop_ids,
+            batch_size=args.batch_size,
+            max_new_tokens=args.max_new_tokens,
+        )
+
+        step_records = [assemble_step_record(meta, flat_prompts[s:e], results[s:e]) for meta, s, e in spans]
 
         summary = summarize_file(file_stem, step_records)
         out_path = output_dir / f"{file_stem}.json"
