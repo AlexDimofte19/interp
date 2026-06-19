@@ -278,6 +278,10 @@ def generate_actions(
                 "raw_output": raw_output,
             }
 
+        # Drop this batch's GPU tensors before the next (larger, length-sorted) batch so the
+        # caching allocator can reuse the blocks instead of growing its reserved pool.
+        del generated, first_probs, new_tokens, input_ids, attention_mask
+
     return results  # type: ignore[return-value]  # every slot is filled above
 
 
@@ -444,6 +448,11 @@ def main() -> None:
         )
 
         step_records = [assemble_step_record(meta, flat_prompts[s:e], results[s:e]) for meta, s, e in spans]
+
+        # Return this trajectory's reserved (but now unused) GPU blocks to the driver so the
+        # pool doesn't accumulate across files (mirrors gather_activations' per-trajectory cleanup).
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         summary = summarize_file(file_stem, step_records)
         out_path = output_dir / f"{file_stem}.json"
