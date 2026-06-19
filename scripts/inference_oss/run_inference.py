@@ -355,12 +355,73 @@ def summarize_file(file_stem: str, step_records: list[dict]) -> dict:
     }
 
 
+def _flush_window(
+    window_prompts: list[list[int]],
+    window_files: list[dict],
+    *,
+    model,
+    tokenizer,
+    model_device,
+    stop_ids: list[int],
+    batch_size: int,
+    max_new_tokens: int,
+    overall: dict,
+) -> None:
+    """Generate over a whole window of prompts and write each file's results.
+
+    ``window_prompts`` is the flat prompt list shared by every file in ``window_files``;
+    each file's ``spans`` index into it. Batches inside ``generate_actions`` cross file and
+    step boundaries freely, so a window only needs to hold whole files (never split one).
+    Folds per-file metrics into the mutable ``overall`` accumulator.
+    """
+    if not window_files:
+        return
+
+    results = generate_actions(
+        window_prompts,
+        model=model,
+        tokenizer=tokenizer,
+        model_device=model_device,
+        stop_ids=stop_ids,
+        batch_size=batch_size,
+        max_new_tokens=max_new_tokens,
+    )
+
+    # Return this window's reserved (but now unused) GPU blocks to the driver so the pool
+    # doesn't accumulate across windows (mirrors gather_activations' per-trajectory cleanup).
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    for fw in window_files:
+        step_records = [
+            assemble_step_record(meta, window_prompts[s:e], results[s:e]) for meta, s, e in fw["spans"]
+        ]
+        summary = summarize_file(fw["file_stem"], step_records)
+        with open(fw["out_path"], "w") as f:
+            json.dump({"summary": summary, "steps": step_records}, f, indent=2)
+
+        overall["correct"] += sum(e["correct"] for s in step_records for e in s["sentence_evals"])
+        overall["evals"] += summary["n_evals"]
+        overall["final_correct"] += sum(1 for s in step_records if s["sentence_evals"][-1]["correct"])
+        overall["steps"] += len(step_records)
+        overall["first_correct_fracs"].extend(s["first_correct_fraction"] for s in step_records)
+        overall["convinced_fracs"].extend(s["convinced_fraction"] for s in step_records)
+
+        print(
+            f"  {fw['file_stem']}: sentence acc {summary['sentence_accuracy']:.1%}, "
+            f"final acc {summary['final_sentence_accuracy']:.1%}, "
+            f"first_correct={summary['first_correct_sentence_idx']}, "
+            f"convinced={summary['convinced_sentence_idx']} -> {fw['out_path']}"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--trajectory-paths", nargs="+", default=[DEFAULT_TRAJECTORY], help="Trajectory JSON file(s), directory, or glob pattern(s).")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory to write per-file results JSON into.")
     parser.add_argument("--max-new-tokens", type=int, default=1, help="Max tokens to generate for the action value (the action is a single token, so 1 suffices).")
     parser.add_argument("--batch-size", type=int, default=16, help="Number of reasoning-sentence cutoffs to evaluate per batched generate call.")
+    parser.add_argument("--max-window-prompts", type=int, default=None, help="Accumulate prompts across trajectory files until this many, then generate+write as one window (batches cross file boundaries). Larger = better length-grouping but more RAM. Defaults to batch_size * 32.")
     parser.add_argument("--device-map", default="auto", help="device_map for model loading.")
     parser.add_argument("--torch-dtype", default="auto", help="Torch dtype: auto, bfloat16, or float16.")
     parser.add_argument("--dry-run", action="store_true", help="Print the first step's sentence cutoffs and prompt tails, then exit (no generation).")
@@ -406,12 +467,31 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    overall_correct = 0
-    overall_evals = 0
-    overall_final_correct = 0
-    overall_steps = 0
-    overall_first_correct_fracs: list[float | None] = []
-    overall_convinced_fracs: list[float | None] = []
+    overall = {
+        "correct": 0,
+        "evals": 0,
+        "final_correct": 0,
+        "steps": 0,
+        "first_correct_fracs": [],
+        "convinced_fracs": [],
+    }
+    max_window_prompts = args.max_window_prompts or args.batch_size * 32
+
+    flush_kwargs = dict(
+        model=model,
+        tokenizer=tokenizer,
+        model_device=model_device,
+        stop_ids=stop_ids,
+        batch_size=args.batch_size,
+        max_new_tokens=args.max_new_tokens,
+        overall=overall,
+    )
+
+    # Accumulate whole files' cutoffs into a shared window, then flush (generate + write) once
+    # it reaches max_window_prompts. Windows close only at file boundaries, so each file's
+    # cutoffs stay contiguous; batches inside the flush still cross file/step boundaries.
+    window_prompts: list[list[int]] = []
+    window_files: list[dict] = []
 
     for traj_path in paths:
         with open(traj_path) as f:
@@ -419,10 +499,7 @@ def main() -> None:
 
         file_stem = Path(traj_path).stem
 
-        # Flatten every step's sentence cutoffs into one prompt list so batches can cross
-        # step boundaries (kept full even when individual steps have few cutoffs). ``spans``
-        # records each step's contiguous slice [start, end) for scattering results back.
-        flat_prompts: list[list[int]] = []
+        # ``spans`` records each step's slice [start, end) into the shared window prompt list.
         spans: list[tuple[dict, int, int]] = []
         for step in trajectory["steps"]:
             built = build_step_prompts(trajectory, step)
@@ -430,55 +507,29 @@ def main() -> None:
                 print(f"  WARNING: no reconstructable reasoning/action in {file_stem} step {step['step_id']}; skipping")
                 continue
             meta, prompts = built
-            spans.append((meta, len(flat_prompts), len(flat_prompts) + len(prompts)))
-            flat_prompts.extend(prompts)
+            spans.append((meta, len(window_prompts), len(window_prompts) + len(prompts)))
+            window_prompts.extend(prompts)
 
-        if not flat_prompts:
+        if not spans:
             print(f"  WARNING: no usable steps in {file_stem}; no output written")
             continue
 
-        results = generate_actions(
-            flat_prompts,
-            model=model,
-            tokenizer=tokenizer,
-            model_device=model_device,
-            stop_ids=stop_ids,
-            batch_size=args.batch_size,
-            max_new_tokens=args.max_new_tokens,
-        )
+        window_files.append({"file_stem": file_stem, "out_path": output_dir / f"{file_stem}.json", "spans": spans})
 
-        step_records = [assemble_step_record(meta, flat_prompts[s:e], results[s:e]) for meta, s, e in spans]
+        if len(window_prompts) >= max_window_prompts:
+            _flush_window(window_prompts, window_files, **flush_kwargs)
+            window_prompts = []
+            window_files = []
 
-        # Return this trajectory's reserved (but now unused) GPU blocks to the driver so the
-        # pool doesn't accumulate across files (mirrors gather_activations' per-trajectory cleanup).
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+    # Drain the final partial window.
+    _flush_window(window_prompts, window_files, **flush_kwargs)
 
-        summary = summarize_file(file_stem, step_records)
-        out_path = output_dir / f"{file_stem}.json"
-        with open(out_path, "w") as f:
-            json.dump({"summary": summary, "steps": step_records}, f, indent=2)
-
-        overall_correct += sum(e["correct"] for s in step_records for e in s["sentence_evals"])
-        overall_evals += summary["n_evals"]
-        overall_final_correct += sum(1 for s in step_records if s["sentence_evals"][-1]["correct"])
-        overall_steps += len(step_records)
-        overall_first_correct_fracs.extend(s["first_correct_fraction"] for s in step_records)
-        overall_convinced_fracs.extend(s["convinced_fraction"] for s in step_records)
-
-        print(
-            f"  {file_stem}: sentence acc {summary['sentence_accuracy']:.1%}, "
-            f"final acc {summary['final_sentence_accuracy']:.1%}, "
-            f"first_correct={summary['first_correct_sentence_idx']}, "
-            f"convinced={summary['convinced_sentence_idx']} -> {out_path}"
-        )
-
-    sentence_acc = overall_correct / overall_evals if overall_evals else 0.0
-    final_acc = overall_final_correct / overall_steps if overall_steps else 0.0
-    mean_first = _mean_or_none(overall_first_correct_fracs)
-    mean_convinced = _mean_or_none(overall_convinced_fracs)
+    sentence_acc = overall["correct"] / overall["evals"] if overall["evals"] else 0.0
+    final_acc = overall["final_correct"] / overall["steps"] if overall["steps"] else 0.0
+    mean_first = _mean_or_none(overall["first_correct_fracs"])
+    mean_convinced = _mean_or_none(overall["convinced_fracs"])
     print(
-        f"\nOverall ({overall_steps} steps, {overall_evals} sentence-evals): "
+        f"\nOverall ({overall['steps']} steps, {overall['evals']} sentence-evals): "
         f"sentence acc {sentence_acc:.1%}, final acc {final_acc:.1%}, "
         f"mean first-correct fraction {mean_first}, mean convinced fraction {mean_convinced}"
     )
