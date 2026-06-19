@@ -287,7 +287,7 @@ def extract_activations_from_trajectories(
     # Determine torch_dtype
     resolved_dtype = _resolve_torch_dtype(torch_dtype, model_id)
 
-    # Load the model directly with transformers — no nnsight/nnterp tracing layer.
+    # Load model using Transformers.
     # Activations are captured later via PyTorch forward hooks in extract_activations_single_pass.
     dtype = resolved_dtype if resolved_dtype is not None else "auto"
     tokenizer = AutoTokenizer.from_pretrained(model_id)

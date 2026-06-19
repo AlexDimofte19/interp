@@ -228,7 +228,8 @@ def sanitize_model_id(model_id: str) -> str:
 
 def _get_decoder_layers(model: torch.nn.Module) -> torch.nn.ModuleList:
     """Locate the decoder block list across common HF causal-LM layouts.
-
+    
+    Previously done via nnterp; this is a re-implementation of the same logic to avoid nnterp dependency.
     Replaces nnterp's name standardization: for gpt-oss / Llama-family models the
     blocks live at ``model.model.layers``. Other layouts are tried as fallbacks.
 
