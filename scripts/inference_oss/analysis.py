@@ -150,18 +150,19 @@ def _mean(values: list[float | None]) -> float | None:
     return float(np.mean(present)) if present else None
 
 
-def _mean_se(values: list[float | None]) -> tuple[float | None, float | None]:
-    """Mean and standard error of the mean (``std/sqrt(n)``), ignoring ``None``s.
+def _mean_sd(values: list[float | None]) -> tuple[float | None, float | None]:
+    """Mean and sample standard deviation (``ddof=1``), ignoring ``None``s.
 
     Works uniformly for continuous values (fractions, probabilities) and 0/1 indicators
-    (accuracy, no-reasoning share), where the SEM equals the proportion's
-    ``sqrt(p(1-p)/n)``. SE is ``0.0`` for a single observation and ``None`` for none.
+    (accuracy, no-reasoning share), where the SD equals the proportion's
+    ``sqrt(p(1-p))`` (up to the ``ddof=1`` correction). SD is ``0.0`` for a single
+    observation and ``None`` for none.
     """
     arr = np.array([v for v in values if v is not None], dtype=float)
     if arr.size == 0:
         return None, None
-    se = float(arr.std(ddof=1) / np.sqrt(arr.size)) if arr.size > 1 else 0.0
-    return float(arr.mean()), se
+    sd = float(arr.std(ddof=1)) if arr.size > 1 else 0.0
+    return float(arr.mean()), sd
 
 
 def _save(fig, output_dir: Path, name: str) -> None:
@@ -173,11 +174,11 @@ def _save(fig, output_dir: Path, name: str) -> None:
 
 def plot_fraction_comparison(records: list[dict], output_dir: Path) -> None:
     """Graph 1: mean fraction-of-sentences to first-correct vs. to convinced."""
-    first, first_se = _mean_se([r["first_correct_fraction"] for r in records])
-    convinced, convinced_se = _mean_se([r["convinced_fraction"] for r in records])
+    first, first_sd = _mean_sd([r["first_correct_fraction"] for r in records])
+    convinced, convinced_sd = _mean_sd([r["convinced_fraction"] for r in records])
     labels = ["First correct", "Convinced"]
     values = [first or 0.0, convinced or 0.0]
-    errors = [first_se or 0.0, convinced_se or 0.0]
+    errors = [first_sd or 0.0, convinced_sd or 0.0]
 
     fig, ax = plt.subplots(figsize=(6, 5))
     sns.barplot(x=labels, y=values, ax=ax, palette="muted")
@@ -199,7 +200,7 @@ def plot_accuracy_per_size(records: list[dict], output_dir: Path) -> None:
         by_size.setdefault(r["size"], []).extend(e["correct"] for e in r["evals"])
 
     sizes = sorted(by_size)
-    stats = [_mean_se([float(b) for b in by_size[s]]) for s in sizes]
+    stats = [_mean_sd([float(b) for b in by_size[s]]) for s in sizes]
     acc = [m or 0.0 for m, _ in stats]
     errors = [se or 0.0 for _, se in stats]
 
@@ -237,10 +238,10 @@ def _before_after_probs(records: list[dict], idx_key: str) -> tuple[list[float],
 def plot_prob_around_commitment(records: list[dict], output_dir: Path, idx_key: str, label: str, name: str) -> None:
     """Graphs 3 & 4: mean answer probability before vs. after a commitment point."""
     before, after = _before_after_probs(records, idx_key)
-    before_m, before_se = _mean_se(before)
-    after_m, after_se = _mean_se(after)
+    before_m, before_sd = _mean_sd(before)
+    after_m, after_sd = _mean_sd(after)
     values = [before_m or 0.0, after_m or 0.0]
-    errors = [before_se or 0.0, after_se or 0.0]
+    errors = [before_sd or 0.0, after_sd or 0.0]
     counts = [len(before), len(after)]
 
     fig, ax = plt.subplots(figsize=(6, 5))
@@ -263,7 +264,7 @@ def plot_no_reasoning_share(records: list[dict], output_dir: Path, idx_key: str,
         flags_by_size.setdefault(r["size"], []).append(1.0 if r[idx_key] == 0 else 0.0)
 
     sizes = sorted(flags_by_size)
-    stats = [_mean_se(flags_by_size[s]) for s in sizes]
+    stats = [_mean_sd(flags_by_size[s]) for s in sizes]
     pct = [100.0 * (m or 0.0) for m, _ in stats]
     errors = [100.0 * (se or 0.0) for _, se in stats]
 
@@ -282,9 +283,9 @@ def plot_no_reasoning_share(records: list[dict], output_dir: Path, idx_key: str,
 def _heatmap_grid(records: list[dict], cell_fn) -> tuple[list[int], list[float], np.ndarray, np.ndarray]:
     """Bucket records into (complexity, size) cells and reduce each with ``cell_fn``.
 
-    ``cell_fn`` takes the list of records in a cell and returns a ``(value, se)`` pair
+    ``cell_fn`` takes the list of records in a cell and returns a ``(value, sd)`` pair
     (either may be ``None``). Returns the sorted sizes (columns), sorted complexities
-    (rows), and the value and standard-error matrices, with ``np.nan`` for empty cells.
+    (rows), and the value and standard-deviation matrices, with ``np.nan`` for empty cells.
     """
     cells: dict[tuple[float, int], list[dict]] = {}
     for r in records:
@@ -295,26 +296,26 @@ def _heatmap_grid(records: list[dict], cell_fn) -> tuple[list[int], list[float],
     sizes = sorted({s for (_, s) in cells})
     comps = sorted({c for (c, _) in cells})
     value_m = np.full((len(comps), len(sizes)), np.nan)
-    se_m = np.full((len(comps), len(sizes)), np.nan)
+    sd_m = np.full((len(comps), len(sizes)), np.nan)
     for i, c in enumerate(comps):
         for j, s in enumerate(sizes):
             recs = cells.get((c, s))
             if recs:
-                v, se = cell_fn(recs)
+                v, sd = cell_fn(recs)
                 if v is not None:
                     value_m[i, j] = v
-                    if se is not None:
-                        se_m[i, j] = se
-    return sizes, comps, value_m, se_m
+                    if sd is not None:
+                        sd_m[i, j] = sd
+    return sizes, comps, value_m, sd_m
 
 
 def plot_heatmap(records: list[dict], output_dir: Path, cell_fn, title: str, cbar_label: str, name: str, precision: int, vmin: float, vmax: float) -> None:
     """Graphs 7-10: a (grid complexity x size) heatmap of a per-cell statistic.
 
-    Each cell is annotated ``value`` over ``±SE`` (standard error of the mean), so the
-    uncertainty rides along with the colour-encoded value.
+    Each cell is annotated ``value`` over ``±SD`` (sample standard deviation), so the
+    spread rides along with the colour-encoded value.
     """
-    sizes, comps, value_m, se_m = _heatmap_grid(records, cell_fn)
+    sizes, comps, value_m, sd_m = _heatmap_grid(records, cell_fn)
     if not sizes or not comps:
         print(f"  skip {name}: no records with both a size and a complexity")
         return
@@ -325,8 +326,8 @@ def plot_heatmap(records: list[dict], output_dir: Path, cell_fn, title: str, cba
             if np.isnan(value_m[i, j]):
                 continue
             cell = f"{value_m[i, j]:.{precision}f}"
-            if not np.isnan(se_m[i, j]):
-                cell += f"\n±{se_m[i, j]:.{precision}f}"
+            if not np.isnan(sd_m[i, j]):
+                cell += f"\n±{sd_m[i, j]:.{precision}f}"
             annot[i, j] = cell
 
     fig, ax = plt.subplots(figsize=(1.1 * len(sizes) + 3, 0.9 * len(comps) + 2))
@@ -351,14 +352,14 @@ def plot_heatmap(records: list[dict], output_dir: Path, cell_fn, title: str, cba
 
 
 def _cell_mean_fraction(recs: list[dict], key: str) -> tuple[float | None, float | None]:
-    return _mean_se([r[key] for r in recs])
+    return _mean_sd([r[key] for r in recs])
 
 
 def _cell_pct_idx_zero(recs: list[dict], key: str) -> tuple[float | None, float | None]:
-    mean, se = _mean_se([1.0 if r[key] == 0 else 0.0 for r in recs])
+    mean, sd = _mean_sd([1.0 if r[key] == 0 else 0.0 for r in recs])
     return (
         mean * 100.0 if mean is not None else None,
-        se * 100.0 if se is not None else None,
+        sd * 100.0 if sd is not None else None,
     )
 
 
