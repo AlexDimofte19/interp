@@ -150,6 +150,20 @@ def _mean(values: list[float | None]) -> float | None:
     return float(np.mean(present)) if present else None
 
 
+def _mean_se(values: list[float | None]) -> tuple[float | None, float | None]:
+    """Mean and standard error of the mean (``std/sqrt(n)``), ignoring ``None``s.
+
+    Works uniformly for continuous values (fractions, probabilities) and 0/1 indicators
+    (accuracy, no-reasoning share), where the SEM equals the proportion's
+    ``sqrt(p(1-p)/n)``. SE is ``0.0`` for a single observation and ``None`` for none.
+    """
+    arr = np.array([v for v in values if v is not None], dtype=float)
+    if arr.size == 0:
+        return None, None
+    se = float(arr.std(ddof=1) / np.sqrt(arr.size)) if arr.size > 1 else 0.0
+    return float(arr.mean()), se
+
+
 def _save(fig, output_dir: Path, name: str) -> None:
     out = output_dir / name
     fig.savefig(out, dpi=150, bbox_inches="tight")
@@ -159,18 +173,20 @@ def _save(fig, output_dir: Path, name: str) -> None:
 
 def plot_fraction_comparison(records: list[dict], output_dir: Path) -> None:
     """Graph 1: mean fraction-of-sentences to first-correct vs. to convinced."""
-    first = _mean([r["first_correct_fraction"] for r in records])
-    convinced = _mean([r["convinced_fraction"] for r in records])
+    first, first_se = _mean_se([r["first_correct_fraction"] for r in records])
+    convinced, convinced_se = _mean_se([r["convinced_fraction"] for r in records])
     labels = ["First correct", "Convinced"]
     values = [first or 0.0, convinced or 0.0]
+    errors = [first_se or 0.0, convinced_se or 0.0]
 
     fig, ax = plt.subplots(figsize=(6, 5))
     sns.barplot(x=labels, y=values, ax=ax, palette="muted")
+    ax.errorbar(range(len(values)), values, yerr=errors, fmt="none", ecolor="black", capsize=4)
     ax.set_ylim(0, 1)
     ax.set_ylabel("Mean fraction of reasoning sentences")
     ax.set_title("Reasoning fraction until first-correct vs. convinced")
-    for i, v in enumerate(values):
-        ax.text(i, v + 0.02, f"{v:.2f}", ha="center")
+    for i, (v, e) in enumerate(zip(values, errors)):
+        ax.text(i, v + e + 0.02, f"{v:.2f}", ha="center")
     _save(fig, output_dir, "1_fraction_first_correct_vs_convinced.png")
 
 
@@ -183,16 +199,19 @@ def plot_accuracy_per_size(records: list[dict], output_dir: Path) -> None:
         by_size.setdefault(r["size"], []).extend(e["correct"] for e in r["evals"])
 
     sizes = sorted(by_size)
-    acc = [float(np.mean(by_size[s])) for s in sizes]
+    stats = [_mean_se([float(b) for b in by_size[s]]) for s in sizes]
+    acc = [m or 0.0 for m, _ in stats]
+    errors = [se or 0.0 for _, se in stats]
 
     fig, ax = plt.subplots(figsize=(8, 5))
     sns.barplot(x=[str(s) for s in sizes], y=acc, ax=ax, palette="crest")
+    ax.errorbar(range(len(acc)), acc, yerr=errors, fmt="none", ecolor="black", capsize=4)
     ax.set_ylim(0, 1)
     ax.set_xlabel("Maze size")
     ax.set_ylabel("Sentence accuracy")
     ax.set_title("Average sentence accuracy per size")
-    for i, v in enumerate(acc):
-        ax.text(i, v + 0.02, f"{v:.2f}", ha="center")
+    for i, (v, e) in enumerate(zip(acc, errors)):
+        ax.text(i, v + e + 0.02, f"{v:.2f}", ha="center")
     _save(fig, output_dir, "2_sentence_accuracy_per_size.png")
 
 
@@ -218,50 +237,54 @@ def _before_after_probs(records: list[dict], idx_key: str) -> tuple[list[float],
 def plot_prob_around_commitment(records: list[dict], output_dir: Path, idx_key: str, label: str, name: str) -> None:
     """Graphs 3 & 4: mean answer probability before vs. after a commitment point."""
     before, after = _before_after_probs(records, idx_key)
-    values = [float(np.mean(before)) if before else 0.0, float(np.mean(after)) if after else 0.0]
+    before_m, before_se = _mean_se(before)
+    after_m, after_se = _mean_se(after)
+    values = [before_m or 0.0, after_m or 0.0]
+    errors = [before_se or 0.0, after_se or 0.0]
     counts = [len(before), len(after)]
 
     fig, ax = plt.subplots(figsize=(6, 5))
     sns.barplot(x=[f"Before {label}", f"After {label}"], y=values, ax=ax, palette="flare")
+    ax.errorbar(range(len(values)), values, yerr=errors, fmt="none", ecolor="black", capsize=4)
     ax.set_ylim(0, 1)
     ax.set_ylabel("Mean answer probability")
     ax.set_title(f"Answer probability before vs. after {label}")
-    for i, (v, n) in enumerate(zip(values, counts)):
-        ax.text(i, v + 0.02, f"{v:.2f}\n(n={n})", ha="center")
+    for i, (v, e, n) in enumerate(zip(values, errors, counts)):
+        ax.text(i, v + e + 0.02, f"{v:.2f}\n(n={n})", ha="center")
     _save(fig, output_dir, name)
 
 
 def plot_no_reasoning_share(records: list[dict], output_dir: Path, idx_key: str, label: str, name: str) -> None:
     """Graphs 5 & 6: percent of steps that hit the commitment at sentence 0, per size."""
-    total: dict[int, int] = {}
-    at_zero: dict[int, int] = {}
+    flags_by_size: dict[int, list[float]] = {}
     for r in records:
         if r["size"] is None:
             continue
-        total[r["size"]] = total.get(r["size"], 0) + 1
-        if r[idx_key] == 0:
-            at_zero[r["size"]] = at_zero.get(r["size"], 0) + 1
+        flags_by_size.setdefault(r["size"], []).append(1.0 if r[idx_key] == 0 else 0.0)
 
-    sizes = sorted(total)
-    pct = [100.0 * at_zero.get(s, 0) / total[s] for s in sizes]
+    sizes = sorted(flags_by_size)
+    stats = [_mean_se(flags_by_size[s]) for s in sizes]
+    pct = [100.0 * (m or 0.0) for m, _ in stats]
+    errors = [100.0 * (se or 0.0) for _, se in stats]
 
     fig, ax = plt.subplots(figsize=(8, 5))
     sns.barplot(x=[str(s) for s in sizes], y=pct, ax=ax, palette="mako")
+    ax.errorbar(range(len(pct)), pct, yerr=errors, fmt="none", ecolor="black", capsize=4)
     ax.set_ylim(0, 100)
     ax.set_xlabel("Maze size")
     ax.set_ylabel(f"% of steps {label} with no reasoning")
     ax.set_title(f"{label.capitalize()} with no reasoning (sentence 0) per size")
-    for i, v in enumerate(pct):
-        ax.text(i, v + 1, f"{v:.0f}%", ha="center")
+    for i, (v, e) in enumerate(zip(pct, errors)):
+        ax.text(i, v + e + 1, f"{v:.0f}%", ha="center")
     _save(fig, output_dir, name)
 
 
-def _heatmap_grid(records: list[dict], value_fn) -> tuple[list[int], list[float], np.ndarray]:
-    """Bucket records into (complexity, size) cells and reduce each with ``value_fn``.
+def _heatmap_grid(records: list[dict], cell_fn) -> tuple[list[int], list[float], np.ndarray, np.ndarray]:
+    """Bucket records into (complexity, size) cells and reduce each with ``cell_fn``.
 
-    ``value_fn`` takes the list of records in a cell and returns a float (or ``None`` for
-    an empty/undefined cell). Returns the sorted sizes (columns), sorted complexities
-    (rows), and the value matrix with ``np.nan`` for empty/undefined cells.
+    ``cell_fn`` takes the list of records in a cell and returns a ``(value, se)`` pair
+    (either may be ``None``). Returns the sorted sizes (columns), sorted complexities
+    (rows), and the value and standard-error matrices, with ``np.nan`` for empty cells.
     """
     cells: dict[tuple[float, int], list[dict]] = {}
     for r in records:
@@ -271,34 +294,51 @@ def _heatmap_grid(records: list[dict], value_fn) -> tuple[list[int], list[float]
 
     sizes = sorted({s for (_, s) in cells})
     comps = sorted({c for (c, _) in cells})
-    matrix = np.full((len(comps), len(sizes)), np.nan)
+    value_m = np.full((len(comps), len(sizes)), np.nan)
+    se_m = np.full((len(comps), len(sizes)), np.nan)
     for i, c in enumerate(comps):
         for j, s in enumerate(sizes):
             recs = cells.get((c, s))
             if recs:
-                v = value_fn(recs)
+                v, se = cell_fn(recs)
                 if v is not None:
-                    matrix[i, j] = v
-    return sizes, comps, matrix
+                    value_m[i, j] = v
+                    if se is not None:
+                        se_m[i, j] = se
+    return sizes, comps, value_m, se_m
 
 
-def plot_heatmap(records: list[dict], output_dir: Path, value_fn, title: str, cbar_label: str, name: str, fmt: str, vmin: float, vmax: float) -> None:
-    """Graphs 7-10: a (grid complexity x size) heatmap of a per-cell statistic."""
-    sizes, comps, matrix = _heatmap_grid(records, value_fn)
+def plot_heatmap(records: list[dict], output_dir: Path, cell_fn, title: str, cbar_label: str, name: str, precision: int, vmin: float, vmax: float) -> None:
+    """Graphs 7-10: a (grid complexity x size) heatmap of a per-cell statistic.
+
+    Each cell is annotated ``value`` over ``±SE`` (standard error of the mean), so the
+    uncertainty rides along with the colour-encoded value.
+    """
+    sizes, comps, value_m, se_m = _heatmap_grid(records, cell_fn)
     if not sizes or not comps:
         print(f"  skip {name}: no records with both a size and a complexity")
         return
 
+    annot = np.full(value_m.shape, "", dtype=object)
+    for i in range(value_m.shape[0]):
+        for j in range(value_m.shape[1]):
+            if np.isnan(value_m[i, j]):
+                continue
+            cell = f"{value_m[i, j]:.{precision}f}"
+            if not np.isnan(se_m[i, j]):
+                cell += f"\n±{se_m[i, j]:.{precision}f}"
+            annot[i, j] = cell
+
     fig, ax = plt.subplots(figsize=(1.1 * len(sizes) + 3, 0.9 * len(comps) + 2))
     sns.heatmap(
-        matrix,
+        value_m,
         ax=ax,
-        annot=True,
-        fmt=fmt,
+        annot=annot,
+        fmt="",
         cmap="viridis",
         vmin=vmin,
         vmax=vmax,
-        mask=np.isnan(matrix),  # leave empty cells blank instead of printing "nan"
+        mask=np.isnan(value_m),  # leave empty cells blank instead of printing "nan"
         xticklabels=[str(s) for s in sizes],
         yticklabels=[f"{c:.1f}" for c in comps],
         cbar_kws={"label": cbar_label},
@@ -310,12 +350,16 @@ def plot_heatmap(records: list[dict], output_dir: Path, value_fn, title: str, cb
     _save(fig, output_dir, name)
 
 
-def _cell_mean_fraction(recs: list[dict], key: str) -> float | None:
-    return _mean([r[key] for r in recs])
+def _cell_mean_fraction(recs: list[dict], key: str) -> tuple[float | None, float | None]:
+    return _mean_se([r[key] for r in recs])
 
 
-def _cell_pct_idx_zero(recs: list[dict], key: str) -> float | None:
-    return 100.0 * sum(1 for r in recs if r[key] == 0) / len(recs) if recs else None
+def _cell_pct_idx_zero(recs: list[dict], key: str) -> tuple[float | None, float | None]:
+    mean, se = _mean_se([1.0 if r[key] == 0 else 0.0 for r in recs])
+    return (
+        mean * 100.0 if mean is not None else None,
+        se * 100.0 if se is not None else None,
+    )
 
 
 def main() -> None:
@@ -349,22 +393,22 @@ def main() -> None:
     plot_heatmap(
         records, output_dir, lambda recs: _cell_mean_fraction(recs, "convinced_fraction"),
         "Mean convinced fraction by complexity and size", "Mean convinced fraction",
-        "7_convinced_fraction_heatmap.png", fmt=".2f", vmin=0.0, vmax=1.0,
+        "7_convinced_fraction_heatmap.png", precision=2, vmin=0.0, vmax=1.0,
     )
     plot_heatmap(
         records, output_dir, lambda recs: _cell_mean_fraction(recs, "first_correct_fraction"),
         "Mean first-correct fraction by complexity and size", "Mean first-correct fraction",
-        "8_first_correct_fraction_heatmap.png", fmt=".2f", vmin=0.0, vmax=1.0,
+        "8_first_correct_fraction_heatmap.png", precision=2, vmin=0.0, vmax=1.0,
     )
     plot_heatmap(
         records, output_dir, lambda recs: _cell_pct_idx_zero(recs, "convinced_idx"),
         "Convinced with no reasoning by complexity and size", "% convinced with no reasoning",
-        "9_convinced_no_reasoning_heatmap.png", fmt=".0f", vmin=0.0, vmax=100.0,
+        "9_convinced_no_reasoning_heatmap.png", precision=0, vmin=0.0, vmax=100.0,
     )
     plot_heatmap(
         records, output_dir, lambda recs: _cell_pct_idx_zero(recs, "first_correct_idx"),
         "First-correct with no reasoning by complexity and size", "% first-correct with no reasoning",
-        "10_first_correct_no_reasoning_heatmap.png", fmt=".0f", vmin=0.0, vmax=100.0,
+        "10_first_correct_no_reasoning_heatmap.png", precision=0, vmin=0.0, vmax=100.0,
     )
 
     print(f"Figures written to {output_dir}/")
