@@ -428,6 +428,7 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=1, help="Max tokens to generate for the action value (the action is a single token, so 1 suffices).")
     parser.add_argument("--batch-size", type=int, default=16, help="Number of reasoning-sentence cutoffs to evaluate per batched generate call.")
     parser.add_argument("--max-window-prompts", type=int, default=None, help="Accumulate prompts across trajectory files until this many, then generate+write as one window (batches cross file boundaries). Larger = better length-grouping but more RAM. Defaults to batch_size * 32.")
+    parser.add_argument("--skip-existing", action="store_true", help="Skip trajectory files whose output JSON already exists in --output-dir (resume a previous run).")
     parser.add_argument("--device-map", default="auto", help="device_map for model loading.")
     parser.add_argument("--torch-dtype", default="auto", help="Torch dtype: auto, bfloat16, or float16.")
     parser.add_argument("--dry-run", action="store_true", help="Print the first step's sentence cutoffs and prompt tails, then exit (no generation).")
@@ -500,10 +501,15 @@ def main() -> None:
     window_files: list[dict] = []
 
     for traj_path in paths:
+        file_stem = Path(traj_path).stem
+        out_path = output_dir / f"{file_stem}.json"
+        if args.skip_existing and out_path.exists():
+            print(f"  Skipping {file_stem}: output already exists at {out_path}")
+            continue
+
         with open(traj_path) as f:
             trajectory = json.load(f)
 
-        file_stem = Path(traj_path).stem
         print(f"  Loaded {file_stem}: {len(trajectory['steps'])} step(s)")
 
         # ``spans`` records each step's slice [start, end) into the shared window prompt list.
@@ -524,7 +530,7 @@ def main() -> None:
 
         n_cutoffs = len(window_prompts) - window_start
         print(f"    {file_stem}: {len(spans)} usable step(s), {n_cutoffs} cutoff(s) added (window now {len(window_prompts)}/{max_window_prompts})")
-        window_files.append({"file_stem": file_stem, "out_path": output_dir / f"{file_stem}.json", "spans": spans})
+        window_files.append({"file_stem": file_stem, "out_path": out_path, "spans": spans})
 
         if len(window_prompts) >= max_window_prompts:
             _flush_window(window_prompts, window_files, **flush_kwargs)
