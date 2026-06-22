@@ -227,6 +227,30 @@ def build_step_prompts(trajectory: dict, step: dict) -> tuple[dict, list[list[in
     return meta, prompts
 
 
+def _length_sorted_batches(
+    order: list[int], prompts: list[list[int]], batch_size: int, max_batch_tokens: int
+) -> list[list[int]]:
+    """Group the length-sorted ``order`` into batches bounded by rows AND padded-token area.
+
+    A batch is flushed when adding the next prompt would exceed either the row cap
+    (``batch_size``) or the padded-area budget ``rows * padded_len``. Since ``order`` is
+    ascending by length, each newly added prompt is the batch's longest, so its length sets the
+    padded width for every row — i.e. adding it makes the area ``(len(batch) + 1) * L``. A single
+    prompt larger than the whole budget still forms its own one-row batch (work is never dropped).
+    """
+    batches: list[list[int]] = []
+    batch: list[int] = []
+    for i in order:
+        length = len(prompts[i])
+        if batch and (len(batch) >= batch_size or (len(batch) + 1) * length > max_batch_tokens):
+            batches.append(batch)
+            batch = []
+        batch.append(i)
+    if batch:
+        batches.append(batch)
+    return batches
+
+
 def generate_actions(
     prompts: list[list[int]],
     *,
@@ -235,27 +259,32 @@ def generate_actions(
     model_device,
     stop_ids: list[int],
     batch_size: int,
+    max_batch_tokens: int,
     max_new_tokens: int,
 ) -> list[dict]:
     """Greedily decode the action for a flat list of prompts; results align with ``prompts``.
 
-    Prompts are left-padded into batches of ``batch_size`` and decoded greedily, so each
-    ``model.generate`` handles many cutoffs at once regardless of which step they came from.
-    Prompts are processed in length-sorted order so each batch is roughly length-uniform
-    (minimizing wasted compute on padding), then results are scattered back to the original
-    positions.
+    Prompts are left-padded into batches and decoded greedily, so each ``model.generate`` handles
+    many cutoffs at once regardless of which step they came from. Prompts are processed in
+    length-sorted order and grouped by ``_length_sorted_batches`` so each batch is length-uniform
+    (minimizing padding) and bounded by both a row cap (``batch_size``) and a padded-token-area
+    budget (``max_batch_tokens``) — the latter shrinks the row count on long-sequence batches so
+    attention memory stays bounded. Results are then scattered back to the original positions.
     """
     results: list[dict | None] = [None] * len(prompts)
     order = sorted(range(len(prompts)), key=lambda i: len(prompts[i]))
+    batches = _length_sorted_batches(order, prompts, batch_size, max_batch_tokens)
 
-    n_batches = (len(prompts) + batch_size - 1) // batch_size
-    print(f"    Generating actions for {len(prompts)} prompt(s) in {n_batches} batch(es) of up to {batch_size}")
+    print(
+        f"    Generating actions for {len(prompts)} prompt(s) in {len(batches)} batch(es) "
+        f"(<= {batch_size} rows, <= {max_batch_tokens} padded tokens each)"
+    )
 
-    for batch_no, start in enumerate(range(0, len(order), batch_size), start=1):
-        idxs = order[start : start + batch_size]
+    for batch_no, idxs in enumerate(batches, start=1):
         chunk = [prompts[i] for i in idxs]
         input_ids, attention_mask = _build_padded_batch(chunk, tokenizer.eos_token_id, model_device)
-        print(f"      batch {batch_no}/{n_batches}: {len(chunk)} prompt(s), padded to {input_ids.shape[1]} tokens")
+        seq_len = input_ids.shape[1]
+        print(f"      batch {batch_no}/{len(batches)}: {len(chunk)} prompt(s), padded to {seq_len} tokens ({len(chunk) * seq_len} area)")
         with torch.no_grad():
             generated = model.generate(
                 input_ids,
@@ -368,6 +397,7 @@ def _flush_window(
     model_device,
     stop_ids: list[int],
     batch_size: int,
+    max_batch_tokens: int,
     max_new_tokens: int,
     overall: dict,
 ) -> None:
@@ -390,6 +420,7 @@ def _flush_window(
         model_device=model_device,
         stop_ids=stop_ids,
         batch_size=batch_size,
+        max_batch_tokens=max_batch_tokens,
         max_new_tokens=max_new_tokens,
     )
 
@@ -426,7 +457,9 @@ def main() -> None:
     parser.add_argument("--trajectory-paths", nargs="+", default=[DEFAULT_TRAJECTORY], help="Trajectory JSON file(s), directory, or glob pattern(s).")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory to write per-file results JSON into.")
     parser.add_argument("--max-new-tokens", type=int, default=1, help="Max tokens to generate for the action value (the action is a single token, so 1 suffices).")
-    parser.add_argument("--batch-size", type=int, default=16, help="Number of reasoning-sentence cutoffs to evaluate per batched generate call.")
+    parser.add_argument("--batch-size", type=int, default=16, help="Max rows per batched generate call (upper bound; long-sequence batches may use fewer rows due to --max-batch-tokens).")
+    parser.add_argument("--max-batch-tokens", type=int, default=49152, help="Max padded token area (rows * padded_len) per batch. Caps memory on long-sequence batches by shrinking their row count. For eager attention memory scales ~rows*seq_len^2, so lower this if you still OOM.")
+    parser.add_argument("--attn-implementation", default=None, help="Attention backend passed to from_pretrained (e.g. flex_attention, flash_attention_2, eager). Default: let transformers choose. gpt-oss has no SDPA, so without flash-attn it falls back to slow eager; flex_attention avoids the O(seq_len^2) memory.")
     parser.add_argument("--max-window-prompts", type=int, default=None, help="Accumulate prompts across trajectory files until this many, then generate+write as one window (batches cross file boundaries). Larger = better length-grouping but more RAM. Defaults to batch_size * 32.")
     parser.add_argument("--skip-existing", action="store_true", help="Skip trajectory files whose output JSON already exists in --output-dir (resume a previous run).")
     parser.add_argument("--device-map", default="auto", help="device_map for model loading.")
@@ -464,9 +497,13 @@ def main() -> None:
     print(f"Loading model: {model_id}")
     resolved_dtype = _resolve_torch_dtype(args.torch_dtype, model_id)
     dtype = resolved_dtype if resolved_dtype is not None else "auto"
-    model = AutoModelForCausalLM.from_pretrained(model_id, device_map=args.device_map, dtype=dtype)
+    load_kwargs = dict(device_map=args.device_map, dtype=dtype)
+    if args.attn_implementation:
+        load_kwargs["attn_implementation"] = args.attn_implementation
+    model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
     model.eval()
     model_device = next(model.parameters()).device
+    print(f"Attention implementation: {getattr(model.config, '_attn_implementation', 'unknown')}")
 
     stop_ids = resolve_stop_ids(tokenizer)
     print(f"Harmony stop token ids: {stop_ids}")
@@ -490,6 +527,7 @@ def main() -> None:
         model_device=model_device,
         stop_ids=stop_ids,
         batch_size=args.batch_size,
+        max_batch_tokens=args.max_batch_tokens,
         max_new_tokens=args.max_new_tokens,
         overall=overall,
     )
