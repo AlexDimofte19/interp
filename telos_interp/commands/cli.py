@@ -6,6 +6,9 @@ import tyro
 
 from telos_interp.commands.apply_cognitive_map_probe import apply_cognitive_map_probe
 from telos_interp.commands.eval_cognitive_map_probe import eval_cognitive_map_probe
+from telos_interp.commands.eval_cognitive_map_probe_per_distance import (
+    eval_cognitive_map_probe_per_distance,
+)
 from telos_interp.commands.eval_distance_probe import eval_distance_probe
 from telos_interp.commands.gather_activations import gather_activations
 from telos_interp.commands.prepare_activations_for_probing import prepare_activations_for_probing
@@ -38,6 +41,7 @@ def main():
             "train_next_action_probe": train_next_action_probe,
             "apply_cognitive_map_probe": apply_cognitive_map_probe,
             "eval_cognitive_map_probe": eval_cognitive_map_probe,
+            "eval_cognitive_map_probe_per_distance": eval_cognitive_map_probe_per_distance,
         }
     )
 
