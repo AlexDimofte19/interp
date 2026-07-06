@@ -126,6 +126,25 @@ class MetricsAccumulator:
         }
 
 
+def _pivot_distance_by_class(distance_metrics: dict) -> dict:
+    """Transpose ``distance -> {..., per_class}`` into ``class -> {distance: metrics}``.
+
+    Args:
+        distance_metrics: mapping of distance-key (str) to a metrics dict, i.e.
+            the output of ``MetricsAccumulator.compute_metrics()``.
+
+    Returns:
+        Mapping of class index (int) to ``{distance_key: per_class_metrics}``,
+        where ``per_class_metrics`` is that class's entry (accuracy, precision,
+        recall, f1, gt_support, predicted) at that distance.
+    """
+    per_class_out: dict[int, dict[str, dict]] = defaultdict(dict)
+    for dist_key, metrics in distance_metrics.items():
+        for class_id, class_metrics in metrics.get("per_class", {}).items():
+            per_class_out[class_id][dist_key] = class_metrics
+    return {class_id: dict(dist_map) for class_id, dist_map in per_class_out.items()}
+
+
 class DistanceAccumulatorSet:
     """Holds per-distance MetricsAccumulators for both goal- and agent-distance.
 
@@ -168,16 +187,27 @@ class DistanceAccumulatorSet:
             self.by_agent_distance[dist].update(preds, gts)
 
     def compute(self) -> dict:
-        """Compute metrics for every distance bucket on both axes."""
+        """Compute metrics for every distance bucket on both axes.
+
+        In addition to the distance-keyed metrics (``distance -> class``), this
+        also returns the transpose (``class -> distance``) so that per-class
+        tables can be built directly. Per-class keys are class indices (probe
+        index space); use the top-level ``class_labels`` mapping to decode them
+        to symbols.
+        """
+        by_goal = {
+            str(dist): self.by_goal_distance[dist].compute_metrics()
+            for dist in sorted(self.by_goal_distance.keys())
+        }
+        by_agent = {
+            str(dist): self.by_agent_distance[dist].compute_metrics()
+            for dist in sorted(self.by_agent_distance.keys())
+        }
         return {
-            "by_goal_distance": {
-                str(dist): self.by_goal_distance[dist].compute_metrics()
-                for dist in sorted(self.by_goal_distance.keys())
-            },
-            "by_agent_distance": {
-                str(dist): self.by_agent_distance[dist].compute_metrics()
-                for dist in sorted(self.by_agent_distance.keys())
-            },
+            "by_goal_distance": by_goal,
+            "by_agent_distance": by_agent,
+            "by_goal_distance_per_class": _pivot_distance_by_class(by_goal),
+            "by_agent_distance_per_class": _pivot_distance_by_class(by_agent),
         }
 
 
@@ -241,6 +271,43 @@ def _print_distance_table(distance_metrics: dict, axis_name: str, title: str | N
             f"{m['baseline_accuracy']:>10.4f} {m['total_samples']:>12}"
         )
     print("-" * 70)
+
+
+def _print_per_class_distance_tables(
+    per_class_pivot: dict,
+    axis_name: str,
+    idx_to_label: dict[int, int],
+    title_prefix: str | None = None,
+) -> None:
+    """Print one table per class: rows are distances, columns are the metrics.
+
+    Classes with no ground-truth support at any distance are skipped.
+    """
+    for class_id in sorted(per_class_pivot.keys()):
+        dist_map = per_class_pivot[class_id]
+        if all(cm["gt_support"] == 0 for cm in dist_map.values()):
+            continue
+
+        symbol = CELL_ID_TO_SYMBOL.get(idx_to_label.get(class_id, class_id), str(class_id))
+        header = f"class '{symbol}' | distance to {axis_name}"
+        if title_prefix:
+            header = f"{title_prefix} | {header}"
+
+        print(f"\n{'-' * 78}")
+        print(header)
+        print("-" * 78)
+        print(
+            f"{'Distance':>10} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} "
+            f"{'F1-Score':>10} {'Support':>10} {'Predicted':>10}"
+        )
+        print("-" * 78)
+        for dist_key in sorted(dist_map.keys(), key=lambda k: int(k)):
+            cm = dist_map[dist_key]
+            print(
+                f"{dist_key:>10} {cm['accuracy']:>10.4f} {cm['precision']:>10.4f} "
+                f"{cm['recall']:>10.4f} {cm['f1']:>10.4f} {cm['gt_support']:>10} {cm['predicted']:>10}"
+            )
+        print("-" * 78)
 
 
 def _apply_probe_to_all_positions(
@@ -686,6 +753,21 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
             "agent",
             "GLOBAL: accuracy per distance to AGENT",
         )
+        print(f"\n{'=' * 87}")
+        print("GLOBAL: per-class metrics by distance")
+        print("=" * 87)
+        _print_per_class_distance_tables(
+            global_distance_metrics["by_goal_distance_per_class"],
+            "goal",
+            probe.idx_to_label,
+            "GLOBAL",
+        )
+        _print_per_class_distance_tables(
+            global_distance_metrics["by_agent_distance_per_class"],
+            "agent",
+            probe.idx_to_label,
+            "GLOBAL",
+        )
 
     # Per-size metrics (skip in single_size_mode)
     size_metrics = {}
@@ -733,7 +815,13 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
             )
 
     # Build results dictionary
+    # class_labels maps every class index used as a key in `per_class` (and in
+    # the *_per_class distance pivots) to its grid symbol, so the JSON is
+    # self-describing (the probe may cover only a subset of all cell classes).
+    class_labels = {str(i): class_names[i] for i in range(num_classes)}
+
     results = {
+        "class_labels": class_labels,
         "global": global_metrics,
         "global_by_distance": global_distance_metrics,
         "by_complexity": {str(k): v for k, v in complexity_metrics.items()},
