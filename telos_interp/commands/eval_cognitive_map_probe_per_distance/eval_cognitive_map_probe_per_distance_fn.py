@@ -28,6 +28,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
+import pandas as pd
 import torch
 from tqdm import tqdm
 
@@ -407,6 +408,53 @@ def _build_distance_records(
     return records
 
 
+def _build_prediction_rows(
+    predictions: dict[tuple[int, int], int],
+    ground_truth: dict[tuple[int, int], int],
+    goal_pos: tuple[int, int] | None,
+    agent_pos: tuple[int, int] | None,
+    padding_idx: int,
+) -> list[dict]:
+    """Build one row per cell for the per-prediction table.
+
+    Unlike ``_build_distance_records`` (which drops padding), this keeps *every*
+    cell of the padded grid so the resulting table can reproduce every metric,
+    including the padding-inclusive global class metrics.
+
+    Distances are set to ``None`` for padding cells and whenever the goal/agent
+    is absent from the grid, mirroring the "meaningless for padding" rule in
+    ``_build_distance_records``.
+
+    Returns:
+        A list of dicts with keys ``row``, ``col``, ``gt_idx``, ``pred_idx``,
+        ``is_padding``, ``dist_to_goal``, ``dist_to_agent``. Symbol decoding and
+        the ``correct`` flag are added later, vectorised on the DataFrame.
+    """
+    rows = []
+    for pos, gt in ground_truth.items():
+        if pos not in predictions:
+            continue
+        is_padding = gt == padding_idx
+        if is_padding:
+            dist_goal = None
+            dist_agent = None
+        else:
+            dist_goal = _chebyshev_distance(pos, goal_pos) if goal_pos is not None else None
+            dist_agent = _chebyshev_distance(pos, agent_pos) if agent_pos is not None else None
+        rows.append(
+            {
+                "row": pos[0],
+                "col": pos[1],
+                "gt_idx": gt,
+                "pred_idx": predictions[pos],
+                "is_padding": is_padding,
+                "dist_to_goal": dist_goal,
+                "dist_to_agent": dist_agent,
+            }
+        )
+    return rows
+
+
 def _extract_complexity_from_trajectory(trajectory_data: dict) -> float:
     """Extract complexity value from trajectory data."""
     return trajectory_data.get("grid_params", {}).get("grid_complexity", 0.0)
@@ -431,6 +479,8 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
     output_indices: str | None = None,
     pad_to_size: int = 15,
     output_path: str | None = None,
+    predictions_output_path: str | None = None,
+    save_predictions: bool = True,
     device: str | None = None,
     verbose: bool = True,
 ) -> dict:
@@ -457,6 +507,11 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
         output_path: Path to save JSON results. If not provided, auto-generates from
             probe name and trajectories directory name
             (e.g., "eval_per_distance_<probe>_<trajectories>.json")
+        predictions_output_path: Path to save the per-prediction CSV table (one row
+            per grid cell prediction). If not provided, auto-generates alongside the
+            JSON as "<json_stem>_predictions.csv".
+        save_predictions: Whether to write the per-prediction CSV table. Set to False
+            to skip it (the table can be large: one row per padded grid cell per step).
         device: Device to use for inference
         verbose: Print progress information
 
@@ -557,8 +612,12 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
     total_trajectories = 0
     total_steps_processed = 0
 
+    # Per-prediction rows for the tabular (CSV) output; enriched with per-step
+    # metadata in the loops below. Only collected when save_predictions is True.
+    prediction_rows: list[dict] = []
+
     def _process_step(activation: torch.Tensor, grid_state: list[str]):
-        """Run probe on a step and return (pred_list, gt_list, cell_records)."""
+        """Run probe on a step and return (pred_list, gt_list, cell_records, pred_rows)."""
         predictions = _apply_probe_to_all_positions(probe, activation, pad_to_size)
         ground_truth = _get_ground_truth_for_step(grid_state, pad_to_size, probe.label_to_idx)
 
@@ -573,7 +632,12 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
         cell_records = _build_distance_records(
             predictions, ground_truth, goal_pos, agent_pos, padding_idx
         )
-        return pred_list, gt_list, cell_records
+        pred_rows = (
+            _build_prediction_rows(predictions, ground_truth, goal_pos, agent_pos, padding_idx)
+            if save_predictions
+            else []
+        )
+        return pred_list, gt_list, cell_records, pred_rows
 
     if single_size_mode:
         # Process trajectories directly from base folder (no size subfolders)
@@ -587,6 +651,7 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
                 trajectory_data = json.load(f)
 
             complexity = _extract_complexity_from_trajectory(trajectory_data)
+            grid_size = _extract_size_from_trajectory(trajectory_data)
 
             traj_name = traj_file.stem
             traj_activations_folder = activations_base / traj_name
@@ -634,7 +699,9 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
                     if activation is None:
                         continue
 
-                    pred_list, gt_list, cell_records = _process_step(activation, grid_state)
+                    pred_list, gt_list, cell_records, pred_rows = _process_step(
+                        activation, grid_state
+                    )
 
                     # Class-based accumulators (no size-based metrics in single_size_mode)
                     global_accumulator.update(pred_list, gt_list)
@@ -643,6 +710,17 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
                     # Distance-based accumulators
                     global_distance.update(cell_records)
                     complexity_distance[complexity].update(cell_records)
+
+                    # Per-prediction rows for the CSV table
+                    for r in pred_rows:
+                        r.update(
+                            trajectory=traj_name,
+                            grid_size=grid_size,
+                            complexity=complexity,
+                            layer=layer_idx,
+                            step=step_idx,
+                        )
+                    prediction_rows.extend(pred_rows)
 
                     total_steps_processed += 1
     else:
@@ -714,7 +792,9 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
                         if activation is None:
                             continue
 
-                        pred_list, gt_list, cell_records = _process_step(activation, grid_state)
+                        pred_list, gt_list, cell_records, pred_rows = _process_step(
+                            activation, grid_state
+                        )
 
                         # Class-based accumulators
                         global_accumulator.update(pred_list, gt_list)
@@ -726,6 +806,17 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
                         global_distance.update(cell_records)
                         size_distance[grid_size].update(cell_records)
                         complexity_distance[complexity].update(cell_records)
+
+                        # Per-prediction rows for the CSV table
+                        for r in pred_rows:
+                            r.update(
+                                trajectory=traj_name,
+                                grid_size=grid_size,
+                                complexity=complexity,
+                                layer=layer_idx,
+                                step=step_idx,
+                            )
+                        prediction_rows.extend(pred_rows)
 
                         total_steps_processed += 1
 
@@ -858,5 +949,30 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
 
     if verbose:
         print(f"\nResults saved to: {output_path_obj}")
+
+    # Save per-prediction CSV table (one row per grid cell prediction). This
+    # carries enough context (trajectory / size / complexity / layer / step /
+    # position / distances) to recompute any metric downstream.
+    if save_predictions:
+        if predictions_output_path is None:
+            predictions_output_path = str(output_path_obj.with_name(f"{output_path_obj.stem}_predictions.csv"))
+
+        idx_to_symbol = {i: class_names[i] for i in range(num_classes)}
+        columns = [
+            "trajectory", "grid_size", "complexity", "layer", "step",
+            "row", "col", "gt_idx", "gt_symbol", "pred_idx", "pred_symbol",
+            "correct", "is_padding", "dist_to_goal", "dist_to_agent",
+        ]
+        predictions_df = pd.DataFrame(prediction_rows, columns=columns)
+        # Vectorised symbol decoding and correctness flag (avoids per-row work above).
+        predictions_df["gt_symbol"] = predictions_df["gt_idx"].map(idx_to_symbol)
+        predictions_df["pred_symbol"] = predictions_df["pred_idx"].map(idx_to_symbol)
+        predictions_df["correct"] = predictions_df["gt_idx"] == predictions_df["pred_idx"]
+
+        predictions_output_path_obj = Path(predictions_output_path)
+        predictions_df.to_csv(predictions_output_path_obj, index=False)
+
+        if verbose:
+            print(f"Per-prediction table ({len(predictions_df)} rows) saved to: {predictions_output_path_obj}")
 
     return results
