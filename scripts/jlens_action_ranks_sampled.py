@@ -113,9 +113,20 @@ def main():
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
+    print(f"activations_root: {args.activations_root} (exists: {args.activations_root.exists()})", flush=True)
+    print(f"trajectories_root: {args.trajectories_root} (exists: {args.trajectories_root.exists()})", flush=True)
+    print("globbing size*/*/*/layer_*/step_0/prompt_suffix/*.pt (can take a while on big trees)...", flush=True)
     files = sorted(args.activations_root.glob("size*/*/*/layer_*/step_0/prompt_suffix/*.pt"))
-    print(f"{len(files)} activation files")
+    print(f"{len(files)} activation files", flush=True)
     if not files:
+        print("top-level entries under activations_root:", flush=True)
+        for p in sorted(args.activations_root.iterdir())[:10]:
+            print(f"  {p.name}", flush=True)
+        sub = next((p for p in sorted(args.activations_root.iterdir()) if p.is_dir()), None)
+        if sub:
+            print(f"entries under {sub.name}:", flush=True)
+            for p in sorted(sub.iterdir())[:10]:
+                print(f"  {p.name}", flush=True)
         sys.exit("no activation files found")
 
     # group by layer so each J matrix is loaded onto the GPU once
@@ -146,6 +157,7 @@ def main():
     for f, m in parsed:
         by_layer[int(m["layer"])].append((f, m))
 
+    print("loading jlens + unembed assets...", flush=True)
     lens = torch.load(args.jlens_dir / "gpt-oss-20b_jacobian_lens.pt", map_location="cpu")
     assets = ensure_unembed_assets(args.jlens_dir)
     ids, tok = action_token_ids()
@@ -201,7 +213,7 @@ def main():
                         + [tok.decode([i]) for i in t5 + b5]
                     )
                 print(f"layer {layer}: {min(i + args.batch_size, len(items))}/{len(items)}",
-                      end="\r")
+                      end="\r", flush=True)
             print()
     print(f"wrote {args.out}")
 
