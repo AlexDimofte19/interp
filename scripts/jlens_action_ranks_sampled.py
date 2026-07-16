@@ -29,6 +29,7 @@ import json
 import re
 import sys
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 
 import torch
@@ -69,6 +70,24 @@ def ensure_unembed_assets(jlens_dir: Path) -> dict:
     return assets
 
 
+@lru_cache(maxsize=None)
+def trajectory_actions(traj_file: Path) -> dict:
+    """{step_id: agent_action} for one trajectory json."""
+    steps = json.load(open(traj_file, encoding="utf-8"))["steps"]
+    return {s["step_id"]: s["agent_action"] for s in steps}
+
+
+def agent_action_for(f: Path, traj_root: Path) -> str:
+    # f = .../size{S}/{run_folder}/openai__gpt-oss-20b/layer_L/step_{n}/prompt_suffix/{T}.pt
+    run_folder = f.parents[4].name
+    size_dir = f.parents[5].name
+    step_id = int(f.parents[1].name.split("_")[1])
+    traj_file = traj_root / size_dir / f"{run_folder}.json"
+    if not traj_file.exists():
+        return ""
+    return trajectory_actions(traj_file).get(step_id, "")
+
+
 def action_token_ids():
     from transformers import AutoTokenizer
 
@@ -85,10 +104,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--activations_root", type=Path, required=True)
     ap.add_argument("--jlens_dir", type=Path, required=True)
+    ap.add_argument("--trajectories_root", type=Path, required=True,
+                    help="e.g. C:/Uni/Thesis/data/trajectories_test_full")
     ap.add_argument("--out", type=Path, default=Path("jlens_action_ranks.csv"))
     ap.add_argument("--batch_size", type=int, default=2048)
-    ap.add_argument("--runs_per_combo", type=int, default=10,
-                    help="keep the first N runs (lowest run index) per size/complexity/layer")
+    ap.add_argument("--runs_per_combo", type=int, default=None,
+                    help="keep the first N runs (lowest run index) per size/complexity/layer; default: all")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
@@ -111,15 +132,16 @@ def main():
         print(f"warning: {skipped} files did not match the expected path pattern")
 
     # keep only the first N runs per (size, complexity, layer)
-    runs_per_combo = defaultdict(set)
-    for _, m in parsed:
-        runs_per_combo[(m["size"], m["comp"], m["layer"])].add(int(m["run"]))
-    keep = {k: set(sorted(v)[: args.runs_per_combo]) for k, v in runs_per_combo.items()}
-    parsed = [
-        (f, m) for f, m in parsed
-        if int(m["run"]) in keep[(m["size"], m["comp"], m["layer"])]
-    ]
-    print(f"{len(parsed)} files after sampling {args.runs_per_combo} runs per combo")
+    if args.runs_per_combo is not None:
+        runs_per_combo = defaultdict(set)
+        for _, m in parsed:
+            runs_per_combo[(m["size"], m["comp"], m["layer"])].add(int(m["run"]))
+        keep = {k: set(sorted(v)[: args.runs_per_combo]) for k, v in runs_per_combo.items()}
+        parsed = [
+            (f, m) for f, m in parsed
+            if int(m["run"]) in keep[(m["size"], m["comp"], m["layer"])]
+        ]
+        print(f"{len(parsed)} files after sampling {args.runs_per_combo} runs per combo")
 
     for f, m in parsed:
         by_layer[int(m["layer"])].append((f, m))
@@ -137,7 +159,7 @@ def main():
 
     with open(args.out, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["size", "complexity", "layer", "run", "token"]
+        writer.writerow(["size", "complexity", "layer", "run", "token", "agent_action"]
                         + [f"{a}_position" for a in ACTIONS]
                         + [f"{a}_logprob" for a in ACTIONS]
                         + [f"top_{i}" for i in range(1, 6)]
@@ -173,7 +195,8 @@ def main():
                 top5, bot5 = top5.cpu().tolist(), bot5.cpu().tolist()
                 for (f, m), r, lp, t5, b5 in zip(chunk, ranks, logprobs, top5, bot5):
                     writer.writerow(
-                        [m["size"], m["comp"], layer, m["run"], f.stem] + r
+                        [m["size"], m["comp"], layer, m["run"], f.stem,
+                         agent_action_for(f, args.trajectories_root)] + r
                         + [round(x, 4) for x in lp]
                         + [tok.decode([i]) for i in t5 + b5]
                     )
