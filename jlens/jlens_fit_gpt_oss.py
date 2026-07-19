@@ -39,14 +39,21 @@ Usage
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import logging
+import os
 import random
 import re
 import subprocess
 import time
 from collections import Counter
 from pathlib import Path
+
+# The fit alternates one big retained-graph forward with ~180 backward passes,
+# which fragments the caching allocator badly. Must be set before torch loads
+# CUDA, hence module scope; setdefault so an explicit env var still wins.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 logger = logging.getLogger("jlens_fit")
 
@@ -205,6 +212,27 @@ def _jacobian_stats(lens, previous: dict | None) -> tuple[float, float]:
     return sum(id_dists) / len(id_dists), mean_rel
 
 
+def _release_gpu_memory() -> float:
+    """Drop cached blocks between chunks; return peak allocated GB, then reset it.
+
+    Note this does *not* address the OOM most people hit here: the peak happens
+    *inside* one prompt, where jacobian_for_prompt retains the forward graph
+    across all ~d_model/dim_batch backward passes. Nothing is leaked between
+    prompts (ActivationRecorder drops its hooks and tensors on exit). This only
+    returns fragmented cache to the driver and reports the high-water mark, so
+    --dim-batch / --source-layers / --max-seq-len can be tuned from real numbers.
+    """
+    import torch
+
+    if not torch.cuda.is_available():
+        return float("nan")
+    peak = torch.cuda.max_memory_allocated() / 1024**3
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    return peak
+
+
 def fit_with_convergence(
     model,
     prompts: list[str],
@@ -236,6 +264,7 @@ def fit_with_convergence(
 
     for k in range(min(chunk, len(prompts)), len(prompts) + 1, chunk):
         lens = jlens.fit(model, prompts[:k], checkpoint_every=None, **fit_kwargs)
+        peak_gb = _release_gpu_memory()
         if lens.n_prompts == last_n:
             # Resumed run: this chunk was already in the checkpoint, so J did not
             # move. Recording it would write a row of spurious zero change.
@@ -259,11 +288,12 @@ def fit_with_convergence(
         )
         convergence_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
         logger.info(
-            "  %d/%d prompts | identity_distance=%.6f mean_rel_change=%.8f",
+            "  %d/%d prompts | identity_distance=%.6f mean_rel_change=%.8f peak_gpu=%.1fGB",
             k,
             len(prompts),
             identity_distance,
             mean_rel_change,
+            peak_gb,
         )
 
         # NaN on the first chunk (no previous J) correctly fails this comparison.
@@ -421,6 +451,22 @@ def main() -> None:
     )
     model = jlens.from_hf(hf_model, tokenizer, compile=args.compile)
     logger.info("model: n_layers=%d d_model=%d", model.n_layers, model.d_model)
+
+    # The retained graph spans min(source_layers) -> target_layer, and that span
+    # is what dominates peak memory. Defaulting source_layers to "everything"
+    # retains the full stack; restricting it is the cheapest OOM fix available.
+    graph_start = min(args.source_layers) if args.source_layers else 0
+    target = args.target_layer if args.target_layer is not None else model.n_layers - 1
+    logger.info(
+        "retained graph spans layers %d..%d (%d blocks) x dim_batch=%d x max_seq_len=%d"
+        "%s",
+        graph_start,
+        target,
+        target - graph_start,
+        args.dim_batch,
+        args.max_seq_len,
+        "" if args.source_layers else "  -- pass --source-layers to shrink this",
+    )
 
     started = time.time()
     lens = fit_with_convergence(
