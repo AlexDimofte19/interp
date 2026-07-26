@@ -77,6 +77,9 @@ def main() -> None:
     ap.add_argument("--complexities", default=None,
                     help="Comma-separated complexities to keep (matched against comp{C}), "
                          "e.g. '0.0,1.0'. Default: all complexities.")
+    ap.add_argument("--batch-size", type=int, default=None,
+                    help="Reasoning tokens per lens matmul (caps the [B, vocab] logits). "
+                         "Default: a whole step's reasoning chain at once.")
     ap.add_argument("--max-trajectories", type=int, default=None,
                     help="Process at most N trajectory files (default: all).")
     ap.add_argument("--seed", type=int, default=None,
@@ -179,6 +182,8 @@ def main() -> None:
                 acts = extract_activations_single_pass(model, input_ids, abs_positions, layer_indices)
 
                 agent_action = step.get("agent_action", "")
+                # chunk reasoning tokens so [B, vocab] logits stay bounded (bs=None -> whole step)
+                bs = args.batch_size or len(positions)
                 for layer in layer_indices:
                     if layer == TARGET_LAYER:
                         J = None
@@ -186,27 +191,28 @@ def main() -> None:
                         J = lens["J"][layer].float().to(dev)
                     else:
                         continue
-                    # stack reasoning-token activations for this layer -> [T, d]
-                    h = torch.stack([acts[layer][ap] for ap in abs_positions]).float().to(dev)
-                    with torch.no_grad():
-                        if J is not None:
-                            h = h @ J.T
-                        h = h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + eps) * norm_w
-                        logits = (h.to(lm_head.dtype) @ lm_head.T).float()  # [T, vocab]
-                        ranks = torch.stack(
-                            [(logits > logits[:, t : t + 1]).sum(1) for t in id_cols], dim=1
-                        )  # [T, 4], rank 0 = argmax
-                        own = torch.stack([logits[:, t] for t in id_cols], dim=1)
-                        logprobs = own - logits.logsumexp(-1, keepdim=True)
-                        topk = logits.topk(TOP_K, dim=1).indices  # [T, TOP_K]
-                    ranks, logprobs, topk = ranks.cpu().tolist(), logprobs.cpu().tolist(), topk.cpu().tolist()
-                    for (rp, ap, token), r, lp, tk in zip(positions, ranks, logprobs, topk):
-                        writer.writerow(
-                            [name["size"], name["comp"], name["run"], si, rp, ap, token, layer, agent_action]
-                            + r
-                            + [round(x, 4) for x in lp]
-                            + [tok.decode([i]) for i in tk]
-                        )
+                    for i in range(0, len(positions), bs):
+                        chunk = positions[i : i + bs]
+                        h = torch.stack([acts[layer][ap] for _, ap, _ in chunk]).float().to(dev)  # [B, d]
+                        with torch.no_grad():
+                            if J is not None:
+                                h = h @ J.T
+                            h = h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + eps) * norm_w
+                            logits = (h.to(lm_head.dtype) @ lm_head.T).float()  # [B, vocab]
+                            ranks = torch.stack(
+                                [(logits > logits[:, t : t + 1]).sum(1) for t in id_cols], dim=1
+                            )  # [B, 4], rank 0 = argmax
+                            own = torch.stack([logits[:, t] for t in id_cols], dim=1)
+                            logprobs = own - logits.logsumexp(-1, keepdim=True)
+                            topk = logits.topk(TOP_K, dim=1).indices  # [B, TOP_K]
+                        ranks, logprobs, topk = ranks.cpu().tolist(), logprobs.cpu().tolist(), topk.cpu().tolist()
+                        for (rp, ap, token), r, lp, tk in zip(chunk, ranks, logprobs, topk):
+                            writer.writerow(
+                                [name["size"], name["comp"], name["run"], si, rp, ap, token, layer, agent_action]
+                                + r
+                                + [round(x, 4) for x in lp]
+                                + [tok.decode([i]) for i in tk]
+                            )
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
     print(f"wrote {args.out}", flush=True)
