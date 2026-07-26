@@ -66,6 +66,16 @@ def parse_name(stem: str) -> dict:
 
 
 def main() -> None:
+    import torch
+    from transformers import AutoModelForCausalLM
+    from telos_interp.commands.gather_activations.gather_activations_fn import _resolve_torch_dtype
+    from telos_interp.commands.gather_activations.gather_activations_utils import (
+        extract_activations_single_pass,
+        parse_index_specification,
+    )
+    from scripts.inference_oss.run_inference import expand_paths
+    from scripts.jlens_action_ranks_sampled import action_token_ids, ensure_unembed_assets
+    
     ap = argparse.ArgumentParser()
     ap.add_argument("--trajectory-paths", nargs="+", required=True,
                     help="Trajectory JSON file(s), directory, or glob(s).")
@@ -94,17 +104,6 @@ def main() -> None:
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu",
                     help="Device for the lens matmuls (defaults to cuda if available).")
     args = ap.parse_args()
-
-    import torch
-    from transformers import AutoModelForCausalLM
-    from telos_interp.commands.gather_activations.gather_activations_fn import _resolve_torch_dtype
-    from telos_interp.commands.gather_activations.gather_activations_utils import (
-        extract_activations_single_pass,
-        parse_index_specification,
-    )
-    from scripts.inference_oss.run_inference import expand_paths
-    from scripts.jlens_action_ranks_sampled import action_token_ids, ensure_unembed_assets
-
     paths = expand_paths(args.trajectory_paths)
     if args.sizes or args.complexities:
         sizes = {s.strip() for s in args.sizes.split(",")} if args.sizes else None
