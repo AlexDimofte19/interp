@@ -249,3 +249,122 @@ Action sequence probes decode the model's planned multi-step action sequence fro
   }
 }
 ```
+
+---
+
+# Fork: jlens per-step files (`trace_viewer_fork.html`)
+
+`trace_viewer_fork.html` is a separate viewer for Jacobian-lens data. It does **not** read the
+format above: it loads a **folder** of per-step JSON files produced by
+`scripts/jlens_viewer_export.py`, which joins a trajectory JSON with the reasoning-token CSV
+written by `scripts/jlens_reasoning_tokens.py`.
+
+```bash
+python scripts/jlens_viewer_export.py \
+  --csv       /media/alex/D/Uni/northeastern/data/jlens/jlens_reasoning_tokens_own_jlens_1000_traj.csv \
+  --trajectory-paths /media/alex/D/Uni/northeastern/data/trajectories/trajectories_test_full \
+  --direction-tokens /media/alex/D/Uni/northeastern/data/jlens/direction_tokens.json \
+  --sizes 11 --complexities 0.0 --runs 0
+# -> /media/alex/D/Uni/northeastern/data/jlens_viewer/size11_comp0.0_run0/{manifest,step_000..N}.json
+```
+
+Open `trace_viewer_fork.html` in a browser, press **📂 Load Folder** and pick one trajectory
+folder (picking the export root also works — a dropdown then selects the trajectory).
+
+The export streams the CSV once (~75 s for the full 3.2 GB / 16.1M rows at ~215k rows/s, seconds
+when the requested trajectories appear early and early exit fires). It never holds more than one
+step in memory.
+
+**The CSV is a sample, not the whole trajectory set.** `jlens_reasoning_tokens_own_jlens_1000_traj.csv`
+covers 100 of the 300 trajectories in `trajectories_test_full`: sizes 9/11/13, complexities
+0.0/0.2/0.8/1.0 only. Requesting anything else still produces a folder, but every step has
+`lens: null`. To see what is available without a failed export:
+
+```bash
+python scripts/jlens_viewer_export.py --csv <csv> --list-coverage
+# prints the size/complexity/run breakdown and writes <out-dir>/csv_coverage.json
+```
+
+## Per-step file layout
+
+`step_<index:03d>.json`, index-aligned with `steps[]` of the source trajectory.
+
+```jsonc
+{
+  "schema": "trace_viewer_fork/1",
+  "trajectory": { "id": "size11_comp0.0_run0", "size": 11, "complexity": 0.0, "run": 0,
+                  "source": "<trajectory json path>", "n_steps": 6 },
+  "grid_params": { ... },            // verbatim from the trajectory (legend included)
+  "model_params": { ... },           // verbatim
+  "step": {
+    "index": 0, "step_id": 0,
+    "grid_state": [ ... ],           // row strings, first entry is the coordinate header
+    "agent_action": "LEFT",
+    "output_text": "...",
+    "output_tokens": [ ... ]         // verbatim tokens; `probabilities` unless --drop-probabilities
+  },
+  "lens": {
+    "actions": ["RIGHT","LEFT","UP","DOWN"],
+    "layers": [0, ..., 23], "n_pos": 121, "n_layers": 24, "top_k": 20,
+    "reasoning_positions": [3,4,5,...],   // index into step.output_tokens, length n_pos
+    "reasoning_tokens": ["Agent","Ġat",...],
+    "abs_pos": [717,718,...],             // position in prefix+grid+suffix+output
+    "vocab": ["-Level"," Side",...],      // interned top-k strings for this step
+    "vocab_dir": [0,3,0,...],             // direction class per vocab entry (see below)
+    "topk": [ ... ],                      // n_pos*n_layers*top_k vocab indices, -1 = missing
+    "rank":    {"UP":[...], "DOWN":[...], "LEFT":[...], "RIGHT":[...]},   // n_pos*n_layers, null = missing
+    "logprob": {"UP":[...], ... },
+    "density": {"UP":[...], ... },        // 0..20: how many top-k entries are that action's words
+    "missing_cells": 0
+  },
+  "warnings": []
+}
+```
+
+Rules and conventions:
+
+- **Flat index**: `i = pos * n_layers + layerIdx`; top-k entry `k` of a cell is `topk[i * top_k + k]`.
+  `layerIdx` indexes into `lens.layers`, not the raw layer id, so partial-layer exports work.
+- **Ranks are 0-based**: `0` = argmax over the ~201k vocabulary, so *lower is better*.
+- **`lens` is `null`** when the CSV had no rows for that step. The file is still written so that
+  folder order stays aligned with `step_id`.
+- **Token conventions must not be mixed**: `step.output_tokens[].token` and
+  `lens.reasoning_tokens` keep the trajectory's `Ġ`/`Ċ` byte-level form, while `lens.vocab`
+  holds `tokenizer.decode()` output with real spaces and newlines — the same convention as the
+  CSV's `top_k` columns and as `direction_tokens.json`. Direction matching happens only on the
+  latter.
+- **`manifest.json`** sits beside the step files with the trajectory metadata, the layer list and
+  a per-step index. The viewer prefers it but works without it.
+
+### Direction encoding and action colors
+
+`vocab_dir` values are assigned from `direction_tokens.json` at export time (produced by
+`notebooks/direction_tokens.ipynb`). The encoding and the action palette are duplicated between
+`scripts/jlens_viewer_export.py` (`DIR_CODES`, docstring) and `trace_viewer_fork.html`
+(`DIR_NAME`, `ACTION_COLOR`) — change both together.
+
+| code | action | color     |
+|------|--------|-----------|
+| 0    | none   | –         |
+| 1    | UP     | `#eb6834` |
+| 2    | DOWN   | `#e0559a` |
+| 3    | LEFT   | `#008300` |
+| 4    | RIGHT  | `#4a3aa7` |
+
+## What the fork shows
+
+1. **Lens predictions by layer** — the top-20 lens predictions at every layer for the selected
+   reasoning token, one column per layer; direction words are tinted with their action color.
+   Below it, the exact rank of each action token per layer (click a cell to jump to that
+   layer/action).
+2. **Action rank heatmap** — x = reasoning position, y = layer (L0 at the bottom), brightness from
+   the selected action's rank. Scale selector: `log (full vocab)` (default,
+   `1 - log10(rank+1)/log10(201089)`), `log capped @ 1k` (much higher contrast — use this to see
+   where the model commits) and `top-20 only` (binary).
+3. **Top-20 direction density** — same axes, brightness = how many of the 20 lens predictions at
+   that cell are words for the selected action (0–20, optionally normalised to the step maximum).
+   A fully dark cell means none.
+
+Selection is bidirectional: clicking a heatmap cell selects that reasoning position and layer and
+highlights the token in the **Model Output** pane; clicking a reasoning token there moves the
+heatmap crosshair. Arrow keys move the selection once a heatmap has focus.
