@@ -21,13 +21,26 @@ from typing import Literal
 import torch
 from tqdm import tqdm
 
+from .jlens_token_selection import (
+    LayerSelection,
+    SampleRef,
+    SelectionConfig,
+    TokenSelection,
+    load_direction_tokens,
+    select_token_layer_pairs,
+)
 from .prepare_activations_for_probing_utils import (
+    discover_available_layers,
+    discover_available_steps,
+    discover_available_token_indices,
+    discover_model_folder,
     discover_output_token_files,
     discover_trajectory_folders,
     generate_output_filename,
     load_activation,
     load_activations_for_trajectory,
     parse_grid_state_from_trajectory,
+    parse_index_specification,
 )
 
 # Action name to ID mapping for action_sequence probe type
@@ -118,6 +131,51 @@ def _sample_triples(
         return triples
 
 
+def _selection_candidates(
+    trajectory_folder: Path,
+    layers: str,
+    steps: str,
+) -> tuple[Path | None, list[int], list[int], dict[int, list[int]]]:
+    """Resolve what is on disk for a trajectory, filtered by the layer/step specs.
+
+    Returns (model_folder, candidate_layers, candidate_steps, tokens_by_step). Steps and
+    output-token indices are unioned across the candidate layers — jlens_reasoning_tokens.py
+    writes the same tokens for every layer, so the union is also the per-layer set.
+    """
+    model_folder = discover_model_folder(trajectory_folder)
+    if model_folder is None:
+        return None, [], [], {}
+
+    candidate_layers = parse_index_specification(layers, discover_available_layers(model_folder))
+    if not candidate_layers:
+        return model_folder, [], [], {}
+
+    available_steps: set[int] = set()
+    for layer_idx in candidate_layers:
+        available_steps.update(discover_available_steps(model_folder / f"layer_{layer_idx}"))
+    candidate_steps = parse_index_specification(steps, sorted(available_steps))
+
+    tokens_by_step: dict[int, set[int]] = {step_idx: set() for step_idx in candidate_steps}
+    for layer_idx in candidate_layers:
+        for step_idx in candidate_steps:
+            category_folder = model_folder / f"layer_{layer_idx}" / f"step_{step_idx}" / "output"
+            if category_folder.exists():
+                tokens_by_step[step_idx].update(discover_available_token_indices(category_folder))
+
+    return model_folder, candidate_layers, candidate_steps, {k: sorted(v) for k, v in tokens_by_step.items()}
+
+
+def _next_action_label(trajectory_data: dict, step_idx: int) -> int | None:
+    """Action id for the step a token came from, or None if missing/unknown."""
+    steps_list = trajectory_data.get("steps", [])
+    if step_idx >= len(steps_list):
+        return None
+    agent_action = steps_list[step_idx].get("agent_action")
+    if not agent_action:
+        return None
+    return NEXT_ACTION_TO_ID.get(agent_action.upper())
+
+
 def _discover_size_subfolders(base_dir: Path) -> list[Path]:
     """Discover size subfolders (e.g., size5, size7) in the base directory.
 
@@ -176,6 +234,7 @@ def _process_single_folder(
     manifest_root: Path,
     activations_root: Path,
     verbose: bool,
+    selection: SelectionConfig | None = None,
 ) -> tuple[list[dict], int, int | None, int | None, int | None]:
     """Process trajectories in a single folder; write per-trajectory .pt files.
 
@@ -189,12 +248,16 @@ def _process_single_folder(
             compute `act_path` relative to the manifest's parent.
         activations_root: The top-level activations directory. For the `next_action`
             mode, token `act_path`s are stored relative to this (no files are copied).
+        selection: `next_action` token/layer selection; None means the defaults
+            (every token, every layer in the spec).
         Other args: see `prepare_activations_for_probing`.
 
     Returns:
         Tuple of (manifest_entries, skipped_count, activation_dim,
                   num_cells_per_trajectory_or_None, max_seq_len_or_None)
     """
+    selection = selection or SelectionConfig()
+
     # next_action references existing token files in place, so it writes no activations.
     if probe_type != "next_action":
         output_acts_dir.mkdir(parents=True, exist_ok=True)
@@ -228,48 +291,79 @@ def _process_single_folder(
         # referencing the existing token .pt file (no new files written). All tokens
         # from this trajectory share the trajectory's agent_action label.
         if probe_type == "next_action":
-            steps_list = trajectory_data.get("steps", [])
-            if grid_step_idx >= len(steps_list):
-                skipped += 1
-                if verbose:
-                    print(f"  Skipped: step {grid_step_idx} out of range ({len(steps_list)} steps)")
-                continue
-            agent_action = steps_list[grid_step_idx].get("agent_action")
-            action_id = NEXT_ACTION_TO_ID.get(agent_action.upper()) if agent_action else None
-            if action_id is None:
-                skipped += 1
-                if verbose:
-                    print(f"  Skipped: missing/unknown agent_action '{agent_action}'")
-                continue
+            if selection.is_default:
+                # Every gathered token of every selected layer/step, as before.
+                token_files = discover_output_token_files(
+                    trajectory_folder=trajectory_folder,
+                    layers=layers,
+                    steps=steps,
+                    output_indices=output_indices,
+                    verbose=verbose,
+                )
+                selected = [
+                    SampleRef(layer=layer_idx, step=step_idx, token_idx=token_idx, path=abs_path)
+                    for layer_idx, step_idx, token_idx, abs_path in token_files
+                ]
+                missing = 0
+            else:
+                model_folder, candidate_layers, candidate_steps, tokens_by_step = _selection_candidates(
+                    trajectory_folder, layers, steps
+                )
+                if model_folder is None or not candidate_layers or not candidate_steps:
+                    skipped += 1
+                    if verbose:
+                        print("  Skipped: no layers/steps matching the specs on disk")
+                    continue
+                selected, missing = select_token_layer_pairs(
+                    trajectory_folder=trajectory_folder,
+                    model_folder=model_folder,
+                    trajectory_data=trajectory_data,
+                    candidate_layers=candidate_layers,
+                    candidate_steps=candidate_steps,
+                    available_tokens_by_step=tokens_by_step,
+                    selection=selection,
+                    verbose=verbose,
+                )
+                if missing and verbose:
+                    print(f"  Warning: {missing} selected token file(s) not found on disk")
 
-            token_files = discover_output_token_files(
-                trajectory_folder=trajectory_folder,
-                layers=layers,
-                steps=steps,
-                output_indices=output_indices,
-                verbose=verbose,
-            )
-            if not token_files:
+            if not selected:
                 skipped += 1
                 if verbose:
                     print("  Skipped: no output token activations found")
                 continue
 
-            for layer_idx, step_idx, token_idx, abs_path in token_files:
+            # Each token is labeled by the action of the step it came from, so multi-step
+            # selections stay correct (identical to the old fixed-step label when steps="0").
+            unlabeled = 0
+            for ref in selected:
+                action_id = _next_action_label(trajectory_data, ref.step)
+                if action_id is None:
+                    unlabeled += 1
+                    continue
                 if activation_dim is None:
-                    activation_dim = int(load_activation(abs_path).shape[0])
+                    activation_dim = int(load_activation(ref.path).shape[0])
                 entry = {
                     "name": trajectory_folder.name,
-                    "act_path": abs_path.relative_to(activations_root).as_posix(),
+                    "act_path": ref.path.relative_to(activations_root).as_posix(),
                     "label": action_id,
-                    "layer": layer_idx,
-                    "step": step_idx,
-                    "token_id": token_idx,
+                    "layer": ref.layer,
+                    "step": ref.step,
+                    "token_id": ref.token_idx,
                     "category": "output",
                 }
+                if ref.direction_count is not None:
+                    entry["token"] = ref.token
+                    entry["direction_count"] = ref.direction_count
+                    entry["layer_direction_count"] = ref.layer_direction_count
                 if size_name is not None:
                     entry["size"] = int(size_name.replace("size", ""))
                 manifest_entries.append(entry)
+            if unlabeled:
+                if verbose:
+                    print(f"  Warning: {unlabeled} token(s) dropped (missing/unknown agent_action)")
+                if unlabeled == len(selected):
+                    skipped += 1
             continue
 
         # 2. Extract probe-type-specific labels.
@@ -428,6 +522,7 @@ def _generate_dirname(
     prompt_suffix_indices: str | None,
     grid_state_indices: str | None,
     output_indices: str | None,
+    selection: SelectionConfig,
 ) -> str:
     """Generate output directory name based on extraction parameters."""
     # Use existing helper, then strip the .pt extension since v3 outputs a directory.
@@ -455,6 +550,15 @@ def _generate_dirname(
             filename = filename.replace(".pt", "_balanced.pt")
         if max_positions_per_trajectory is not None:
             filename = filename.replace(".pt", f"_max{max_positions_per_trajectory}.pt")
+
+    # next_action selection modes: keep each variant in its own auto-named directory.
+    short = {"jlens_direction": "jl", "random": "rnd"}
+    if selection.token_selection != "all":
+        tag = f"{short[selection.token_selection]}{selection.num_tokens or ''}"
+        filename = filename.replace(".pt", f"_tok{tag}.pt")
+    if selection.layer_selection != "spec":
+        tag = f"{short[selection.layer_selection]}{selection.num_layers or ''}"
+        filename = filename.replace(".pt", f"_lay{tag}.pt")
 
     # Strip the .pt extension — v3 outputs a directory.
     if filename.endswith(".pt"):
@@ -494,6 +598,13 @@ def prepare_activations_for_probing(
     output_path: str | None = None,
     verbose: bool = False,
     seed: int | None = 42,
+    token_selection: TokenSelection = "all",
+    layer_selection: LayerSelection = "spec",
+    num_tokens: int | None = None,
+    num_layers: int | None = None,
+    direction_tokens_path: str | None = None,
+    direction_classes: str = "all",
+    jlens_top_k: int = 20,
 ) -> None:
     """Extract activations and build a v3 prepared-data manifest directory.
 
@@ -544,6 +655,23 @@ def prepare_activations_for_probing(
             with a warning (v3 outputs a directory).
         verbose: Print per-trajectory progress.
         seed: Random seed for sampling determinism.
+        token_selection: Which reasoning tokens become samples (`next_action` only).
+            "all" (default) keeps today's behaviour — every token matching output_indices.
+            "jlens_direction" takes the `num_tokens` tokens of the trajectory whose j-space
+            top-k contains the most direction tokens, read from the trajectory's
+            `{name}_jlens_analysis.csv`. "random" draws `num_tokens` tokens uniformly, as a
+            matched control.
+        layer_selection: Which layers of each selected token become samples (`next_action`
+            only). "spec" (default) uses every layer in `layers`; "jlens_direction" takes
+            that token's top `num_layers` layers by direction count; "random" draws
+            `num_layers` layers uniformly. `layers` always defines the candidate pool, so
+            a fixed middle layer is just `layers="15"` with layer_selection="spec".
+        num_tokens: N for the non-"all" token_selection modes.
+        num_layers: M for the non-"spec" layer_selection modes.
+        direction_tokens_path: JSON mapping UP/DOWN/LEFT/RIGHT to token strings. Required
+            when either selection mode is "jlens_direction".
+        direction_classes: Which of those lists to count, "all" (union) or e.g. "UP,DOWN".
+        jlens_top_k: How many top_i columns of the jlens CSV to scan (default 20).
     """
     if seed is not None:
         random.seed(seed)
@@ -583,6 +711,42 @@ def prepare_activations_for_probing(
                 "WARNING: probe_type='next_action' only uses output_indices; "
                 "prompt_prefix/prompt_suffix/grid_state indices are ignored."
             )
+    elif token_selection != "all" or layer_selection != "spec":
+        raise ValueError(
+            f"token_selection/layer_selection apply to probe_type='next_action' only, "
+            f"but probe_type='{probe_type}' was given."
+        )
+
+    if token_selection not in ("all", "jlens_direction", "random"):
+        raise ValueError(f"Unknown token_selection: '{token_selection}'")
+    if layer_selection not in ("spec", "jlens_direction", "random"):
+        raise ValueError(f"Unknown layer_selection: '{layer_selection}'")
+    if token_selection != "all" and num_tokens is None:
+        raise ValueError(f"token_selection='{token_selection}' requires num_tokens to be set")
+    if layer_selection != "spec" and num_layers is None:
+        raise ValueError(f"layer_selection='{layer_selection}' requires num_layers to be set")
+
+    # Resolve the direction vocabulary once; every trajectory's CSV is scored against it.
+    direction_tokens: set[str] | None = None
+    if "jlens_direction" in (token_selection, layer_selection):
+        if direction_tokens_path is None:
+            raise ValueError(
+                "A 'jlens_direction' selection mode requires direction_tokens_path "
+                "(the JSON mapping UP/DOWN/LEFT/RIGHT to token strings)."
+            )
+        direction_tokens = load_direction_tokens(direction_tokens_path, direction_classes)
+
+    selection = SelectionConfig(
+        token_selection=token_selection,
+        layer_selection=layer_selection,
+        num_tokens=num_tokens,
+        num_layers=num_layers,
+        direction_tokens=direction_tokens,
+        jlens_top_k=jlens_top_k,
+        seed=seed,
+        direction_tokens_path=direction_tokens_path,
+        direction_classes=direction_classes,
+    )
 
     # For distance probes, enforce steps="0" since astar_distance is only valid for step 0
     if probe_type == "distance" and steps != "0":
@@ -600,6 +764,11 @@ def prepare_activations_for_probing(
     print(f"  probe_type: {probe_type}")
     print(f"  layers: {layers}")
     print(f"  steps: {steps}")
+    if probe_type == "next_action":
+        print(f"  token_selection: {token_selection}" + (f" (N={num_tokens})" if num_tokens else ""))
+        print(f"  layer_selection: {layer_selection}" + (f" (M={num_layers})" if num_layers else ""))
+        if direction_tokens is not None:
+            print(f"  direction tokens: {len(direction_tokens)} ({direction_classes}) from {direction_tokens_path}")
     if probe_type == "grid_tile":
         print(f"  grid_step_idx (for grid parsing): {grid_step_idx}")
         print(f"  pad_to_size: {pad_to_size if pad_to_size else 'auto (use actual grid size)'}")
@@ -637,6 +806,7 @@ def prepare_activations_for_probing(
             output_path=output_path,
             verbose=verbose,
             seed=seed,
+            selection=selection,
         )
     else:
         _process_single_size_mode(
@@ -656,6 +826,7 @@ def prepare_activations_for_probing(
             output_path=output_path,
             verbose=verbose,
             seed=seed,
+            selection=selection,
         )
 
 
@@ -732,6 +903,7 @@ def _process_single_size_mode(
     output_path: str | None,
     verbose: bool,
     seed: int | None,
+    selection: SelectionConfig,
 ) -> None:
     """Process a single folder; emit manifest.json + per-trajectory .pt files."""
     trajectory_folders = discover_trajectory_folders(activations_dir_path)
@@ -753,6 +925,7 @@ def _process_single_size_mode(
         prompt_suffix_indices=prompt_suffix_indices,
         grid_state_indices=grid_state_indices,
         output_indices=output_indices,
+        selection=selection,
     )
     output_dir = _resolve_output_dir(output_path, activations_dir_path, default_name)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -777,6 +950,7 @@ def _process_single_size_mode(
         manifest_root=output_dir,
         activations_root=activations_dir_path,
         verbose=verbose,
+        selection=selection,
     )
 
     if not manifest_entries:
@@ -809,6 +983,7 @@ def _process_single_size_mode(
         # Token-level samples referencing existing files; nothing is copied.
         manifest["activations_root"] = str(activations_dir_path.resolve())
         manifest["action_to_id"] = NEXT_ACTION_TO_ID
+        manifest["selection"] = selection.to_manifest()
         manifest["samples"] = manifest_entries
     else:
         manifest["trajectories"] = manifest_entries
@@ -856,6 +1031,7 @@ def _process_multi_size_mode(
     output_path: str | None,
     verbose: bool,
     seed: int | None,
+    selection: SelectionConfig,
 ) -> None:
     """Process multiple size folders and merge results into one manifest."""
     act_sizes = _discover_size_subfolders(activations_dir_path)
@@ -889,6 +1065,7 @@ def _process_multi_size_mode(
         prompt_suffix_indices=prompt_suffix_indices,
         grid_state_indices=grid_state_indices,
         output_indices=output_indices,
+        selection=selection,
     ) + "_merged"
     output_dir = _resolve_output_dir(output_path, activations_dir_path, default_name)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -928,6 +1105,7 @@ def _process_multi_size_mode(
             manifest_root=output_dir,
             activations_root=activations_dir_path,
             verbose=verbose,
+            selection=selection,
         )
 
         if not size_entries:
@@ -978,7 +1156,9 @@ def _process_multi_size_mode(
         merged_entries.extend(size_entries)
         total_skipped += skipped
 
-        print(f"  Processed {len(size_entries)} trajectories")
+        # next_action entries are one-per-token, not one-per-trajectory.
+        unit = "token samples" if probe_type == "next_action" else "trajectories"
+        print(f"  Processed {len(size_entries)} {unit}")
         if probe_type == "grid_tile":
             print(f"  Cells per trajectory: {size_num_cells}")
         print(f"  Skipped: {skipped}")
@@ -1014,6 +1194,7 @@ def _process_multi_size_mode(
     if probe_type == "next_action":
         manifest["activations_root"] = str(activations_dir_path.resolve())
         manifest["action_to_id"] = NEXT_ACTION_TO_ID
+        manifest["selection"] = selection.to_manifest()
         manifest["samples"] = merged_entries
     else:
         manifest["trajectories"] = merged_entries
@@ -1029,7 +1210,7 @@ def _process_multi_size_mode(
     print(f"\n{'=' * 60}")
     print("MERGED RESULTS")
     print(f"{'=' * 60}")
-    print(f"Total trajectories: {len(merged_entries)}")
+    print(f"Total {'token samples' if probe_type == 'next_action' else 'trajectories'}: {len(merged_entries)}")
     print(f"Activation dimension: {activation_dim}")
     if probe_type == "grid_tile":
         print(f"Cells per trajectory: {num_cells_per_trajectory}")
