@@ -1,11 +1,20 @@
 """Full j-space sweep over reasoning tokens: one row per (reasoning token, layer).
 
 Combines gather_activations' single-pass activation extraction with
-jlens_action_ranks' lens application, but runs end-to-end (no intermediate .pt
-files): for every reasoning ("analysis") token of every step, capture the
-residual stream at *every* layer in one forward pass, apply the Jacobian lens,
-and record the top-20 predicted tokens plus each token's position in the
-reasoning chain.
+jlens_action_ranks' lens application: for every reasoning ("analysis") token of
+every step, capture the residual stream at every requested layer in one forward
+pass, apply the Jacobian lens, and record the top-20 predicted tokens plus each
+token's position in the reasoning chain.
+
+Each forward pass now produces two artefacts, so downstream analyses never have
+to re-run gather_activations over the same trajectories:
+
+  {activations_dir}/size{S}/{stem}/{stem}_jlens_analysis.csv
+  {activations_dir}/size{S}/{stem}/{model}/layer_{N}/step_{M}/output/{idx}.pt
+
+The .pt layout is exactly gather_activations' (reasoning tokens are output
+tokens, hence the `output` category, keyed by output-relative index), so every
+existing activation loader works unchanged.
 
 Both the activation hooks and the jlens fit capture decoder-block *outputs*, so
 layer indices line up directly; layer 23 is the jlens target (lens is identity
@@ -19,12 +28,14 @@ Usage:
   python scripts/jlens_reasoning_tokens.py \
     --trajectory-paths /workspace/trajectories/trajectories_test_full \
     --jlens_dir /workspace/jlens \
-    --out jlens_reasoning_tokens.csv
+    --layers 7:23 \
+    --activations-dir /workspace/activations/jlens_reasoning_tokens
 """
 
 import argparse
 import csv
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -65,6 +76,16 @@ def parse_name(stem: str) -> dict:
     return m.groupdict() if m else {"size": "", "comp": "", "run": ""}
 
 
+def trajectory_activation_dir(activations_dir: Path, stem: str) -> Path:
+    """<activations_dir>/size{S}/<stem>, mirroring the gather_activations layout.
+
+    Falls back to <activations_dir>/<stem> for trajectories whose filename carries
+    no size{N} (rather than creating a bare `size/` folder).
+    """
+    size = parse_name(stem)["size"]
+    return activations_dir / f"size{size}" / stem if size else activations_dir / stem
+
+
 def main() -> None:
     import torch
     from transformers import AutoModelForCausalLM
@@ -72,6 +93,8 @@ def main() -> None:
     from telos_interp.commands.gather_activations.gather_activations_utils import (
         extract_activations_single_pass,
         parse_index_specification,
+        sanitize_model_id,
+        save_activations_to_files,
     )
     from scripts.inference_oss.run_inference import expand_paths
     from scripts.jlens_action_ranks_sampled import action_token_ids, ensure_unembed_assets
@@ -80,7 +103,12 @@ def main() -> None:
     ap.add_argument("--trajectory-paths", nargs="+", required=True,
                     help="Trajectory JSON file(s), directory, or glob(s).")
     ap.add_argument("--jlens_dir", type=Path, required=True)
-    ap.add_argument("--out", type=Path, default=Path("jlens_reasoning_tokens.csv"))
+    ap.add_argument("--activations-dir", type=Path, required=True,
+                    help="Base dir for the gather_activations-style tree: per-trajectory "
+                         "activations under size{S}/{stem}/{model}/layer_N/step_M/output/ and the "
+                         "trajectory's jlens CSV at size{S}/{stem}/{stem}_jlens_analysis.csv.")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="Reprocess trajectories whose jlens CSV already exists (default: skip).")
     ap.add_argument("--sizes", default=None,
                     help="Comma-separated grid sizes to keep (matched against size{S} in the "
                          "filename), e.g. '11,15'. Default: all sizes.")
@@ -131,6 +159,7 @@ def main() -> None:
         model_id, device_map=args.device_map, dtype=resolved if resolved is not None else "auto"
     )
     model.eval()
+    sanitized_model = sanitize_model_id(model_id)
     num_layers = model.config.num_hidden_layers
     layer_indices = parse_index_specification(args.layers, num_layers)
     print(f"{num_layers} layers; extracting {layer_indices}", flush=True)
@@ -146,22 +175,43 @@ def main() -> None:
     norm_w = assets["norm_weight"].float().to(dev)
     eps = assets["rms_eps"]
 
-    with open(args.out, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(
-            ["size", "complexity", "run", "step", "reasoning_pos", "abs_pos", "token", "layer",
-             "agent_action"]
-            + [f"{a}_rank" for a in ACTIONS]
-            + [f"{a}_logprob" for a in ACTIONS]
-            + [f"top_{i}" for i in range(1, TOP_K + 1)]
-        )
-        for traj_path in paths:
-            with open(traj_path) as f:
-                trajectory = json.load(f)
-            name = parse_name(Path(traj_path).stem)
-            n_steps = len(trajectory["steps"])
-            step_idxs = parse_index_specification(args.steps, n_steps, clamp=True)
-            print(f"{Path(traj_path).stem}: {len(step_idxs)}/{n_steps} steps", flush=True)
+    header = (
+        ["size", "complexity", "run", "step", "reasoning_pos", "abs_pos", "token", "layer",
+         "agent_action"]
+        + [f"{a}_rank" for a in ACTIONS]
+        + [f"{a}_logprob" for a in ACTIONS]
+        + [f"top_{i}" for i in range(1, TOP_K + 1)]
+    )
+    written = 0
+
+    for traj_path in paths:
+        stem = Path(traj_path).stem
+        traj_dir = trajectory_activation_dir(args.activations_dir, stem)
+        csv_path = traj_dir / f"{stem}_jlens_analysis.csv"
+        if csv_path.exists() and not args.overwrite:
+            print(f"{stem}: CSV exists, skipping (use --overwrite to redo)", flush=True)
+            continue
+
+        with open(traj_path) as f:
+            trajectory = json.load(f)
+        name = parse_name(stem)
+        n_steps = len(trajectory["steps"])
+        step_idxs = parse_index_specification(args.steps, n_steps, clamp=True)
+        print(f"{stem}: {len(step_idxs)}/{n_steps} steps", flush=True)
+
+        n_prefix = len(trajectory["prompt"]["prompt_prefix_tokens"])
+        n_suffix = len(trajectory["prompt"]["prompt_suffix_tokens"])
+        output_base = traj_dir / sanitized_model
+        traj_dir.mkdir(parents=True, exist_ok=True)
+        # write to a temp file and rename at the end, so a crashed run leaves no CSV
+        # and is redone on the next invocation instead of being skipped as done
+        tmp_path = csv_path.with_suffix(".csv.tmp")
+        nan_count = 0
+        total_count = 0
+
+        with open(tmp_path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(header)
 
             for si in step_idxs:
                 step = trajectory["steps"][si]
@@ -179,6 +229,19 @@ def main() -> None:
                 )
                 input_ids = torch.tensor([all_ids[: max(abs_positions) + 1]])
                 acts = extract_activations_single_pass(model, input_ids, abs_positions, layer_indices)
+
+                # Save the raw residual streams in gather_activations' layout before the lens
+                # math, so layers without a jlens matrix (skipped below) still get written.
+                # Reasoning tokens are output tokens, keyed by their output-relative index.
+                output_start = n_prefix + len(step["grid_state_tokens"]) + n_suffix
+                remapped = {
+                    layer: {ap - output_start: acts[layer][ap] for ap in abs_positions if ap in acts[layer]}
+                    for layer in layer_indices
+                }
+                nan_count += save_activations_to_files(
+                    remapped, output_base, step_idx=step["step_id"], category="output"
+                )
+                total_count += sum(len(v) for v in remapped.values())
 
                 agent_action = step.get("agent_action", "")
                 # chunk reasoning tokens so [B, vocab] logits stay bounded (bs=None -> whole step)
@@ -214,7 +277,15 @@ def main() -> None:
                             )
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-    print(f"wrote {args.out}", flush=True)
+
+        os.replace(tmp_path, csv_path)
+        written += 1
+        print(f"  wrote {csv_path} ({total_count} activations)", flush=True)
+        if nan_count > 0:
+            print(f"  WARNING: {nan_count}/{total_count} activations contain NaN values!")
+            print("  This is often caused by multi-GPU setups. Try using CUDA_VISIBLE_DEVICES=0")
+
+    print(f"done: {written} trajectory folder(s) under {args.activations_dir}", flush=True)
 
 
 def _self_test() -> None:
@@ -235,6 +306,10 @@ def _self_test() -> None:
     traj2 = {"prompt": {"prompt_prefix_tokens": [], "prompt_suffix_tokens": []}}
     assert reasoning_token_positions(traj2, step2) == [(0, 0, "x")]
     assert parse_name("foo_size11_comp1.0_987") == {"size": "11", "comp": "1.0", "run": "987"}
+    # output layout mirrors gather_activations: <root>/size{S}/<stem>/...
+    stem = "together_ai_openai_gpt-oss-20b_size11_comp1.0_987"
+    assert trajectory_activation_dir(Path("/acts"), stem) == Path("/acts/size11") / stem
+    assert trajectory_activation_dir(Path("/acts"), "nosize") == Path("/acts/nosize")
     print("self-test ok")
 
 
