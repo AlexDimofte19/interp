@@ -129,3 +129,8 @@ pydocstyle = { convention = "google" }
 style = 'google'
 exclude = '\.git|\.tox|tests/data|some_script\.py'
 require-return-section-when-returning-nothing = true
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
+]
