@@ -29,13 +29,19 @@ Usage:
     --trajectory-paths /workspace/trajectories/trajectories_test_full \
     --jlens_dir /workspace/jlens \
     --layers 7:23 \
+    --per-combo 200 \
     --activations-dir /workspace/activations/jlens_reasoning_tokens
+
+--per-combo caps the run count per (size, complexity) cell rather than globally,
+so the sweep stays evenly spread over the grid: 200 across a 6x6 grid = 7200
+trajectories.
 """
 
 import argparse
 import csv
 import json
 import os
+import random
 import re
 import sys
 from pathlib import Path
@@ -74,6 +80,49 @@ def reasoning_token_positions(trajectory: dict, step: dict) -> list[tuple[int, i
 def parse_name(stem: str) -> dict:
     m = NAME_RE.search(stem)
     return m.groupdict() if m else {"size": "", "comp": "", "run": ""}
+
+
+def combo_sort_key(combo: tuple[str, str]) -> tuple[float, float]:
+    """Numeric ordering for (size, complexity) pairs; unparseable fields sort first."""
+    size, comp = combo
+    return (float(size) if size else -1.0, float(comp) if comp else -1.0)
+
+
+def select_balanced(
+    paths: list[str], per_combo: int, seed: int | None = None
+) -> tuple[list[str], dict[tuple[str, str], int]]:
+    """Keep at most `per_combo` trajectories per (size, complexity) cell.
+
+    Gives every cell of the size x complexity grid the same weight, so the hard
+    cap is per_combo * (number of cells) rather than a global count that would
+    over-sample whichever cells happen to have the most runs.
+
+    Without a seed, keeps the lowest run indices in each cell (deterministic and
+    stable as new runs land); with a seed, samples inside each cell instead.
+    Cells with fewer than `per_combo` trajectories contribute all they have.
+
+    Returns the selected paths (sorted) and the kept count per cell.
+    """
+    by_combo: dict[tuple[str, str], list[str]] = {}
+    for p in paths:
+        name = parse_name(Path(p).stem)
+        by_combo.setdefault((name["size"], name["comp"]), []).append(p)
+
+    rng = random.Random(seed) if seed is not None else None
+    kept: list[str] = []
+    counts: dict[tuple[str, str], int] = {}
+    for combo in sorted(by_combo, key=combo_sort_key):
+        group = by_combo[combo]
+        if len(group) <= per_combo:
+            chosen = group
+        elif rng is not None:
+            chosen = rng.sample(group, per_combo)
+        else:
+            # sort by run index numerically: lexicographic order would put run 100 before 99
+            chosen = sorted(group, key=lambda p: int(parse_name(Path(p).stem)["run"] or 0))[:per_combo]
+        kept.extend(chosen)
+        counts[combo] = len(chosen)
+    return sorted(kept), counts
 
 
 def trajectory_activation_dir(activations_dir: Path, stem: str) -> Path:
@@ -119,10 +168,16 @@ def main() -> None:
                     help="Reasoning tokens per lens matmul (caps the [B, vocab] logits). "
                          "Default: a whole step's reasoning chain at once.")
     ap.add_argument("--max-trajectories", type=int, default=None,
-                    help="Process at most N trajectory files (default: all).")
+                    help="Process at most N trajectory files (default: all). Global cap: use "
+                         "--per-combo instead to spread the budget over the size x complexity grid.")
+    ap.add_argument("--per-combo", type=int, default=None,
+                    help="Process at most N trajectories per (size, complexity) cell, i.e. a hard "
+                         "limit of N * (number of cells) evenly spread across the grid "
+                         "(e.g. 200 over a 6x6 grid = 7200). Mutually exclusive with "
+                         "--max-trajectories.")
     ap.add_argument("--seed", type=int, default=None,
-                    help="With --max-trajectories, randomly sample N using this seed "
-                         "(default: take the first N in sorted order).")
+                    help="With --max-trajectories/--per-combo, randomly sample using this seed "
+                         "(default: take the lowest run indices).")
     ap.add_argument("--layers", default="all",
                     help="Comma/range spec of layer indices, or 'all' (default).")
     ap.add_argument("--steps", default="all",
@@ -132,6 +187,8 @@ def main() -> None:
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu",
                     help="Device for the lens matmuls (defaults to cuda if available).")
     args = ap.parse_args()
+    if args.per_combo is not None and args.max_trajectories is not None:
+        ap.error("--per-combo and --max-trajectories are mutually exclusive")
     paths = expand_paths(args.trajectory_paths)
     if args.sizes or args.complexities:
         sizes = {s.strip() for s in args.sizes.split(",")} if args.sizes else None
@@ -142,9 +199,15 @@ def main() -> None:
             and (comps is None or parse_name(Path(p).stem)["comp"] in comps)
         ]
         print(f"{len(paths)} after size/complexity filter", flush=True)
-    if args.max_trajectories is not None and args.max_trajectories < len(paths):
+    if args.per_combo is not None:
+        paths, counts = select_balanced(paths, args.per_combo, args.seed)
+        print(f"{len(counts)} size x complexity cell(s), {args.per_combo} requested each:", flush=True)
+        for combo in sorted(counts, key=combo_sort_key):
+            size, comp = combo
+            short = "  <-- SHORT" if counts[combo] < args.per_combo else ""
+            print(f"  size{size or '?'} comp{comp or '?'}: {counts[combo]}{short}", flush=True)
+    elif args.max_trajectories is not None and args.max_trajectories < len(paths):
         if args.seed is not None:
-            import random
             paths = sorted(random.Random(args.seed).sample(paths, args.max_trajectories))
         else:
             paths = paths[: args.max_trajectories]
@@ -310,6 +373,24 @@ def _self_test() -> None:
     stem = "together_ai_openai_gpt-oss-20b_size11_comp1.0_987"
     assert trajectory_activation_dir(Path("/acts"), stem) == Path("/acts/size11") / stem
     assert trajectory_activation_dir(Path("/acts"), "nosize") == Path("/acts/nosize")
+
+    # balanced selection: 2 per (size, complexity) cell, lowest run indices first
+    def p(size, comp, run):
+        return f"/t/size{size}/m_size{size}_comp{comp}_{run}.json"
+
+    pool = (
+        [p(11, "1.0", r) for r in (5, 99, 100, 1)]  # 4 runs -> 2 kept
+        + [p(5, "0.0", r) for r in (7, 3)]  # exactly 2 -> both kept
+        + [p(5, "0.5", 9)]  # short cell -> the one it has
+    )
+    kept, counts = select_balanced(pool, 2)
+    assert counts == {("5", "0.0"): 2, ("5", "0.5"): 1, ("11", "1.0"): 2}, counts
+    assert kept == sorted([p(11, "1.0", 1), p(11, "1.0", 5), p(5, "0.0", 3), p(5, "0.0", 7), p(5, "0.5", 9)]), kept
+    seeded, seeded_counts = select_balanced(pool, 2, seed=0)
+    assert seeded_counts == counts and len(seeded) == 5, (seeded, seeded_counts)
+    assert seeded == select_balanced(pool, 2, seed=0)[0]  # same seed -> same picks
+    assert select_balanced(pool, 100)[0] == sorted(pool)  # cap above every cell keeps everything
+    assert combo_sort_key(("11", "1.0")) > combo_sort_key(("5", "1.0"))  # numeric, not lexicographic
     print("self-test ok")
 
 
