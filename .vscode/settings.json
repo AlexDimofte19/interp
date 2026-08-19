@@ -27,5 +27,15 @@
     "ruff.path": [
         "uvx",
         "ruff"
+    ],
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    "python-envs.defaultEnvManager": "ms-python.vscode-python-envs:uv",
+    "python-envs.defaultPackageManager": "ms-python.vscode-python-envs:uv",
+    "python-envs.pythonProjects": [
+        {
+            "path": "${workspaceFolder}",
+            "envManager": "ms-python.vscode-python-envs:uv",
+            "packageManager": "ms-python.vscode-python-envs:uv"
+        }
     ]
 }
