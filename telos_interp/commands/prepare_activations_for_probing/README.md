@@ -62,11 +62,48 @@ and every EOS token from a trajectory shares that trajectory's `agent_action` la
   mode then consumes whatever `output` tokens were gathered.
 - **Single layer assumed**: pass a single layer via `--layers`. (If more than one layer is
   selected, one sample is emitted per `(token, layer)`.)
-- **Label**: the trajectory's `agent_action` (read from the selected step), mapped via
+- **Label**: the `agent_action` of the step the token came from, mapped via
   `{LEFT: 0, UP: 1, RIGHT: 2, DOWN: 3}` (`TOP` is accepted as an alias for `UP`).
 - **Trainer input rows**: `(D,)` activation (`D = hidden_dim`), `(N,)` labels.
 
 Trained with the `train_next_action_probe` command.
+
+#### Choosing which tokens and layers to train on
+
+By default every gathered token of every selected layer becomes a sample. Two orthogonal
+knobs narrow that down, so a probe can be trained on the reasoning positions where the
+Jacobian lens says direction information lives — and against matched controls.
+
+| `--token-selection` | which reasoning tokens become samples |
+|---|---|
+| `all` (default) | every token matching `--output-indices` |
+| `jlens_direction` | the `--num-tokens` tokens of the trajectory whose j-space top-k contains the most direction tokens |
+| `random` | `--num-tokens` tokens drawn uniformly (the control for `jlens_direction`) |
+
+| `--layer-selection` | which layers of each selected token become samples |
+|---|---|
+| `spec` (default) | every layer in `--layers` — use `--layers 15` for a fixed middle layer |
+| `jlens_direction` | that token's top `--num-layers` layers by direction count |
+| `random` | `--num-layers` layers drawn uniformly from the candidate pool |
+
+`--layers` always defines the **candidate pool**; the non-`spec` modes pick within it. Layers
+are chosen per token, so two tokens may contribute different layers.
+
+The direction counts come from the `{trajectory_name}_jlens_analysis.csv` that
+`scripts/jlens_reasoning_tokens.py` writes next to the activations: for each
+`(reasoning token, layer)` row, the score is how many of `top_1..top_k` appear in
+`--direction-tokens-path` (a JSON mapping `UP`/`DOWN`/`LEFT`/`RIGHT` to token strings). A
+token's trajectory-level score is the sum over the candidate layers; ranking is per
+trajectory, pooling all steps. `--direction-classes` restricts which lists count (default:
+the union of all four, so the selection does not depend on the label). Trajectories with no
+jlens CSV are skipped.
+
+Samples chosen through a `jlens_direction` mode carry `token`, `direction_count` and
+`layer_direction_count` in the manifest for later analysis; the manifest also records the
+full selection under a `selection` key. Random draws are seeded per trajectory from `--seed`,
+so a dataset is reproducible regardless of trajectory ordering. Each combination is a
+separate prepared dataset — the auto-generated directory name encodes it
+(e.g. `..._next_action_tokjl20_layjl3`).
 
 ## Folder Modes
 
@@ -125,6 +162,13 @@ In multi-size mode:
 | `output_path` | str \| None | None | Output **directory** (auto-named under `activations_dir` if None). If you pass a path ending in `.pt`, the suffix is stripped with a warning. |
 | `verbose` | bool | False | Print detailed progress |
 | `seed` | int | 42 | Random seed for reproducibility |
+| `token_selection` | str | "all" | `next_action` only: "all", "jlens_direction", or "random" |
+| `layer_selection` | str | "spec" | `next_action` only: "spec", "jlens_direction", or "random" |
+| `num_tokens` | int \| None | None | N for the non-"all" `token_selection` modes |
+| `num_layers` | int \| None | None | M for the non-"spec" `layer_selection` modes |
+| `direction_tokens_path` | str \| None | None | JSON of direction tokens; required by `jlens_direction` |
+| `direction_classes` | str | "all" | Which direction lists to count (e.g. "UP,DOWN") |
+| `jlens_top_k` | int | 20 | How many `top_i` columns of the jlens CSV to scan |
 
 ## Examples
 
@@ -191,6 +235,39 @@ interp-cli prepare_activations_for_probing \
     --steps 0 \
     --output-indices all \
     --verbose
+```
+
+### Next action on the most direction-loaded reasoning tokens
+
+Run `scripts/jlens_reasoning_tokens.sh` first — it writes the activations *and* the
+per-trajectory `{name}_jlens_analysis.csv` this mode reads.
+
+```bash
+# top 20 tokens per trajectory, each at its own top 3 layers
+interp-cli prepare_activations_for_probing \
+    --activations-dir /workspace/activations/jlens_reasoning_tokens \
+    --trajectories-dir /workspace/trajectories/trajectories_test_full \
+    --probe-type next_action \
+    --layers 7:23 \
+    --steps all \
+    --output-indices all \
+    --token-selection jlens_direction \
+    --layer-selection jlens_direction \
+    --num-tokens 20 \
+    --num-layers 3 \
+    --direction-tokens-path /workspace/jlens/direction_tokens_full.json
+
+# matched control: same N and M, drawn at random
+interp-cli prepare_activations_for_probing \
+    ... same dirs/layers/steps ... \
+    --token-selection random --layer-selection random \
+    --num-tokens 20 --num-layers 3
+
+# conventional wisdom baseline: random tokens, fixed middle layer
+interp-cli prepare_activations_for_probing \
+    ... same dirs/steps ... \
+    --layers 15 \
+    --token-selection random --num-tokens 20
 ```
 
 ### Multi-size mode (automatic)
@@ -292,6 +369,13 @@ references existing gathered files rather than copied ones:
   "activation_dim": 2880,                       // hidden_dim (one token, one layer)
   "activations_root": "/abs/path/to/activations_dir",  // samples are relative to this
   "action_to_id": {"LEFT": 0, "UP": 1, "TOP": 1, "RIGHT": 2, "DOWN": 3},
+  "selection": {                                // how tokens/layers were chosen
+    "token_selection": "jlens_direction", "layer_selection": "jlens_direction",
+    "num_tokens": 20, "num_layers": 3,
+    "direction_tokens_path": "/workspace/jlens/direction_tokens_full.json",
+    "direction_classes": "all", "num_direction_tokens": 539,
+    "jlens_top_k": 20, "seed": 42
+  },
   "loading_spec": { /* ... */ },
   "config":       { /* ... */ },
   "samples": [
@@ -300,6 +384,9 @@ references existing gathered files rather than copied ones:
       "act_path": "traj_0001/<model>/layer_15/step_0/output/532.pt",
       "label": 1,                               // action id (e.g. UP)
       "layer": 15, "step": 0, "token_id": 532, "category": "output",
+      "token": "Ġleft",                         // jlens_direction modes only
+      "direction_count": 214,                   // token score summed over candidate layers
+      "layer_direction_count": 12,              // score at this layer alone
       "size": 11                                // multi-size only
     },
     ...
@@ -318,7 +405,8 @@ is copied into the output directory.
 ## Notes
 
 - At least one of `prompt_prefix_indices`, `prompt_suffix_indices`, `grid_state_indices`, or `output_indices` must be specified.
-- `next_action` requires `output_indices` to be set and ignores the other category indices; it expects the `output` tokens to have been gathered with `--output-indices eos`, and a single `--layers` value.
+- `next_action` requires `output_indices` to be set and ignores the other category indices. With the default `token_selection="all"` it expects the `output` tokens to have been gathered with `--output-indices eos` and a single `--layers` value; the `jlens_direction`/`random` modes instead pick from whatever reasoning tokens `scripts/jlens_reasoning_tokens.py` saved.
+- `token_selection`/`layer_selection` apply to `next_action` only; passing them with another probe type is an error.
 - The activation vector itself is stored once per trajectory; per-cell `[row_id, col_id]` is folded in at training time.
 - Class balancing finds the minimum count across all cell types and samples equally from each.
 - When `balance_classes_per_trajectory` and `max_positions_per_trajectory` are both set, `max_positions` is adjusted to be divisible by the number of classes.
