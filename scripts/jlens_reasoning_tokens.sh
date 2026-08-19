@@ -5,8 +5,8 @@
 # (reasoning token, layer). See jlens_reasoning_tokens.py.
 set -euo pipefail
 
-TRAJECTORIES=${TRAJECTORIES:-/workspace/trajectories/trajectories_test_full}
-JLENS_DIR=${JLENS_DIR:-/workspace/jlens}
+TRAJECTORIES=${TRAJECTORIES:-/workspace/trajectories/reveng/trajectories_train_single_step/}
+JLENS_DIR=${JLENS_DIR:-/workspace/jlens/gridenv}
 ACTIVATIONS_DIR=${ACTIVATIONS_DIR:-/workspace/activations/jlens_reasoning_tokens}
 LAYERS=${LAYERS:-"7:23"}   # inclusive range; also the layers saved to disk
 # Hard cap, spread evenly over the size x complexity grid: 200 per cell over the
