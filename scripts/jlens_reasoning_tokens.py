@@ -34,7 +34,9 @@ Usage:
 
 --per-combo caps the run count per (size, complexity) cell rather than globally,
 so the sweep stays evenly spread over the grid: 200 across a 6x6 grid = 7200
-trajectories.
+trajectories. It is a target for what ends up on disk, not a per-run batch size:
+trajectories that already have a CSV count towards the 200, so re-running only
+fills the gaps and cells that are already full (or fuller) are left untouched.
 """
 
 import argparse
@@ -44,6 +46,7 @@ import os
 import random
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 # Running this file directly puts scripts/ on sys.path[0], not the repo root, so the
@@ -89,19 +92,26 @@ def combo_sort_key(combo: tuple[str, str]) -> tuple[float, float]:
 
 
 def select_balanced(
-    paths: list[str], per_combo: int, seed: int | None = None
-) -> tuple[list[str], dict[tuple[str, str], int]]:
-    """Keep at most `per_combo` trajectories per (size, complexity) cell.
+    paths: list[str], per_combo: int, seed: int | None = None,
+    is_done: Callable[[str], bool] | None = None,
+) -> tuple[list[str], dict[tuple[str, str], tuple[int, int]]]:
+    """Top each (size, complexity) cell up to `per_combo` trajectories on disk.
 
-    Gives every cell of the size x complexity grid the same weight, so the hard
-    cap is per_combo * (number of cells) rather than a global count that would
+    Gives every cell of the size x complexity grid the same target, so the hard
+    limit is per_combo * (number of cells) rather than a global count that would
     over-sample whichever cells happen to have the most runs.
 
-    Without a seed, keeps the lowest run indices in each cell (deterministic and
-    stable as new runs land); with a seed, samples inside each cell instead.
-    Cells with fewer than `per_combo` trajectories contribute all they have.
+    `is_done` reports whether a trajectory has already been processed. Those
+    count towards the cell's target and are never re-selected, so a cell already
+    at (or past) `per_combo` is left alone rather than redone or trimmed, and a
+    partially filled cell only gets the difference. Without it, every trajectory
+    counts as pending and each cell selects a full `per_combo`.
 
-    Returns the selected paths (sorted) and the kept count per cell.
+    Without a seed, takes the lowest run indices in each cell (deterministic and
+    stable as new runs land); with a seed, samples inside each cell instead.
+    Cells with too few trajectories contribute all they have.
+
+    Returns the selected paths (sorted) and, per cell, (already done, selected).
     """
     by_combo: dict[tuple[str, str], list[str]] = {}
     for p in paths:
@@ -110,18 +120,21 @@ def select_balanced(
 
     rng = random.Random(seed) if seed is not None else None
     kept: list[str] = []
-    counts: dict[tuple[str, str], int] = {}
+    counts: dict[tuple[str, str], tuple[int, int]] = {}
     for combo in sorted(by_combo, key=combo_sort_key):
         group = by_combo[combo]
-        if len(group) <= per_combo:
-            chosen = group
+        done = [p for p in group if is_done(p)] if is_done is not None else []
+        pending = [p for p in group if p not in set(done)]
+        quota = max(0, per_combo - len(done))
+        if len(pending) <= quota:
+            chosen = pending
         elif rng is not None:
-            chosen = rng.sample(group, per_combo)
+            chosen = rng.sample(pending, quota)
         else:
             # sort by run index numerically: lexicographic order would put run 100 before 99
-            chosen = sorted(group, key=lambda p: int(parse_name(Path(p).stem)["run"] or 0))[:per_combo]
+            chosen = sorted(pending, key=lambda p: int(parse_name(Path(p).stem)["run"] or 0))[:quota]
         kept.extend(chosen)
-        counts[combo] = len(chosen)
+        counts[combo] = (len(done), len(chosen))
     return sorted(kept), counts
 
 
@@ -133,6 +146,11 @@ def trajectory_activation_dir(activations_dir: Path, stem: str) -> Path:
     """
     size = parse_name(stem)["size"]
     return activations_dir / f"size{size}" / stem if size else activations_dir / stem
+
+
+def jlens_csv_path(activations_dir: Path, stem: str) -> Path:
+    """The trajectory's jlens CSV; its existence is what marks the run as done."""
+    return trajectory_activation_dir(activations_dir, stem) / f"{stem}_jlens_analysis.csv"
 
 
 def main() -> None:
@@ -171,9 +189,11 @@ def main() -> None:
                     help="Process at most N trajectory files (default: all). Global cap: use "
                          "--per-combo instead to spread the budget over the size x complexity grid.")
     ap.add_argument("--per-combo", type=int, default=None,
-                    help="Process at most N trajectories per (size, complexity) cell, i.e. a hard "
-                         "limit of N * (number of cells) evenly spread across the grid "
-                         "(e.g. 200 over a 6x6 grid = 7200). Mutually exclusive with "
+                    help="Top each (size, complexity) cell up to N processed trajectories, i.e. a "
+                         "hard limit of N * (number of cells) evenly spread across the grid "
+                         "(e.g. 200 over a 6x6 grid = 7200). Trajectories that already have a CSV "
+                         "count towards N and are never redone, so a cell at or past N is skipped "
+                         "and a partial cell only gets the difference. Mutually exclusive with "
                          "--max-trajectories.")
     ap.add_argument("--seed", type=int, default=None,
                     help="With --max-trajectories/--per-combo, randomly sample using this seed "
@@ -200,12 +220,19 @@ def main() -> None:
         ]
         print(f"{len(paths)} after size/complexity filter", flush=True)
     if args.per_combo is not None:
-        paths, counts = select_balanced(paths, args.per_combo, args.seed)
-        print(f"{len(counts)} size x complexity cell(s), {args.per_combo} requested each:", flush=True)
+        # --overwrite means "rebuild", so nothing counts as done and each cell
+        # re-selects a full per_combo instead of topping up what is on disk.
+        is_done = None if args.overwrite else (
+            lambda p: jlens_csv_path(args.activations_dir, Path(p).stem).exists()
+        )
+        paths, counts = select_balanced(paths, args.per_combo, args.seed, is_done)
+        print(f"{len(counts)} size x complexity cell(s), target {args.per_combo} each:", flush=True)
         for combo in sorted(counts, key=combo_sort_key):
             size, comp = combo
-            short = "  <-- SHORT" if counts[combo] < args.per_combo else ""
-            print(f"  size{size or '?'} comp{comp or '?'}: {counts[combo]}{short}", flush=True)
+            done, added = counts[combo]
+            short = "  <-- SHORT (no more trajectories)" if done + added < args.per_combo else ""
+            print(f"  size{size or '?'} comp{comp or '?'}: {done} done + {added} new "
+                  f"= {done + added}{short}", flush=True)
     elif args.max_trajectories is not None and args.max_trajectories < len(paths):
         if args.seed is not None:
             paths = sorted(random.Random(args.seed).sample(paths, args.max_trajectories))
@@ -250,7 +277,7 @@ def main() -> None:
     for traj_path in paths:
         stem = Path(traj_path).stem
         traj_dir = trajectory_activation_dir(args.activations_dir, stem)
-        csv_path = traj_dir / f"{stem}_jlens_analysis.csv"
+        csv_path = jlens_csv_path(args.activations_dir, stem)
         if csv_path.exists() and not args.overwrite:
             print(f"{stem}: CSV exists, skipping (use --overwrite to redo)", flush=True)
             continue
@@ -384,13 +411,25 @@ def _self_test() -> None:
         + [p(5, "0.5", 9)]  # short cell -> the one it has
     )
     kept, counts = select_balanced(pool, 2)
-    assert counts == {("5", "0.0"): 2, ("5", "0.5"): 1, ("11", "1.0"): 2}, counts
+    assert counts == {("5", "0.0"): (0, 2), ("5", "0.5"): (0, 1), ("11", "1.0"): (0, 2)}, counts
     assert kept == sorted([p(11, "1.0", 1), p(11, "1.0", 5), p(5, "0.0", 3), p(5, "0.0", 7), p(5, "0.5", 9)]), kept
     seeded, seeded_counts = select_balanced(pool, 2, seed=0)
     assert seeded_counts == counts and len(seeded) == 5, (seeded, seeded_counts)
     assert seeded == select_balanced(pool, 2, seed=0)[0]  # same seed -> same picks
-    assert select_balanced(pool, 100)[0] == sorted(pool)  # cap above every cell keeps everything
+    assert select_balanced(pool, 100)[0] == sorted(pool)  # target above every cell keeps everything
     assert combo_sort_key(("11", "1.0")) > combo_sort_key(("5", "1.0"))  # numeric, not lexicographic
+
+    # already-processed trajectories count towards the target instead of being redone
+    done = {p(11, "1.0", 5), p(5, "0.0", 7), p(5, "0.5", 9)}
+    kept, counts = select_balanced(pool, 2, is_done=done.__contains__)
+    assert counts == {("5", "0.0"): (1, 1), ("5", "0.5"): (1, 0), ("11", "1.0"): (1, 1)}, counts
+    assert not done & set(kept), kept  # never re-selects what is done
+    assert kept == sorted([p(5, "0.0", 3), p(11, "1.0", 1)]), kept
+    # a cell already at (or past) the target is left alone, extras and all
+    full = {p(11, "1.0", r) for r in (1, 5, 99, 100)}
+    kept, counts = select_balanced([p(11, "1.0", r) for r in (1, 5, 99, 100)], 2, is_done=full.__contains__)
+    assert kept == [] and counts == {("11", "1.0"): (4, 0)}, (kept, counts)
+    assert select_balanced(pool, 2, is_done=lambda _: False) == select_balanced(pool, 2)
     print("self-test ok")
 
 
