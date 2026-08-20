@@ -11,7 +11,7 @@ ACTIVATIONS_DIR=${ACTIVATIONS_DIR:-/workspace/activations/jlens_reasoning_tokens
 LAYERS=${LAYERS:-"7:23"}   # inclusive range; also the layers saved to disk
 # Hard cap, spread evenly over the size x complexity grid: 200 per cell over the
 # full 6x6 grid = 7200 trajectories. Set empty to fall back to MAX_TRAJ / all.
-PER_COMBO=${PER_COMBO:-200}
+PER_COMBO=${PER_COMBO:-100}
 MAX_TRAJ=${MAX_TRAJ:-}     # global cap instead of PER_COMBO (the two are mutually exclusive)
 SEED=${SEED:-0}            # random-sample seed; empty = lowest run indices
 SIZES=${SIZES:-}           # e.g. "11,15"; empty for all grid sizes
@@ -26,7 +26,7 @@ FWD_BATCH_TOKENS=${FWD_BATCH_TOKENS:-}  # padded-token budget per forward (defau
 PT_FORMAT=${PT_FORMAT:-}    # zip (default) or legacy; benchmark before switching
 PROFILE=${PROFILE:-}        # non-empty to print the per-phase wall-time split
 
-uv run python scripts/jlens_reasoning_tokens.py \
+uv run python jlens_reasoning_tokens.py \
     --trajectory-paths "$TRAJECTORIES" \
     --jlens_dir "$JLENS_DIR" \
     --layers "$LAYERS" \
