@@ -16,12 +16,21 @@ dependencies = [
     "scikit-learn>=1.7.2",
     "tyro>=1.0.5",
     "pandas>=2.3.3",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+    "tqdm>=4.66.0",
 ]
 
 [project.optional-dependencies]
 vllm = [
   "vllm>=0.10.2",
   "triton>=3.5.0",
+]
+# Needed only when loading models on a GPU host; `kernels` is pinned because
+# transformers' kernel-hub loading breaks on newer releases.
+gpu = [
+  "accelerate>=1.0.0",
+  "kernels==0.12.0",
 ]
 data = [
   "datasets>=2.4.0",

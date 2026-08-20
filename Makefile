@@ -37,11 +37,11 @@ uv-activate:
 
 .PHONY: install
 install:
-	uv sync && uv pip install -e .
+	uv sync
 
 .PHONY: install-dev
 install-dev:
-	uv sync --all-extras && pre-commit install && pre-commit autoupdate && uv pip install -e .
+	uv sync --all-extras && pre-commit install && pre-commit autoupdate
 
 #* Linting
 .PHONY: check-style

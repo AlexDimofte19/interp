@@ -16,15 +16,27 @@ MAX_TRAJ=${MAX_TRAJ:-}     # global cap instead of PER_COMBO (the two are mutual
 SEED=${SEED:-0}            # random-sample seed; empty = lowest run indices
 SIZES=${SIZES:-}           # e.g. "11,15"; empty for all grid sizes
 COMPLEXITIES=${COMPLEXITIES:-}  # e.g. "0.0,1.0"; empty for all complexities
-BATCH_SIZE=${BATCH_SIZE:-}  # reasoning tokens per lens matmul; empty = whole step
+BATCH_SIZE=${BATCH_SIZE:-}  # reasoning tokens per lens matmul; empty = script default (256)
 OVERWRITE=${OVERWRITE:-}    # non-empty to redo trajectories that already have a CSV
+# Throughput knobs; empty = script defaults. Long reasoning chains (comp 0.6-1.0) are
+# bound by the per-token .pt writes, so IO_WORKERS matters more than the batching.
+IO_WORKERS=${IO_WORKERS:-}          # threads writing .pt files (default 16, 0 = inline)
+FWD_BATCH_SIZE=${FWD_BATCH_SIZE:-}  # steps per padded forward pass (default 4, 1 = off)
+FWD_BATCH_TOKENS=${FWD_BATCH_TOKENS:-}  # padded-token budget per forward (default 16384)
+PT_FORMAT=${PT_FORMAT:-}    # zip (default) or legacy; benchmark before switching
+PROFILE=${PROFILE:-}        # non-empty to print the per-phase wall-time split
 
-python scripts/jlens_reasoning_tokens.py \
+uv run python scripts/jlens_reasoning_tokens.py \
     --trajectory-paths "$TRAJECTORIES" \
     --jlens_dir "$JLENS_DIR" \
     --layers "$LAYERS" \
     --steps "all" \
     ${BATCH_SIZE:+--batch-size "$BATCH_SIZE"} \
+    ${IO_WORKERS:+--io-workers "$IO_WORKERS"} \
+    ${FWD_BATCH_SIZE:+--forward-batch-size "$FWD_BATCH_SIZE"} \
+    ${FWD_BATCH_TOKENS:+--forward-batch-tokens "$FWD_BATCH_TOKENS"} \
+    ${PT_FORMAT:+--pt-format "$PT_FORMAT"} \
+    ${PROFILE:+--profile} \
     ${SIZES:+--sizes "$SIZES"} \
     ${COMPLEXITIES:+--complexities "$COMPLEXITIES"} \
     ${PER_COMBO:+--per-combo "$PER_COMBO"} \

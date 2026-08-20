@@ -30,7 +30,7 @@ for layer in "${TRAIN_LAYERS[@]}"; do
 
             echo "- Preparing padded activations for general probes (${location})"
 
-            interp-cli prepare_activations_for_probing \
+            uv run interp-cli prepare_activations_for_probing \
                 --trajectories-dir $TRAJECTORIES_TRAIN_PATH \
                 --activations-dir $ACTIVATIONS_TRAIN_PATH \
                 --probe-type grid_tile \
@@ -40,7 +40,7 @@ for layer in "${TRAIN_LAYERS[@]}"; do
             for size in "${TEST_GRID_SIZES[@]}"; do
                 echo "- Preparing activations for size-specific probes (${location}, grid size ${size}x${size})"
 
-                interp-cli prepare_activations_for_probing \
+                uv run interp-cli prepare_activations_for_probing \
                     --trajectories-dir $TRAJECTORIES_TRAIN_PATH/size${size} \
                     --activations-dir $ACTIVATIONS_TRAIN_PATH/size${size} \
                     --probe-type grid_tile \
@@ -52,7 +52,7 @@ for layer in "${TRAIN_LAYERS[@]}"; do
 
             echo "- Preparing padded activations for general probes (${location})"
 
-            interp-cli prepare_activations_for_probing \
+            uv run interp-cli prepare_activations_for_probing \
                 --trajectories-dir $TRAJECTORIES_TRAIN_PATH \
                 --activations-dir $ACTIVATIONS_TRAIN_PATH \
                 --probe-type grid_tile \
@@ -62,7 +62,7 @@ for layer in "${TRAIN_LAYERS[@]}"; do
             for size in "${TEST_GRID_SIZES[@]}"; do
                 echo "- Preparing activations for size-specific probes (${location}, grid size ${size}x${size})"
 
-                interp-cli prepare_activations_for_probing \
+                uv run interp-cli prepare_activations_for_probing \
                     --trajectories-dir $TRAJECTORIES_TRAIN_PATH/size${size} \
                     --activations-dir $ACTIVATIONS_TRAIN_PATH/size${size} \
                     --probe-type grid_tile \
@@ -81,7 +81,7 @@ for layer in "${TRAIN_LAYERS[@]}"; do
 
             CURRENT_PROBE_PATH="${PROBES_PATH}/cognitive_map_probe_layer${layer}_${probe_type}_${location}_all_general.pt"
 
-            interp-cli train_cognitive_map_probe \
+            uv run interp-cli train_cognitive_map_probe \
                 --train-data-path ${ACTIVATIONS_TRAIN_PATH}/cognitive_map_activations_l${layer}_s0_${location_name}_all_grid_tile_pad15_merged.pt \
                 --output-path $CURRENT_PROBE_PATH \
                 --model-type ${probe_type} \
@@ -105,7 +105,7 @@ for layer in "${TRAIN_LAYERS[@]}"; do
             EVAL_OUTPUT_BASE="eval_cognitive_map_probe_layer${layer}_${probe_type}_${location}_all_general"
             mkdir -p "${EVAL_OUTPUT_DIR}"
 
-            interp-cli eval_cognitive_map_probe \
+            uv run interp-cli eval_cognitive_map_probe \
                 --trajectories-dir $TRAJECTORIES_TEST_PATH \
                 --activations-dir $ACTIVATION_TEST_PATH \
                 --probe-path $CURRENT_PROBE_PATH \
@@ -120,7 +120,7 @@ for layer in "${TRAIN_LAYERS[@]}"; do
             echo "- Generating predictions for test trajectories for general ${probe_type} probe on all ${location} activations"
 
             for size in "${TEST_GRID_SIZES[@]}"; do
-                interp-cli apply_cognitive_map_probe \
+                uv run interp-cli apply_cognitive_map_probe \
                     --trajectories-dir $TRAJECTORIES_TEST_PATH/size${size} \
                     --activations-dir $ACTIVATION_TEST_PATH/size${size} \
                     --probe-path $CURRENT_PROBE_PATH \
@@ -136,7 +136,7 @@ for layer in "${TRAIN_LAYERS[@]}"; do
 
                 echo "- Training ${size}x${size} ${probe_type} probe on all ${location} activations"
 
-                interp-cli train_cognitive_map_probe \
+                uv run interp-cli train_cognitive_map_probe \
                     --train-data-path ${ACTIVATIONS_TRAIN_PATH}/cognitive_map_activations_l${layer}_s0_${location_name}_all_grid_tile_grid${size}.pt \
                     --output-path $CURRENT_PROBE_PATH \
                     --model-type ${probe_type} \
@@ -160,7 +160,7 @@ for layer in "${TRAIN_LAYERS[@]}"; do
                 EVAL_OUTPUT_BASE="eval_cognitive_map_probe_layer${layer}_${probe_type}_${location}_all_size${size}"
                 mkdir -p "${EVAL_OUTPUT_DIR}"
 
-                interp-cli eval_cognitive_map_probe \
+                uv run interp-cli eval_cognitive_map_probe \
                     --trajectories-dir $TRAJECTORIES_TEST_PATH/size${size} \
                     --activations-dir $ACTIVATION_TEST_PATH/size${size} \
                     --probe-path $CURRENT_PROBE_PATH \
@@ -174,7 +174,7 @@ for layer in "${TRAIN_LAYERS[@]}"; do
 
                 echo "- Generating predictions for test trajectories for ${size}x${size} ${probe_type} probe on all ${location} activations"
 
-                interp-cli apply_cognitive_map_probe \
+                uv run interp-cli apply_cognitive_map_probe \
                     --trajectories-dir $TRAJECTORIES_TEST_PATH/size${size} \
                     --activations-dir $ACTIVATION_TEST_PATH/size${size} \
                     --probe-path $CURRENT_PROBE_PATH \
