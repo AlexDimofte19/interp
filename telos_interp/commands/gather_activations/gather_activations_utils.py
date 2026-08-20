@@ -1,6 +1,9 @@
 """Utility functions for gathering activations."""
 
 import os
+import threading
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import torch
@@ -316,6 +319,85 @@ def extract_activations_single_pass(
     return results
 
 
+def extract_activations_batched(
+    model: torch.nn.Module,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    token_indices: list[list[int]],
+    layer_indices: list[int],
+    keep_on_device: bool = False,
+) -> dict[int, torch.Tensor]:
+    """Extract activations for several sequences at once, stacked one tensor per layer.
+
+    The batched counterpart of :func:`extract_activations_single_pass`. Instead of a
+    ``{token_idx: (D,)}`` dict per layer it returns a single ``(N, D)`` tensor per layer,
+    gathered with one ``index_select`` over the flattened ``(B*S, D)`` layer output. That
+    replaces N separate device-to-host copies with one, and lets a caller that is about to
+    do more GPU work keep the residual streams where they already are.
+
+    Rows follow ``token_indices`` in order: sequence 0's positions, then sequence 1's, and
+    so on, so a caller can slice the result back apart with a running offset.
+
+    Sequences shorter than ``input_ids.shape[1]`` must be **right**-padded. Under causal
+    attention a real token at position i only attends to positions <= i, all of which are
+    real, so right padding cannot perturb the activations that are read back.
+
+    Args:
+        model: HuggingFace causal-LM model
+        input_ids: (B, S) token ids, right-padded
+        attention_mask: (B, S) mask, or None when nothing is padded
+        token_indices: per sequence, the absolute positions to extract
+        layer_indices: List of layer indices to extract
+        keep_on_device: Leave the result on the model's device instead of copying to CPU
+
+    Returns:
+        Dict: layer_idx -> (N, D) tensor, N = total number of requested positions
+    """
+    seq_len = input_ids.shape[1]
+    flat_indices: list[int] = []
+    for row, positions in enumerate(token_indices):
+        valid = [idx for idx in positions if idx < seq_len]
+        if len(valid) < len(positions):
+            print(f"Warning: Skipping {len(positions) - len(valid)} token indices beyond sequence length {seq_len}")
+        flat_indices.extend(row * seq_len + idx for idx in valid)
+
+    try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        model_device = input_ids.device
+    input_ids = input_ids.to(model_device)
+    if attention_mask is not None:
+        attention_mask = attention_mask.to(model_device)
+
+    decoder_layers = _get_decoder_layers(model)
+    index = torch.tensor(flat_indices, dtype=torch.long, device=model_device)
+    captured: dict[int, torch.Tensor] = {}
+    handles = []
+
+    def make_hook(idx: int):
+        def hook(_module, _inputs, output):
+            # decoder blocks may return a tuple (hidden_states, ...) or a bare tensor
+            out = output[0] if isinstance(output, tuple) else output
+            # gather here rather than after the pass so only the requested rows are kept
+            captured[idx] = out.reshape(-1, out.shape[-1]).index_select(0, index).detach()
+
+        return hook
+
+    for layer_idx in layer_indices:
+        handles.append(decoder_layers[layer_idx].register_forward_hook(make_hook(layer_idx)))
+
+    try:
+        with torch.no_grad():
+            model(input_ids, attention_mask=attention_mask, use_cache=False)
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    if keep_on_device:
+        return {layer_idx: captured[layer_idx] for layer_idx in layer_indices}
+    return {layer_idx: captured[layer_idx].to("cpu") for layer_idx in layer_indices}
+
+
 def build_truncated_input(
     trajectory: dict,
     step: dict,
@@ -367,22 +449,127 @@ def save_activations_to_files(
     Returns:
         Number of activations with NaN values detected
     """
-    nan_count = 0
-    for layer_idx, token_activations in activations.items():
-        if step_idx is not None:
-            layer_dir = output_base / f"layer_{layer_idx}" / f"step_{step_idx}" / category
-        else:
-            layer_dir = output_base / f"layer_{layer_idx}" / category
+    writer = ActivationWriter(max_workers=0)
+    writer.submit(activations, output_base, step_idx, category)
+    return writer.drain()
 
-        layer_dir.mkdir(parents=True, exist_ok=True)
 
-        for token_idx, activation in token_activations.items():
-            if torch.isnan(activation).any():
-                nan_count += 1
-            output_path = layer_dir / f"{token_idx}.pt"
-            torch.save(activation, output_path)
+def activation_layer_dir(output_base: Path, layer_idx: int, step_idx: int | None, category: str) -> Path:
+    """The directory a token's .pt file lives in, for one layer/step/category.
 
-    return nan_count
+    Args:
+        output_base: Base output directory (includes model_id)
+        layer_idx: Layer index
+        step_idx: Step index (None for categories without step context)
+        category: Token category name
+
+    Returns:
+        {output_base}/layer_{N}/step_{M}/{category}, or {output_base}/layer_{N}/{category}
+    """
+    if step_idx is not None:
+        return output_base / f"layer_{layer_idx}" / f"step_{step_idx}" / category
+    return output_base / f"layer_{layer_idx}" / category
+
+
+class ActivationWriter:
+    """Thread-pooled writer for the per-token .pt tree.
+
+    Writes exactly what :func:`save_activations_to_files` writes — same paths, same
+    tensors, same NaN accounting — but hands the files to a pool of worker threads, so
+    the (many, tiny) file creations overlap with the caller's GPU work instead of
+    blocking it. ``torch.save`` releases the GIL while writing, which is what makes this
+    worth doing: a trajectory with a long reasoning chain writes one file per
+    (token, layer), which is tens of thousands of files per step.
+
+    ``max_workers=0`` writes inline on the calling thread, which is how
+    :func:`save_activations_to_files` keeps its original synchronous behaviour.
+
+    Every queued write must be drained before the run is recorded as complete:
+    :meth:`drain` waits for the queue and re-raises the first worker exception, so a
+    failed write can never be mistaken for a finished trajectory.
+    """
+
+    def __init__(self, max_workers: int = 16, use_zipfile: bool = True, max_pending: int = 4096) -> None:
+        self._pool = ThreadPoolExecutor(max_workers=max_workers) if max_workers > 0 else None
+        self._use_zipfile = use_zipfile
+        self._max_pending = max_pending
+        self._lock = threading.Lock()
+        self._nan_count = 0
+        self._pending: deque = deque()
+        self._made_dirs: set[Path] = set()
+
+    def __enter__(self) -> "ActivationWriter":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
+
+    def submit(
+        self,
+        activations: dict[int, dict[int, torch.Tensor]],
+        output_base: Path,
+        step_idx: int | None,
+        category: str,
+    ) -> None:
+        """Queue one batch of activations for writing. Same arguments as save_activations_to_files.
+
+        Tensors must not alias a larger storage — ``torch.save`` serialises the whole
+        underlying storage, not the view — so slice callers should clone their rows first.
+        """
+        for layer_idx, token_activations in activations.items():
+            layer_dir = activation_layer_dir(output_base, layer_idx, step_idx, category)
+            # mkdir on the submitting thread: cheap, and keeps the workers race-free
+            if layer_dir not in self._made_dirs:
+                layer_dir.mkdir(parents=True, exist_ok=True)
+                self._made_dirs.add(layer_dir)
+            for token_idx, activation in token_activations.items():
+                output_path = layer_dir / f"{token_idx}.pt"
+                if self._pool is None:
+                    self._write(output_path, activation)
+                else:
+                    self._throttle()
+                    self._pending.append(self._pool.submit(self._write, output_path, activation))
+
+    def _throttle(self) -> None:
+        """Keep the queue bounded; a queued write holds its tensor alive.
+
+        Futures complete roughly in submission order, so blocking on the oldest is enough
+        to stop a fast producer from buffering a whole trajectory's activations in RAM.
+        """
+        if self._max_pending <= 0 or len(self._pending) < self._max_pending:
+            return
+        while len(self._pending) > self._max_pending // 2:
+            self._pending.popleft().result()
+
+    def _write(self, output_path: Path, activation: torch.Tensor) -> None:
+        if torch.isnan(activation).any():
+            with self._lock:
+                self._nan_count += 1
+        # the legacy (non-zip) container skips the zip directory per file; for the ~6 KB
+        # tensors written here that overhead is a real fraction of the write. Both forms
+        # still load under torch.load(..., weights_only=True).
+        torch.save(activation, output_path, _use_new_zipfile_serialization=self._use_zipfile)
+
+    def drain(self) -> int:
+        """Wait for every queued write, then return (and reset) the NaN count.
+
+        Raises whatever a worker raised, so callers never treat a failed write as done.
+        """
+        while self._pending:
+            self._pending.popleft().result()
+        self._made_dirs.clear()
+        with self._lock:
+            nan_count, self._nan_count = self._nan_count, 0
+        return nan_count
+
+    def close(self) -> int:
+        """Drain, then shut the pool down. Returns the NaN count from the final drain."""
+        try:
+            return self.drain()
+        finally:
+            if self._pool is not None:
+                self._pool.shutdown(wait=True)
+                self._pool = None
 
 
 def resolve_token_indices(
