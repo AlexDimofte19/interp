@@ -20,7 +20,7 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)   # so uv finds pyproject.
 
 ACTIVATIONS_DIR=${ACTIVATIONS_DIR:-/workspace/activations/jlens_reasoning_tokens}
 TRAJECTORIES=${TRAJECTORIES:-/workspace/trajectories/reveng/trajectories_train_single_step}
-SIGNAL_JSON=${SIGNAL_JSON:-$REPO/data/jlens/direction_tokens_full.json}
+SIGNAL_JSON=${SIGNAL_JSON:-/workspace/jlens/direction_tokens_full.json}
 
 NUM_TOKENS=${NUM_TOKENS:-20}
 NUM_LAYERS=${NUM_LAYERS:-3}
