@@ -12,6 +12,7 @@ delete nothing rather than delete the wrong thing.
 
 import importlib
 import sys
+from pathlib import Path
 
 import pytest
 import torch
@@ -106,7 +107,7 @@ def test_dry_run_reports_what_apply_would_do(env, signal_json, capsys):
     applied = capsys.readouterr().out
 
     def per_trajectory(text):
-        return [line.strip() for line in text.splitlines() if line.startswith("  pruned")]
+        return [line.strip() for line in text.splitlines() if " pruned " in line]
 
     assert per_trajectory(dry) == per_trajectory(applied)
     assert per_trajectory(dry), "the dry run has to report something to be useful"
@@ -202,3 +203,26 @@ def test_no_csvs_is_an_error(tmp_path, signal_json):
             dnjs.main()
     finally:
         sys.argv = old
+
+
+def test_csv_discovery_does_not_walk_the_activation_tree(env, signal_json, monkeypatch):
+    """The CSV sits three levels down; rglob would enumerate every .pt to find it.
+
+    On the real tree that is tens of millions of files scanned before the first line of
+    output, which is exactly what the pruner is there to delete.
+    """
+    full = _run(env, "full")
+    root = env["tmp"] / "full"
+
+    listed: list = []
+    real_iterdir = Path.iterdir
+
+    def counting_iterdir(self):
+        listed.append(self)
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", counting_iterdir)
+    found = dnjs.find_jlens_csvs(root)
+
+    assert found == [full / f"{env['stem']}_jlens_analysis.csv"]
+    assert not [p for p in listed if "step_" in str(p)], "descended into the activation tree"

@@ -95,6 +95,20 @@ def matches_filters(stem: str, sizes: set[str] | None, complexities: set[str] | 
     return (sizes is None or name["size"] in sizes) and (complexities is None or name["comp"] in complexities)
 
 
+def find_jlens_csvs(activations_dir: Path) -> list[Path]:
+    """Locate every trajectory's jlens CSV without walking the activation tree.
+
+    The CSV sits at `{root}/size{S}/{stem}/{stem}_jlens_analysis.csv`, or `{root}/{stem}/...`
+    for a trajectory whose filename carries no size. `rglob` finds those too -- but only
+    after descending into every `{model}/layer_N/step_M/output/` folder underneath, which is
+    the tens of millions of `.pt` files this script exists to delete. Globbing at the two
+    known depths keeps the search proportional to the number of trajectories instead.
+    """
+    found = set(activations_dir.glob(f"*/*/*{DEFAULT_JLENS_CSV_SUFFIX}"))
+    found.update(activations_dir.glob(f"*/*{DEFAULT_JLENS_CSV_SUFFIX}"))
+    return sorted(found)
+
+
 def prune_empty_dirs(root: Path) -> None:
     """Remove directories left empty by the deletion, deepest first."""
     for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
@@ -234,6 +248,9 @@ def main() -> None:
     ap.add_argument("--candidate-layers", default=None,
                     help="Comma-separated layer pool to choose from; default is every layer the "
                          "CSV has rows for.")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="Process at most N trajectories. Worth using for a first --apply run: "
+                         "check the result on a handful before committing to the whole tree.")
     ap.add_argument("--verbose", action="store_true", help="One line per trajectory.")
     args = ap.parse_args()
 
@@ -244,10 +261,13 @@ def main() -> None:
     sizes = {s.strip() for s in args.sizes.split(",")} if args.sizes else None
     complexities = {c.strip() for c in args.complexities.split(",")} if args.complexities else None
 
-    csvs = sorted(args.activations_dir.rglob(f"*{DEFAULT_JLENS_CSV_SUFFIX}"))
+    print(f"scanning {args.activations_dir} for trajectories...", flush=True)
+    csvs = find_jlens_csvs(args.activations_dir)
     csvs = [p for p in csvs if matches_filters(p.parent.name, sizes, complexities)]
     if not csvs:
         raise SystemExit(f"no {DEFAULT_JLENS_CSV_SUFFIX} files under {args.activations_dir}")
+    if args.limit is not None:
+        csvs = csvs[: args.limit]
 
     mode = "APPLYING" if args.apply else "DRY RUN (pass --apply to delete)"
     print(f"{mode}: {len(csvs)} trajectory folder(s) under {args.activations_dir}", flush=True)
@@ -255,13 +275,20 @@ def main() -> None:
         print("WARNING: --select-random-tokens 0 discards the matched control arm permanently",
               flush=True)
 
-    outcomes = [prune_trajectory(csv_path, args) for csv_path in csvs]
-    for outcome in outcomes:
+    # Reported as we go rather than collected first: each trajectory means listing and
+    # unlinking ~12k files, so a batch of thousands is a long time to sit silent.
+    outcomes: list[Outcome] = []
+    for index, csv_path in enumerate(csvs, start=1):
+        outcome = prune_trajectory(csv_path, args)
+        outcomes.append(outcome)
         if args.verbose or outcome.status == "skipped":
             detail = outcome.reason if outcome.status == "skipped" else (
                 f"kept {outcome.kept}, deleted {outcome.deleted} ({human(outcome.freed)})"
             )
-            print(f"  {outcome.status:<8} {outcome.stem}: {detail}", flush=True)
+            print(f"  [{index}/{len(csvs)}] {outcome.status:<8} {outcome.stem}: {detail}", flush=True)
+        elif index % 25 == 0 or index == len(csvs):
+            freed = human(sum(o.freed for o in outcomes))
+            print(f"  [{index}/{len(csvs)}] {freed} so far", flush=True)
 
     pruned = [o for o in outcomes if o.status == "pruned"]
     skipped = [o for o in outcomes if o.status == "skipped"]
