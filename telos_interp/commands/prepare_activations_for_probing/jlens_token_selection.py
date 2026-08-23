@@ -7,35 +7,56 @@ CSV into a selection: the tokens whose j-space is most *direction-loaded* (the
 per-trajectory version of notebooks/direction_token_location_analysis.ipynb), plus the
 matched random controls.
 
+The CSV reading, scoring and layer ranking live in `telos_interp.jlens_utils`, shared with
+the two scripts that prune the activation tree, so a probe dataset and a pruned tree can
+never disagree about which tokens matter. What stays here is the probe-side wrapping: the
+CLI's selection modes, and the `SampleRef` list a manifest is built from.
+
 Stdlib only — no torch — so the selection logic is testable on its own.
 """
 
-import csv
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-# Written next to the activations by scripts/jlens_reasoning_tokens.py.
-DEFAULT_JLENS_CSV_SUFFIX = "_jlens_analysis.csv"
+from telos_interp.jlens_utils import (
+    DEFAULT_JLENS_CSV_SUFFIX,
+    DIRECTION_CLASSES,
+    TokenScore,
+    jlens_csv_path,
+    load_direction_tokens,
+    output_start,
+    rank_layers_by_direction,
+    read_direction_counts,
+    read_selection_record,
+    record_path,
+    step_folder_index,
+)
 
-DIRECTION_CLASSES = ("UP", "DOWN", "LEFT", "RIGHT")
+# Re-exported so prepare_activations_for_probing_fn and existing callers keep importing
+# these from here.
+__all__ = [
+    "DEFAULT_JLENS_CSV_SUFFIX",
+    "DIRECTION_CLASSES",
+    "LayerSelection",
+    "SampleRef",
+    "SelectionConfig",
+    "TokenScore",
+    "TokenSelection",
+    "jlens_csv_path",
+    "load_direction_tokens",
+    "output_start",
+    "read_direction_counts",
+    "select_token_layer_pairs",
+    "step_folder_index",
+]
 
-TokenSelection = str  # "all" | "jlens_direction" | "random"
+TokenSelection = str  # "all" | "jlens_direction" | "random" | "recorded_jlens" | "recorded_random"
 LayerSelection = str  # "spec" | "jlens_direction" | "random"
 
-
-@dataclass
-class TokenScore:
-    """Direction-token counts for one reasoning token, broken down by layer."""
-
-    token: str
-    per_layer: dict[int, int] = field(default_factory=dict)
-
-    def total(self, layers: list[int] | None = None) -> int:
-        """Sum of counts, restricted to `layers` when given."""
-        if layers is None:
-            return sum(self.per_layer.values())
-        return sum(self.per_layer.get(layer, 0) for layer in layers)
+# token_selection values that read a pruned tree's {stem}_jlens_selection.json instead of
+# re-scoring the CSV. Mapped to the arm of the record they take.
+RECORDED_SELECTIONS = {"recorded_jlens": "jlens", "recorded_random": "random"}
 
 
 @dataclass
@@ -91,92 +112,6 @@ class SampleRef:
     layer_direction_count: int | None = None  # score at this layer alone
 
 
-def jlens_csv_path(trajectory_folder: Path, suffix: str = DEFAULT_JLENS_CSV_SUFFIX) -> Path:
-    """`<folder>/<folder name>_jlens_analysis.csv`, as jlens_reasoning_tokens.py writes it."""
-    return trajectory_folder / f"{trajectory_folder.name}{suffix}"
-
-
-def load_direction_tokens(path: str | Path, classes: str = "all") -> set[str]:
-    """Load the direction-token vocabulary as a flat set.
-
-    The JSON maps each direction ("UP"/"DOWN"/"LEFT"/"RIGHT") to a list of token strings
-    in decoded form (e.g. " left"), matching what the CSV's top_* columns hold. `classes`
-    is "all" (the union) or a comma-separated subset such as "UP,DOWN".
-    """
-    import json
-
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-
-    if classes.strip().lower() == "all":
-        wanted = list(data.keys())
-    else:
-        wanted = [c.strip().upper() for c in classes.split(",") if c.strip()]
-        unknown = [c for c in wanted if c not in data]
-        if unknown:
-            raise ValueError(
-                f"Unknown direction class(es) {unknown} in direction_classes='{classes}'; "
-                f"available: {sorted(data.keys())}"
-            )
-
-    tokens: set[str] = set()
-    for name in wanted:
-        tokens.update(data[name])
-    return tokens
-
-
-def read_direction_counts(
-    csv_path: Path,
-    direction_tokens: set[str],
-    top_k: int = 20,
-) -> dict[tuple[int, int], TokenScore]:
-    """Count direction tokens in each row's top-k j-space predictions.
-
-    Returns {(step, abs_pos): TokenScore}, where `step` is the CSV's step column (an index
-    into trajectory["steps"]) and `abs_pos` the token's absolute position in the forward
-    pass. Uses csv.DictReader rather than pandas so token strings like "NA" or "" survive
-    verbatim and memory stays flat over multi-hundred-MB files.
-    """
-    counts: dict[tuple[int, int], TokenScore] = {}
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        top_cols = [f"top_{i}" for i in range(1, top_k + 1) if f"top_{i}" in (reader.fieldnames or [])]
-        for row in reader:
-            key = (int(row["step"]), int(row["abs_pos"]))
-            score = counts.get(key)
-            if score is None:
-                score = TokenScore(token=row.get("token", ""))
-                counts[key] = score
-            hits = sum(1 for col in top_cols if row[col] in direction_tokens)
-            score.per_layer[int(row["layer"])] = hits
-    return counts
-
-
-def output_start(trajectory_data: dict, step_index: int) -> int:
-    """Absolute position of the step's first output token.
-
-    Mirrors how scripts/jlens_reasoning_tokens.py derives the .pt filename:
-    out_idx = abs_pos - output_start.
-    """
-    prompt = trajectory_data["prompt"]
-    step = trajectory_data["steps"][step_index]
-    return (
-        len(prompt["prompt_prefix_tokens"])
-        + len(step["grid_state_tokens"])
-        + len(prompt["prompt_suffix_tokens"])
-    )
-
-
-def step_folder_index(trajectory_data: dict, step_index: int) -> int:
-    """The `step_M` folder number for a CSV step column value.
-
-    gather_activations names folders by `step_id`; the CSV records the list index. They
-    agree in the data seen so far, but `step_id` is the authoritative field.
-    """
-    step = trajectory_data["steps"][step_index]
-    return int(step.get("step_id", step_index))
-
-
 def _pick_layers(
     token_layers: dict[int, int],
     candidate_layers: list[int],
@@ -192,9 +127,71 @@ def _pick_layers(
             return list(candidate_layers)
         return sorted(rng.sample(candidate_layers, num_layers))
     if layer_selection == "jlens_direction":
-        ranked = sorted(candidate_layers, key=lambda layer: (-token_layers.get(layer, 0), layer))
-        return sorted(ranked[:num_layers])
+        return sorted(rank_layers_by_direction(token_layers, candidate_layers)[:num_layers])
     raise ValueError(f"Unknown layer_selection: {layer_selection}")
+
+
+def _select_from_record(
+    *,
+    trajectory_folder: Path,
+    model_folder: Path,
+    candidate_layers: list[int],
+    candidate_steps: list[int],
+    selection: SelectionConfig,
+    verbose: bool = False,
+) -> tuple[list["SampleRef"], int]:
+    """Take the selection a pruning run already made, instead of re-scoring the CSV.
+
+    On a tree that has been pruned to a selection, re-scoring works for the jlens arm but
+    *not* for the control: a uniform draw over the surviving tokens is no longer a uniform
+    draw over the reasoning chain. The record is the only place the control survives, so
+    both arms are read from it.
+
+    `candidate_layers`/`candidate_steps` still narrow the result, which is what makes
+    `--layers 15` a layer-15 dataset carved out of the same record.
+    """
+    path = record_path(trajectory_folder)
+    if not path.exists():
+        if verbose:
+            print(f"  Skipped: no selection record at {path}")
+        return [], 0
+
+    kept, _ = read_selection_record(path)
+    arm = getattr(kept, RECORDED_SELECTIONS[selection.token_selection])
+    step_set, layer_set = set(candidate_steps), set(candidate_layers)
+
+    # An explicit num_tokens caps the arm to its top-K. The record is written in rank order
+    # for the jlens arm, but sort defensively rather than trusting the file's order.
+    picks = sorted(arm.values(), key=lambda p: (-(p.direction_count or 0), p.step, p.pos))
+    if selection.num_tokens is not None:
+        picks = picks[: selection.num_tokens]
+
+    samples: list[SampleRef] = []
+    missing = 0
+    for pick in sorted(picks, key=lambda p: (p.step, p.pos)):
+        if pick.step not in step_set:
+            continue
+        for layer in pick.layers:
+            if layer not in layer_set:
+                continue
+            file_path = model_folder / f"layer_{layer}" / f"step_{pick.step}" / "output" / f"{pick.pos}.pt"
+            if not file_path.exists():
+                missing += 1
+                continue
+            samples.append(
+                SampleRef(
+                    layer=layer,
+                    step=pick.step,
+                    token_idx=pick.pos,
+                    path=file_path,
+                    token=pick.token,
+                    direction_count=pick.direction_count,
+                    layer_direction_count=(pick.layer_direction_counts or {}).get(layer)
+                    if pick.direction_count is not None
+                    else None,
+                )
+            )
+    return samples, missing
 
 
 def select_token_layer_pairs(
@@ -227,6 +224,16 @@ def select_token_layer_pairs(
         `.pt` that does not exist (skipped). Empty when the trajectory cannot be scored
         (e.g. the jlens CSV is absent).
     """
+    if selection.token_selection in RECORDED_SELECTIONS:
+        return _select_from_record(
+            trajectory_folder=trajectory_folder,
+            model_folder=model_folder,
+            candidate_layers=candidate_layers,
+            candidate_steps=candidate_steps,
+            selection=selection,
+            verbose=verbose,
+        )
+
     rng = random.Random(f"{selection.seed}-{trajectory_folder.name}")
     num_tokens, num_layers = selection.num_tokens, selection.num_layers
     needs_csv = "jlens_direction" in (selection.token_selection, selection.layer_selection)

@@ -79,6 +79,17 @@ Jacobian lens says direction information lives — and against matched controls.
 | `all` (default) | every token matching `--output-indices` |
 | `jlens_direction` | the `--num-tokens` tokens of the trajectory whose j-space top-k contains the most direction tokens |
 | `random` | `--num-tokens` tokens drawn uniformly (the control for `jlens_direction`) |
+| `recorded_jlens` | the jlens arm of `{name}_jlens_selection.json`, chosen when the tree was pruned |
+| `recorded_random` | the control arm of that same record |
+
+**On a pruned tree, use the `recorded_*` modes.** Once
+`scripts/delete_non_jlens_selected.py` (or a `--signal-json` gather) has removed everything
+outside the selection, `jlens_direction` would still find the right tokens — but `random`
+would draw from the survivors, which is no longer a uniform draw over the reasoning chain.
+The control only exists in the record, so it has to be read back rather than recomputed.
+For `recorded_*`, `--num-tokens` is an optional cap on each arm's top-K, `--num-layers` and
+`--direction-tokens-path` are unused (the record fixed them), and `--layer-selection` must
+stay `spec` — narrow with `--layers` instead.
 
 | `--layer-selection` | which layers of each selected token become samples |
 |---|---|
@@ -162,9 +173,9 @@ In multi-size mode:
 | `output_path` | str \| None | None | Output **directory** (auto-named under `activations_dir` if None). If you pass a path ending in `.pt`, the suffix is stripped with a warning. |
 | `verbose` | bool | False | Print detailed progress |
 | `seed` | int | 42 | Random seed for reproducibility |
-| `token_selection` | str | "all" | `next_action` only: "all", "jlens_direction", or "random" |
+| `token_selection` | str | "all" | `next_action` only: "all", "jlens_direction", "random", "recorded_jlens", "recorded_random" |
 | `layer_selection` | str | "spec" | `next_action` only: "spec", "jlens_direction", or "random" |
-| `num_tokens` | int \| None | None | N for the non-"all" `token_selection` modes |
+| `num_tokens` | int \| None | None | N for the non-"all" modes; an optional top-K cap for `recorded_*` |
 | `num_layers` | int \| None | None | M for the non-"spec" `layer_selection` modes |
 | `direction_tokens_path` | str \| None | None | JSON of direction tokens; required by `jlens_direction` |
 | `direction_classes` | str | "all" | Which direction lists to count (e.g. "UP,DOWN") |
@@ -237,10 +248,31 @@ interp-cli prepare_activations_for_probing \
     --verbose
 ```
 
-### Next action on the most direction-loaded reasoning tokens
+### Next action on the most direction-loaded reasoning tokens (pruned tree)
 
-Run `scripts/jlens_reasoning_tokens.sh` first — it writes the activations *and* the
-per-trajectory `{name}_jlens_analysis.csv` this mode reads.
+The normal path. Run `scripts/jlens_reasoning_tokens_filtered.sh` first (or
+`scripts/delete_non_jlens_selected.sh` over an existing full tree) — either writes the
+`{name}_jlens_selection.json` these modes read.
+
+```bash
+# both arms, from the same record; --layers narrows the recorded layers
+for arm in jlens random; do
+    interp-cli prepare_activations_for_probing \
+        --activations-dir /workspace/activations/jlens_reasoning_tokens \
+        --trajectories-dir /workspace/trajectories/trajectories_test_full \
+        --probe-type next_action \
+        --layers 7:23 --steps all --output-indices all \
+        --token-selection "recorded_${arm}" \
+        --output-path /workspace/prepared/next_action_${arm}
+done
+```
+
+Narrow to the top-K tokens at *training* time rather than here —
+`scripts/split_next_action_manifest.py --tokens-per-trajectory K --layers-per-token 1`
+takes top-1/2/3 off a single prepared dataset, so a sweep costs three splits instead of
+three prepares.
+
+### The same, scoring the CSV directly (unpruned tree only)
 
 ```bash
 # top 20 tokens per trajectory, each at its own top 3 layers

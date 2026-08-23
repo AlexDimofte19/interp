@@ -1,10 +1,13 @@
 """Tests for prepare_activations_for_probing v3 manifest output."""
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
 import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from telos_interp.commands.prepare_activations_for_probing.manifest_loader import (
     GridTileCompactDataset,
@@ -842,3 +845,140 @@ class TestSelectionValidation:
         matches = [p.name for p in acts.iterdir() if p.is_dir() and "next_action" in p.name]
         assert len(matches) == 1
         assert "_tokjl3_layjl2" in matches[0]
+
+
+# --- reading a pruned tree's selection record -------------------------------------------
+#
+# Once delete_non_jlens_selected.py has run, re-scoring the CSV would still find the right
+# jlens tokens but could no longer produce an honest control: a uniform draw over the
+# survivors is not a uniform draw over the reasoning chain. Both arms therefore come from
+# the record the pruning wrote.
+
+
+def _prune_fixture(activations_dir, trajectories_dir, direction_path, **overrides):
+    """Run the real pruner over a jlens fixture, leaving a selection record behind."""
+    import importlib
+
+    dnjs = importlib.import_module("scripts.delete_non_jlens_selected")
+    opts = {
+        "--select-num-tokens": "3",
+        "--select-num-layers": "2",
+        "--select-always-layers": "",
+        "--select-random-tokens": "2",
+        "--select-seed": "42",
+    }
+    opts.update(overrides)
+    argv = [
+        "delete_non_jlens_selected.py",
+        "--activations-dir", str(activations_dir),
+        "--trajectories-dir", str(trajectories_dir),
+        "--signal-json", str(direction_path),
+        "--apply",
+        *[part for pair in opts.items() for part in pair],
+    ]
+    old, sys.argv = sys.argv, argv
+    try:
+        dnjs.main()
+    finally:
+        sys.argv = old
+
+
+class TestRecordedSelection:
+    def test_recorded_jlens_matches_an_unpruned_jlens_run(self, tmp_path):
+        """The point of the record: pruning must not change which samples a probe gets."""
+        (tmp_path / "full").mkdir()
+        (tmp_path / "pruned").mkdir()
+        full_acts, full_trajs, directions = _make_jlens_fixture(tmp_path / "full")
+        acts, trajs, _ = _make_jlens_fixture(tmp_path / "pruned")
+
+        reference = _prepare_next_action(
+            full_acts, full_trajs, tmp_path / "ref",
+            token_selection="jlens_direction", layer_selection="jlens_direction",
+            num_tokens=3, num_layers=2, direction_tokens_path=str(directions),
+        )
+        _prune_fixture(acts, trajs, directions)
+        recorded = _prepare_next_action(
+            acts, trajs, tmp_path / "rec", token_selection="recorded_jlens",
+        )
+
+        def identity(manifest):
+            return sorted(
+                (s["name"], s["step"], s["token_id"], s["layer"], s["label"],
+                 s["direction_count"], s["layer_direction_count"])
+                for s in manifest["samples"]
+            )
+
+        assert identity(recorded) == identity(reference)
+
+    def test_recorded_random_is_countless(self, tmp_path):
+        """No counts means split_next_action_manifest samples the control instead of ranking it."""
+        acts, trajs, directions = _make_jlens_fixture(tmp_path)
+        _prune_fixture(acts, trajs, directions)
+        manifest = _prepare_next_action(
+            acts, trajs, tmp_path / "out", token_selection="recorded_random"
+        )
+        assert manifest["samples"]
+        for sample in manifest["samples"]:
+            assert "direction_count" not in sample
+            assert "layer_direction_count" not in sample
+
+    def test_recorded_jlens_keeps_counts(self, tmp_path):
+        acts, trajs, directions = _make_jlens_fixture(tmp_path)
+        _prune_fixture(acts, trajs, directions)
+        manifest = _prepare_next_action(
+            acts, trajs, tmp_path / "out", token_selection="recorded_jlens"
+        )
+        assert all("direction_count" in s for s in manifest["samples"])
+        assert all("layer_direction_count" in s for s in manifest["samples"])
+
+    def test_num_tokens_caps_the_recorded_arm(self, tmp_path):
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
+        _prune_fixture(acts, trajs, directions)
+        full = _prepare_next_action(acts, trajs, tmp_path / "a", token_selection="recorded_jlens")
+        capped = _prepare_next_action(
+            acts, trajs, tmp_path / "b", token_selection="recorded_jlens", num_tokens=1
+        )
+        assert len({(s["step"], s["token_id"]) for s in full["samples"]}) == 3
+        assert len({(s["step"], s["token_id"]) for s in capped["samples"]}) == 1
+        # and it caps by rank, not arbitrarily
+        assert max(s["direction_count"] for s in full["samples"]) == capped["samples"][0]["direction_count"]
+
+    def test_layers_narrows_the_recorded_selection(self, tmp_path):
+        """A single-layer dataset out of the same record, with no re-gather."""
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
+        _prune_fixture(acts, trajs, directions)
+        manifest = _prepare_next_action(
+            acts, trajs, tmp_path / "out", token_selection="recorded_jlens", layers="15"
+        )
+        assert manifest["samples"]
+        assert {s["layer"] for s in manifest["samples"]} == {15}
+
+    def test_missing_record_skips_the_trajectory(self, tmp_path):
+        acts, trajs, _ = _make_jlens_fixture(tmp_path, num_trajectories=1)
+        with pytest.raises(ValueError, match="No activations were extracted"):
+            _prepare_next_action(acts, trajs, tmp_path / "out", token_selection="recorded_jlens")
+
+    def test_layer_selection_must_stay_spec(self, tmp_path):
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
+        _prune_fixture(acts, trajs, directions)
+        with pytest.raises(ValueError, match="must stay 'spec'"):
+            _prepare_next_action(
+                acts, trajs, tmp_path / "out",
+                token_selection="recorded_jlens", layer_selection="random", num_layers=1,
+            )
+
+    def test_recorded_modes_need_no_direction_tokens_path(self, tmp_path):
+        """The scoring already happened; re-supplying the vocabulary would be misleading."""
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
+        _prune_fixture(acts, trajs, directions)
+        manifest = _prepare_next_action(acts, trajs, tmp_path / "out", token_selection="recorded_jlens")
+        assert manifest["selection"]["token_selection"] == "recorded_jlens"
+        assert manifest["selection"]["direction_tokens_path"] is None
+
+    def test_the_two_arms_are_recorded_separately(self, tmp_path):
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
+        _prune_fixture(acts, trajs, directions, **{"--select-random-tokens": "4"})
+        jlens = _prepare_next_action(acts, trajs, tmp_path / "j", token_selection="recorded_jlens")
+        control = _prepare_next_action(acts, trajs, tmp_path / "r", token_selection="recorded_random")
+        assert len({(s["step"], s["token_id"]) for s in jlens["samples"]}) == 3
+        assert len({(s["step"], s["token_id"]) for s in control["samples"]}) == 4

@@ -38,6 +38,27 @@ trajectories. It is a target for what ends up on disk, not a per-run batch size:
 trajectories that already have a CSV count towards the 200, so re-running only
 fills the gaps and cells that are already full (or fuller) are left untouched.
 
+Selective gathering
+-------------------
+Saving every (token, layer) is what fills the disk: a 700-token chain over 17
+layers is ~12k files and ~68 MB *per step*, of which a probe reads maybe 40
+tokens' worth. Pass --signal-json to keep only what a probe will actually use:
+
+  1. the full CSV is written as before (nothing is lost analytically),
+  2. `jlens_top_filter` picks the top --select-num-tokens tokens and their top
+     --select-num-layers layers, plus --select-always-layers (15) and a matched
+     --select-random-tokens control arm,
+  3. a second, much cheaper forward pass saves just those,
+  4. `{stem}_jlens_selection.json` records the choice, which is what
+     `prepare_activations_for_probing --token-selection recorded_*` reads.
+
+The control arm is not optional bookkeeping: once the tree holds only the
+top-scoring tokens, a uniform draw over the reasoning chain can never be made
+again, so it has to be reserved before the rest is dropped.
+
+`scripts/delete_non_jlens_selected.py` applies the same filter to trajectories
+that were already gathered in full, and lands on the same files.
+
 Throughput
 ----------
 Everything here scales with the length of the reasoning chain, which is why the
@@ -71,6 +92,17 @@ from collections import defaultdict
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+
+# telos_interp is an installed package; jlens_utils is stdlib-only, so importing it here
+# costs nothing and keeps --self-test runnable without torch.
+from telos_interp.jlens_utils import (
+    DEFAULT_ALWAYS_LAYERS,
+    build_record,
+    jlens_top_filter,
+    record_path,
+    to_disk_coords,
+    write_selection_record,
+)
 
 # Running this file directly puts scripts/ on sys.path[0], not the repo root, so the
 # sibling `scripts.*` imports below would miss. Put the repo root first.
@@ -372,6 +404,124 @@ def benchmark_pt_write(out_dir: Path, count: int, dim: int = 2880) -> None:
         shutil.rmtree(bench_dir, ignore_errors=True)
 
 
+def parse_always_layers(spec: str) -> tuple[int, ...]:
+    """Comma-separated layer list for --select-always-layers; empty string means none.
+
+    >>> parse_always_layers("15")
+    (15,)
+    >>> parse_always_layers(" 7, 15 ")
+    (7, 15)
+    >>> parse_always_layers("")
+    ()
+    """
+    return tuple(int(part) for part in spec.split(",") if part.strip())
+
+
+def save_selected_activations(
+    model,
+    pending: list[dict],
+    kept_by_step: dict[int, dict[int, tuple[int, ...]]],
+    output_base: Path,
+    writer_pool,
+    prof: "Profiler",
+    forward_batch_size: int,
+    forward_batch_tokens: int,
+) -> int:
+    """Second pass: re-forward only what the selection needs, write only what it keeps.
+
+    The selection cannot be known until the whole trajectory's CSV exists, and buffering a
+    long multi-step chain's residual streams to wait for it would cost hundreds of MB. A
+    second forward is the cheaper trade: the GPU was never the bottleneck here (the
+    per-token .pt writes were, per this module's docstring), and this pass drops ~99% of
+    them — as well as truncating each sequence to its last *kept* token and hooking only
+    the layers something actually wants.
+
+    Args:
+        pending: the per-step records built for pass 1 (`ids`, `abs_positions`, `step_id`,
+            `output_start`).
+        kept_by_step: {step folder: {output-relative token index: layers to keep}}.
+
+    Returns:
+        Number of activation files queued for writing.
+    """
+    import torch
+    from telos_interp.commands.gather_activations.gather_activations_utils import extract_activations_batched
+
+    jobs = []
+    for item in pending:
+        wanted = kept_by_step.get(item["step_id"])
+        if not wanted:
+            continue
+        start = item["output_start"]
+        # back to absolute positions, which is what the forward pass indexes by
+        by_abs = {token_idx + start: layers for token_idx, layers in wanted.items()}
+        abs_positions = sorted(p for p in by_abs if p in set(item["abs_positions"]))
+        if not abs_positions:
+            continue
+        jobs.append({
+            "step_id": item["step_id"],
+            "output_start": start,
+            "abs_positions": abs_positions,
+            "layers_by_abs": by_abs,
+            "ids": item["ids"][: abs_positions[-1] + 1],
+        })
+
+    if not jobs:
+        return 0
+
+    saved = 0
+    groups = group_consecutive(
+        [len(job["ids"]) for job in jobs],
+        max_items=max(1, forward_batch_size),
+        max_tokens=max(1, forward_batch_tokens),
+    )
+    for group in groups:
+        batch = [jobs[i] for i in group]
+        # hook the union the batch needs: index_select keeps only the requested rows, so a
+        # layer nothing wants is the only real waste, and dropping it is free
+        layers = sorted({layer for job in batch for layers in job["layers_by_abs"].values() for layer in layers})
+
+        with prof("build"):
+            width = max(len(job["ids"]) for job in batch)
+            input_ids = torch.zeros((len(batch), width), dtype=torch.long)
+            attention_mask = torch.zeros((len(batch), width), dtype=torch.long)
+            padded = False
+            for row, job in enumerate(batch):
+                n = len(job["ids"])
+                input_ids[row, :n] = torch.tensor(job["ids"], dtype=torch.long)
+                attention_mask[row, :n] = 1
+                padded |= n < width
+            if not padded:
+                attention_mask = None
+
+        with prof("forward"):
+            blocks = extract_activations_batched(
+                model, input_ids, attention_mask,
+                [job["abs_positions"] for job in batch], layers, keep_on_device=True,
+            )
+
+        offset = 0
+        for job in batch:
+            rows = slice(offset, offset + len(job["abs_positions"]))
+            offset += len(job["abs_positions"])
+            with prof("save_pt"):
+                for layer in layers:
+                    block = blocks[layer][rows].to("cpu")
+                    tokens = {
+                        abs_pos - job["output_start"]: block[j].clone()
+                        for j, abs_pos in enumerate(job["abs_positions"])
+                        if layer in job["layers_by_abs"][abs_pos]
+                    }
+                    if not tokens:
+                        continue
+                    writer_pool.submit(
+                        {layer: tokens}, output_base, step_idx=job["step_id"], category="output"
+                    )
+                    saved += len(tokens)
+        del blocks
+    return saved
+
+
 def main() -> None:
     import torch
     from scripts.inference_oss.run_inference import expand_paths
@@ -444,6 +594,32 @@ def main() -> None:
     ap.add_argument("--no-save-activations", dest="save_activations", action="store_false",
                     help="Write only the jlens CSV, no .pt files. Diagnostic: the difference "
                          "against a normal run is exactly what the activation tree costs.")
+    ap.add_argument("--signal-json", type=Path, default=None,
+                    help="Enable selective gathering: JSON mapping UP/DOWN/LEFT/RIGHT to token "
+                         "strings (e.g. data/jlens/direction_tokens_full.json). The full CSV is "
+                         "still written, but only the tokens/layers it selects get a .pt, cutting "
+                         "the activation tree ~75x. Without this the script saves everything, as "
+                         "before.")
+    ap.add_argument("--select-num-tokens", type=int, default=20,
+                    help="Tokens per trajectory kept by the jlens arm (default 20).")
+    ap.add_argument("--select-num-layers", type=int, default=3,
+                    help="Top layers kept per selected token (default 3), before --select-always-layers.")
+    ap.add_argument("--select-always-layers", default=",".join(str(i) for i in DEFAULT_ALWAYS_LAYERS),
+                    help="Layers kept for every selected token of both arms regardless of score "
+                         "(default 15, the project's standing comparison layer). Added on top of "
+                         "--select-num-layers, not counted against it. Empty string to disable.")
+    ap.add_argument("--select-random-tokens", type=int, default=20,
+                    help="Size of the matched random control arm (default 20; 0 disables it). A "
+                         "jlens_direction result means nothing without a uniform-draw control, and "
+                         "once the tree is pruned that draw can no longer be made - so it is "
+                         "reserved now. Set 0 only if you will never compare the two.")
+    ap.add_argument("--select-random-layers", type=int, default=None,
+                    help="Layers per control token (default: --select-num-layers).")
+    ap.add_argument("--select-seed", type=int, default=42,
+                    help="Seed for the control draw; combined with the trajectory stem so each "
+                         "trajectory's sample is stable regardless of processing order.")
+    ap.add_argument("--direction-classes", default="all",
+                    help="Which lists in --signal-json to count: 'all' or e.g. 'UP,DOWN'.")
     ap.add_argument("--profile", action="store_true",
                     help="Report per-phase wall time. Adds CUDA syncs, so timings are honest "
                          "but the run is slightly slower.")
@@ -520,6 +696,20 @@ def main() -> None:
         return text
 
     prof = Profiler(args.profile, args.profile and dev.type == "cuda")
+    # Selective mode defers every write to a second pass, so pass 1 runs as if
+    # --no-save-activations had been given.
+    selective = args.signal_json is not None
+    always_layers = parse_always_layers(args.select_always_layers)
+    save_in_pass_one = args.save_activations and not selective
+    if selective:
+        print(f"selective gathering: top {args.select_num_tokens} token(s) x "
+              f"{args.select_num_layers} layer(s)"
+              + (f" + always {list(always_layers)}" if always_layers else "")
+              + (f", plus {args.select_random_tokens} random control token(s)"
+                 if args.select_random_tokens else ", NO random control"), flush=True)
+        if not args.select_random_tokens:
+            print("  WARNING: without a control arm the jlens selection cannot be compared "
+                  "against anything once the rest is gone", flush=True)
     writer_pool = ActivationWriter(
         max_workers=args.io_workers if args.save_activations else 0,
         use_zipfile=args.pt_format == "zip",
@@ -639,7 +829,7 @@ def main() -> None:
                     # Save the raw residual streams in gather_activations' layout before the
                     # lens math, so layers without a jlens matrix still get written.
                     # Reasoning tokens are output tokens, keyed by output-relative index.
-                    if args.save_activations:
+                    if save_in_pass_one:
                         with prof("save_pt"):
                             output_start = item["output_start"]
                             for layer in layer_indices:
@@ -690,6 +880,60 @@ def main() -> None:
                         for layer in lens_layers:
                             writer.writerows(rows_by_layer[layer])
                 del blocks
+
+        # The CSV is complete but still under its .tmp name; the selection is computed from
+        # it and the activations gathered before it is renamed, so an interrupted run leaves
+        # no CSV and is redone rather than skipped with a half-filled activation tree.
+        if selective and args.save_activations:
+            kept = jlens_top_filter(
+                args.signal_json,
+                tmp_path,
+                num_tokens=args.select_num_tokens,
+                num_layers=args.select_num_layers,
+                always_layers=always_layers,
+                random_tokens=args.select_random_tokens,
+                random_layers=args.select_random_layers,
+                seed=args.select_seed,
+                seed_key=stem,
+                # lens_layers, not layer_indices: a layer with no jlens matrix gets no CSV
+                # rows, so it cannot be scored and must not be rankable. This is also
+                # exactly what delete_non_jlens_selected.py derives from the CSV alone,
+                # which is what keeps the two paths landing on the same files.
+                candidate_layers=lens_layers,
+                direction_classes=args.direction_classes,
+                top_k=TOP_K,
+            )
+            kept = to_disk_coords(kept, trajectory)
+            kept_by_step: dict[int, dict[int, tuple[int, ...]]] = defaultdict(dict)
+            for (step_folder, token_idx), layers in kept.merged().items():
+                kept_by_step[step_folder][token_idx] = layers
+            total_count = save_selected_activations(
+                model, pending, kept_by_step, output_base, writer_pool, prof,
+                args.forward_batch_size, args.forward_batch_tokens,
+            )
+            write_selection_record(
+                record_path(traj_dir),
+                build_record(
+                    kept,
+                    stem=stem,
+                    model=sanitized_model,
+                    config={
+                        "signal_json": str(args.signal_json),
+                        "direction_classes": args.direction_classes,
+                        "num_tokens": args.select_num_tokens,
+                        "num_layers": args.select_num_layers,
+                        "always_layers": list(always_layers),
+                        "random_tokens": args.select_random_tokens,
+                        "random_layers": args.select_random_layers,
+                        "seed": args.select_seed,
+                        "top_k": TOP_K,
+                        "candidate_layers": lens_layers,
+                    },
+                    output_starts={item["step_id"]: item["output_start"] for item in pending},
+                ),
+            )
+            print(f"  selected {len(kept.jlens)} jlens + {len(kept.random)} control token(s)"
+                  f" -> {total_count} activations", flush=True)
 
         with prof("drain_pt"):
             nan_count += writer_pool.drain()

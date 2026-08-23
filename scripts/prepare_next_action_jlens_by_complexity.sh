@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
-# next_action prepare with jlens token/layer selection, restricted to comp 0.0/0.2/0.4.
+# next_action prepare from a pruned activation tree, restricted to comp 0.0/0.2/0.4.
+#
+# Both arms come from the {stem}_jlens_selection.json that jlens_reasoning_tokens.py (with
+# --signal-json) or delete_non_jlens_selected.py wrote. Re-scoring the CSV would still find
+# the right jlens tokens, but on a pruned tree "draw N tokens uniformly" can only draw from
+# what survived -- which is not a uniform draw over the reasoning chain. The control has to
+# be read back, not recomputed.
 #
 # prepare_activations_for_probing has no complexity filter -- it processes every folder
 # under --activations-dir -- so link the wanted trajectories into a view and prepare that.
+#
+# Narrow the selection at training time, not here: split_next_action_manifest.py takes
+# --tokens-per-trajectory and --layers-per-token off a single prepared dataset, so top-1 /
+# top-2 / top-3 need one prepare between them, not three.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)   # so uv finds pyproject.toml
@@ -10,6 +20,7 @@ ACT=${ACT:-/workspace/activations/jlens_reasoning_tokens}
 TRAJ=${TRAJ:-/workspace/trajectories/reveng/trajectories_train_single_step}
 VIEW=${VIEW:-${ACT}_comp0.0-0.2-0.4}
 OUT=${OUT:-/workspace/prepared/next_action_comp0.0-0.2-0.4_jlens}
+LAYERS=${LAYERS:-7:23}   # narrows the recorded layers; e.g. 15 for a layer-15-only dataset
 
 rm -rf "$VIEW"; mkdir -p "$VIEW/activations" "$VIEW/trajectories"
 for c in 0.0 0.2 0.4; do
@@ -21,16 +32,20 @@ for c in 0.0 0.2 0.4; do
     done
 done
 
-uv run --project "$REPO" interp-cli prepare_activations_for_probing \
-    --activations-dir "$VIEW/activations" \
-    --trajectories-dir "$VIEW/trajectories" \
-    --probe-type next_action \
-    --layers 7:23 --steps all --output-indices all \
-    --token-selection jlens_direction --layer-selection jlens_direction \
-    --num-tokens 20 --num-layers 3 \
-    --direction-tokens-path /workspace/jlens/direction_tokens_full.json \
-    --output-path "$OUT" --verbose
+# Both arms, from the same record. A jlens number without its matched control means
+# nothing, so these are run together rather than the control being left as a TODO.
+for arm in jlens random; do
+    uv run --project "$REPO" interp-cli prepare_activations_for_probing \
+        --activations-dir "$VIEW/activations" \
+        --trajectories-dir "$VIEW/trajectories" \
+        --probe-type next_action \
+        --layers "$LAYERS" --steps all --output-indices all \
+        --token-selection "recorded_${arm}" \
+        --output-path "${OUT%_jlens}_${arm}" --verbose
+done
 
-# Matched control (same N/M/seed) -- required for the jlens run to mean anything:
-#   uv run interp-cli ... --token-selection random --layer-selection random \
-#       --output-path "${OUT%_jlens}_random"
+echo ""
+echo "Prepared:"
+echo "  ${OUT%_jlens}_jlens"
+echo "  ${OUT%_jlens}_random"
+echo "Train both with scripts/train_next_action_direction_probe.sh"

@@ -22,6 +22,7 @@ import torch
 from tqdm import tqdm
 
 from .jlens_token_selection import (
+    RECORDED_SELECTIONS,
     LayerSelection,
     SampleRef,
     SelectionConfig,
@@ -552,7 +553,12 @@ def _generate_dirname(
             filename = filename.replace(".pt", f"_max{max_positions_per_trajectory}.pt")
 
     # next_action selection modes: keep each variant in its own auto-named directory.
-    short = {"jlens_direction": "jl", "random": "rnd"}
+    short = {
+        "jlens_direction": "jl",
+        "random": "rnd",
+        "recorded_jlens": "recjl",
+        "recorded_random": "recrnd",
+    }
     if selection.token_selection != "all":
         tag = f"{short[selection.token_selection]}{selection.num_tokens or ''}"
         filename = filename.replace(".pt", f"_tok{tag}.pt")
@@ -661,6 +667,13 @@ def prepare_activations_for_probing(
             top-k contains the most direction tokens, read from the trajectory's
             `{name}_jlens_analysis.csv`. "random" draws `num_tokens` tokens uniformly, as a
             matched control.
+            "recorded_jlens"/"recorded_random" read the two arms of the selection a pruning
+            run already made (`{name}_jlens_selection.json`), rather than re-scoring. These
+            are the modes to use on a tree that `delete_non_jlens_selected.py` has pruned:
+            re-scoring would still find the right jlens tokens, but "random" over the
+            survivors is no longer a uniform draw over the reasoning chain, so the control
+            has to come from the record. `num_tokens` optionally caps each arm to its top-K;
+            `layers` still narrows which of the recorded layers are used.
         layer_selection: Which layers of each selected token become samples (`next_action`
             only). "spec" (default) uses every layer in `layers`; "jlens_direction" takes
             that token's top `num_layers` layers by direction count; "random" draws
@@ -717,11 +730,20 @@ def prepare_activations_for_probing(
             f"but probe_type='{probe_type}' was given."
         )
 
-    if token_selection not in ("all", "jlens_direction", "random"):
+    if token_selection not in ("all", "jlens_direction", "random", *RECORDED_SELECTIONS):
         raise ValueError(f"Unknown token_selection: '{token_selection}'")
     if layer_selection not in ("spec", "jlens_direction", "random"):
         raise ValueError(f"Unknown layer_selection: '{layer_selection}'")
-    if token_selection != "all" and num_tokens is None:
+    if token_selection in RECORDED_SELECTIONS:
+        # The record already fixed both N and the layers, so num_tokens is an optional cap
+        # and a layer_selection would be re-deciding something that is no longer re-derivable
+        # (the control arm cannot be redrawn once the tree is pruned).
+        if layer_selection != "spec":
+            raise ValueError(
+                f"token_selection='{token_selection}' fixes the layers via the selection record; "
+                f"layer_selection must stay 'spec' (got '{layer_selection}'). Narrow with --layers instead."
+            )
+    elif token_selection != "all" and num_tokens is None:
         raise ValueError(f"token_selection='{token_selection}' requires num_tokens to be set")
     if layer_selection != "spec" and num_layers is None:
         raise ValueError(f"layer_selection='{layer_selection}' requires num_layers to be set")
