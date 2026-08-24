@@ -531,12 +531,16 @@ def _make_jlens_fixture(
     num_trajectories: int = 2,
     activation_dim: int = 4,
     write_csv: bool = True,
+    lens: str = "jlens",
 ) -> tuple[Path, Path, Path]:
     """Activations + trajectory JSONs + per-trajectory jlens CSVs + a direction-token JSON.
 
     Mirrors what scripts/jlens_reasoning_tokens.py writes:
       activations/{traj}/org__model/layer_{L}/step_{S}/output/{out_idx}.pt
-      activations/{traj}/{traj}_jlens_analysis.csv
+      activations/{traj}/{traj}_{lens}_analysis.csv
+
+    `lens` names which method's CSV to write. The two lenses share a schema -- only the
+    filename differs -- which is exactly why one scoring path serves both.
     """
     import csv as _csv
 
@@ -600,7 +604,8 @@ def _make_jlens_fixture(
         if not write_csv:
             continue
 
-        csv_path = activations_dir / traj_name / f"{traj_name}_jlens_analysis.csv"
+        from telos_interp.jlens_utils import METHODS
+        csv_path = activations_dir / traj_name / f"{traj_name}{METHODS[lens].csv_suffix}"
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = _csv.writer(f)
             writer.writerow(header)
@@ -982,3 +987,134 @@ class TestRecordedSelection:
         control = _prepare_next_action(acts, trajs, tmp_path / "r", token_selection="recorded_random")
         assert len({(s["step"], s["token_id"]) for s in jlens["samples"]}) == 3
         assert len({(s["step"], s["token_id"]) for s in control["samples"]}) == 4
+
+
+class TestLogitLensSelection:
+    """The logit lens goes through the same code as the jlens, keyed only by method name.
+
+    So what is worth pinning is not the ranking -- `tests/test_jlens_utils.py` covers that
+    once for both -- but that the mode names resolve to the right CSV and the right arm.
+    """
+
+    def test_logitlens_direction_matches_jlens_direction_on_the_same_numbers(self, tmp_path):
+        """Identical CSV contents under the other lens' filename must give identical samples."""
+        (tmp_path / "j").mkdir()
+        (tmp_path / "l").mkdir()
+        j_acts, j_trajs, directions = _make_jlens_fixture(tmp_path / "j", lens="jlens")
+        l_acts, l_trajs, _ = _make_jlens_fixture(tmp_path / "l", lens="logitlens")
+
+        common = {
+            "num_tokens": 3, "num_layers": 2, "direction_tokens_path": str(directions),
+        }
+        by_jlens = _prepare_next_action(
+            j_acts, j_trajs, tmp_path / "out_j",
+            token_selection="jlens_direction", layer_selection="jlens_direction", **common,
+        )
+        by_logit = _prepare_next_action(
+            l_acts, l_trajs, tmp_path / "out_l",
+            token_selection="logitlens_direction", layer_selection="logitlens_direction", **common,
+        )
+
+        def identity(manifest):
+            return sorted(
+                (s["name"], s["step"], s["token_id"], s["layer"], s["direction_count"])
+                for s in manifest["samples"]
+            )
+
+        assert identity(by_jlens) == identity(by_logit)
+        assert identity(by_jlens), "the selection cannot legitimately be empty"
+        assert by_logit["selection"]["method"] == "logitlens"
+
+    def test_logitlens_direction_needs_the_logitlens_csv(self, tmp_path):
+        """A jlens-only tree selects nothing for the other lens rather than scoring its CSV.
+
+        Selecting nothing is prepare's existing "no activations were extracted" error, which
+        is the right outcome: an empty probe dataset should stop the pipeline, not be written.
+        """
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, lens="jlens")
+        with pytest.raises(ValueError, match="No activations were extracted"):
+            _prepare_next_action(
+                acts, trajs, tmp_path / "out", token_selection="logitlens_direction",
+                num_tokens=3, direction_tokens_path=str(directions),
+            )
+
+    def test_recorded_logitlens_reads_that_arm(self, tmp_path):
+        from telos_interp.jlens_utils import (
+            KeptTokens,
+            TokenPick,
+            build_record,
+            read_selection_record,
+            record_path,
+            write_selection_record,
+        )
+
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
+        _prune_fixture(acts, trajs, directions)
+        folder = acts / "traj_0000"
+
+        # Add a logitlens arm the way jlens_reasoning_tokens.py --extend would.
+        existing, _ = read_selection_record(record_path(folder))
+        step, token_idx = 0, 1
+        arm = {(step, token_idx): TokenPick(step, token_idx, (_JLENS_LAYERS[0],),
+                                            token="t1", direction_count=9,
+                                            layer_direction_counts={_JLENS_LAYERS[0]: 9})}
+        merged = KeptTokens({**existing.arms, "logitlens": arm})
+        write_selection_record(
+            record_path(folder),
+            build_record(merged, stem=folder.name, model="org__model", config={"seed": 42}),
+        )
+
+        manifest = _prepare_next_action(
+            acts, trajs, tmp_path / "out", token_selection="recorded_logitlens",
+        )
+        assert [(s["step"], s["token_id"], s["layer"]) for s in manifest["samples"]] == [
+            (step, token_idx, _JLENS_LAYERS[0])
+        ]
+        assert manifest["samples"][0]["direction_count"] == 9
+
+    def test_an_arm_the_record_lacks_yields_nothing(self, tmp_path, capsys):
+        """A tree pruned before the logit lens existed cannot serve that arm.
+
+        It has to be skipped rather than silently falling back to another arm -- the whole
+        point of the recorded modes is that the arm you name is the arm you get.
+        """
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
+        _prune_fixture(acts, trajs, directions)
+
+        with pytest.raises(ValueError, match="No activations were extracted"):
+            _prepare_next_action(
+                acts, trajs, tmp_path / "out", token_selection="recorded_logitlens", verbose=True,
+            )
+        assert "has no 'logitlens' arm" in capsys.readouterr().out
+
+    def test_the_two_axes_cannot_name_different_lenses(self, tmp_path):
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
+        with pytest.raises(ValueError, match="name different lenses"):
+            _prepare_next_action(
+                acts, trajs, tmp_path / "out",
+                token_selection="jlens_direction", layer_selection="logitlens_direction",
+                num_tokens=2, num_layers=1, direction_tokens_path=str(directions),
+            )
+
+    def test_unknown_mode_lists_the_registered_ones(self, tmp_path):
+        acts, trajs, _ = _make_jlens_fixture(tmp_path, num_trajectories=1)
+        with pytest.raises(ValueError, match="recorded_logitlens"):
+            _prepare_next_action(
+                acts, trajs, tmp_path / "out", token_selection="lensy_direction", num_tokens=2,
+            )
+
+    def test_each_mode_gets_its_own_auto_named_directory(self, tmp_path):
+        """The abbreviation comes from the registry, so a new method cannot KeyError here.
+
+        The previous hand-maintained lookup is exactly what produced a KeyError the last time
+        a mode was added.
+        """
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1, lens="logitlens")
+        prepare_activations_for_probing(
+            activations_dir=str(acts), trajectories_dir=str(trajs), output_path=None,
+            probe_type="next_action", layers="all", steps="all", output_indices="all",
+            verbose=False, token_selection="logitlens_direction", num_tokens=2,
+            direction_tokens_path=str(directions),
+        )
+        # "ll" is METHODS["logitlens"].abbrev; "2" is num_tokens
+        assert [d.name for d in acts.glob("*next_action_tokll2")], sorted(p.name for p in acts.iterdir())

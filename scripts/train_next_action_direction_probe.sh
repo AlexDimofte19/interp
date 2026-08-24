@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Train the next_action ("direction") probe on jlens-selected reasoning tokens,
-# against its matched random control, across a sweep of top-K token budgets.
+# Train the next_action ("direction") probe on lens-selected reasoning tokens, against
+# their matched random control, across a sweep of top-K token budgets.
 #
 # Consumes the prepared dirs written by scripts/prepare_next_action_jlens_by_complexity.sh.
-# A jlens run only means something next to a `random` run over the same trajectories --
-# the top-scoring tokens are the direction words the model already verbalized, so a high
-# number in isolation says nothing.
+# A lens run only means something next to a `random` run over the same trajectories -- the
+# top-scoring tokens are the direction words the model already verbalized, so a high number
+# in isolation says nothing. jlens vs logitlens is the second comparison: same tokens
+# available, same tree, different lens deciding which of them to keep.
 #
 # split_next_action_manifest.py reshapes each arm three ways before training:
 #   * TOKENS_PER_TRAJ -- each trajectory's K top-ranked tokens, identical to having
@@ -22,8 +23,8 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)   # so uv finds pyproject.toml
 
-JLENS=${JLENS:-/workspace/prepared/next_action_comp0.0-0.2-0.4_jlens}
-RANDOM_ARM=${RANDOM_ARM:-/workspace/prepared/next_action_comp0.0-0.2-0.4_random}
+PREPARED=${PREPARED:-/workspace/prepared/next_action_comp0.0-0.2-0.4}   # ${PREPARED}_${arm}
+ARMS=${ARMS:-"jlens logitlens random"}
 PROBES=${PROBES:-/workspace/probes/next_action_comp0.0-0.2-0.4}
 LOGS=${LOGS:-$PROBES/logs}
 
@@ -98,21 +99,22 @@ train_arm() {
     done
 }
 
-train_arm jlens "$JLENS" || true
-train_arm random "$RANDOM_ARM" || true
+for arm in $ARMS; do
+    train_arm "$arm" "${PREPARED}_${arm}" || true
+done
 
 echo ""
 echo "============================================================"
 echo "SUMMARY (best balanced accuracy)"
-echo "  read down a column for the top-K effect, across for jlens vs random"
+echo "  read down a column for the top-K effect, across for lens vs lens vs control"
 echo "============================================================"
-printf '%-8s %-6s %-6s %s\n' "arm" "top-K" "model" "result"
-for arm in jlens random; do
+printf '%-10s %-6s %-6s %s\n' "arm" "top-K" "model" "result"
+for arm in $ARMS; do
     for k in $TOKENS_PER_TRAJ; do
         for model_type in $MODEL_TYPES; do
             f="$LOGS/${arm}_top${k}_${model_type}.txt"
             [ -f "$f" ] || continue
-            printf '%-8s %-6s %-6s %s\n' "$arm" "$k" "$model_type" \
+            printf '%-10s %-6s %-6s %s\n' "$arm" "$k" "$model_type" \
                 "$(grep -m1 'Best balanced accuracy' "$f" || echo 'no result')"
         done
     done

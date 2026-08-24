@@ -90,17 +90,25 @@ import sys
 import time
 from collections import defaultdict
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 # telos_interp is an installed package; jlens_utils is stdlib-only, so importing it here
 # costs nothing and keeps --self-test runnable without torch.
 from telos_interp.jlens_utils import (
     DEFAULT_ALWAYS_LAYERS,
+    DEFAULT_METHODS,
+    METHODS,
     build_record,
-    jlens_top_filter,
+    get_method,
+    merge_records,
+    parse_methods,
+    read_raw_record,
+    read_selection_record,
     record_path,
     to_disk_coords,
+    top_filter,
     write_selection_record,
 )
 
@@ -203,9 +211,29 @@ def trajectory_activation_dir(activations_dir: Path, stem: str) -> Path:
     return activations_dir / f"size{size}" / stem if size else activations_dir / stem
 
 
+def analysis_csv(activations_dir: Path, stem: str, lens: str) -> Path:
+    """The trajectory's CSV for one lens; its existence is what marks that lens as done.
+
+    Named by `METHODS[lens].csv_suffix`, so the gather script, the pruner and
+    `prepare_activations_for_probing` all agree on the filename without repeating it.
+    """
+    return trajectory_activation_dir(activations_dir, stem) / f"{stem}{METHODS[lens].csv_suffix}"
+
+
 def jlens_csv_path(activations_dir: Path, stem: str) -> Path:
-    """The trajectory's jlens CSV; its existence is what marks the run as done."""
-    return trajectory_activation_dir(activations_dir, stem) / f"{stem}_jlens_analysis.csv"
+    """Back-compat alias for the Jacobian lens CSV."""
+    return analysis_csv(activations_dir, stem, "jlens")
+
+
+def parse_lenses(spec: str) -> list[str]:
+    """--lens value to the list of lenses to compute.
+
+    >>> parse_lenses("both")
+    ['jlens', 'logitlens']
+    >>> parse_lenses("logitlens")
+    ['logitlens']
+    """
+    return ["jlens", "logitlens"] if spec == "both" else [spec]
 
 
 def group_consecutive(sizes: list[int], max_items: int, max_tokens: int) -> list[list[int]]:
@@ -261,8 +289,13 @@ def resolve_trajectory_paths(args, expand_paths: Callable[[list[str]], list[str]
     if args.per_combo is not None:
         # --overwrite means "rebuild", so nothing counts as done and each cell
         # re-selects a full per_combo instead of topping up what is on disk.
+        # Done means *every* requested lens has a CSV: a trajectory analysed with the jlens
+        # alone is unfinished under --lens both, and must not count towards the cell.
         is_done = None if args.overwrite else (
-            lambda p: jlens_csv_path(args.activations_dir, Path(p).stem).exists()
+            lambda p: all(
+                analysis_csv(args.activations_dir, Path(p).stem, lens).exists()
+                for lens in parse_lenses(args.lens)
+            )
         )
         paths, counts = select_balanced(paths, args.per_combo, args.seed, is_done)
         print(f"{len(counts)} size x complexity cell(s), target {args.per_combo} each:", flush=True)
@@ -289,12 +322,18 @@ def apply_lens_transport(h, J_stack, J_rows, norm_w, eps):
     case where the lens is the identity. Then the model's final RMS norm, so the caller
     is left with just the unembed.
 
+    **This is also the logit lens.** Pass an empty `J_rows` and nothing is transported: each
+    layer's residual stream is normed and unembedded exactly where it sits, which is what
+    the logit lens is. The two lenses are therefore the same function called two ways, not
+    two implementations — the only other difference is which layers are eligible (the jlens
+    needs a fitted `J`, the logit lens does not).
+
     Mutates `h` in place — callers build it fresh from the residual streams each chunk.
 
     Args:
-        h: [L, b, d] fp32 stack, layer-major, in the same order as `lens_layers`
+        h: [L, b, d] fp32 stack, layer-major, in the same order as the caller's layer list
         J_stack: [T, d, d] jlens matrices, in `J_rows` order
-        J_rows: rows of `h` that `J_stack` applies to
+        J_rows: rows of `h` that `J_stack` applies to; empty for the logit lens
         norm_w: the model's final RMS norm weight, [d]
         eps: the model's rms_norm_eps
 
@@ -306,6 +345,27 @@ def apply_lens_transport(h, J_stack, J_rows, norm_w, eps):
     if J_rows.numel():
         h[J_rows] = torch.bmm(h[J_rows], J_stack.transpose(1, 2))
     return h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + eps) * norm_w
+
+
+def lens_predictions(h_layer, lm_head, id_cols):
+    """Unembed one layer's normed activations into (action ranks, action logprobs, top-k ids).
+
+    Split out of the row loop because it is the only part that differs per layer rather than
+    per lens, and because the `[b, vocab]` logits it allocates are the reason `--batch-size`
+    exists.
+
+    Returns plain Python lists — everything downstream is CSV text.
+    """
+    import torch
+
+    logits = (h_layer.to(lm_head.dtype) @ lm_head.T).float()  # [b, vocab]
+    ranks = torch.stack([(logits > logits[:, t : t + 1]).sum(1) for t in id_cols], dim=1)  # rank 0 = argmax
+    own = torch.stack([logits[:, t] for t in id_cols], dim=1)
+    logprobs = own - logits.logsumexp(-1, keepdim=True)
+    topk = logits.topk(TOP_K, dim=1).indices  # [b, TOP_K]
+    out = (ranks.cpu().tolist(), logprobs.cpu().tolist(), topk.cpu().tolist())
+    del logits, own, ranks, logprobs, topk
+    return out
 
 
 class Profiler:
@@ -417,6 +477,282 @@ def parse_always_layers(spec: str) -> tuple[int, ...]:
     return tuple(int(part) for part in spec.split(",") if part.strip())
 
 
+def build_lens_transports(lenses: list[str], layer_indices: list[int], jlens_dir: Path, dev):
+    """Per lens: the layers it can score, and the (J_stack, J_rows) transport it applies.
+
+    The two lenses differ in exactly two ways, both captured here:
+
+      * **Eligible layers.** The Jacobian lens needs a fitted `J` for a layer (TARGET_LAYER
+        excepted, where it is the identity), so a layer without one gets no jlens CSV rows —
+        it still gets its `.pt`, it just cannot be scored, and so must never be selectable.
+        The logit lens needs nothing fitted and therefore covers every requested layer.
+      * **Transport.** The jlens moves each layer into the layer-23 space first; the logit
+        lens does not. Empty J tensors make `apply_lens_transport` the identity, which *is*
+        the logit lens — the two share one code path rather than having two implementations.
+
+    Returns:
+        ({lens: layers}, {lens: (J_stack, J_rows)}), ready for the per-chunk loop. The J
+        matrices move to the device once for the whole run rather than once per step (17
+        layers x 2880^2 fp32 is ~566 MB of H2D per step).
+    """
+    import torch
+
+    empty_J = torch.empty(0, device=dev)
+    empty_rows = torch.tensor([], dtype=torch.long, device=dev)
+    layers_by_lens: dict[str, list[int]] = {}
+    transport_by_lens: dict[str, tuple] = {}
+
+    if "logitlens" in lenses:
+        layers_by_lens["logitlens"] = list(layer_indices)
+        transport_by_lens["logitlens"] = (empty_J, empty_rows)
+
+    if "jlens" in lenses:
+        lens = torch.load(jlens_dir / "gpt-oss-20b_jacobian_lens.pt", map_location="cpu")
+        jlens_layers = [i for i in layer_indices if i == TARGET_LAYER or i in lens["J"]]
+        if not jlens_layers:
+            raise SystemExit(f"none of the requested layers {layer_indices} have a jlens matrix")
+        transported = [i for i in jlens_layers if i != TARGET_LAYER]
+        J_stack = (
+            torch.stack([lens["J"][i].float() for i in transported]).to(dev)
+            if transported else empty_J
+        )
+        # rows of the per-chunk [len(jlens_layers), b, d] stack that J applies to
+        J_rows = torch.tensor([jlens_layers.index(i) for i in transported], dtype=torch.long, device=dev)
+        layers_by_lens["jlens"] = jlens_layers
+        transport_by_lens["jlens"] = (J_stack, J_rows)
+        skipped = sorted(set(layer_indices) - set(jlens_layers))
+        if skipped:
+            print(f"no jlens matrix for layers {skipped}: activations saved, no jlens CSV rows", flush=True)
+
+    return layers_by_lens, transport_by_lens
+
+
+def validate_selection_args(args, selective: bool, select_methods: list[str], lenses: list[str],
+                            always_layers: tuple[int, ...]) -> None:
+    """Reject impossible selection flag combinations, and say what this run will select.
+
+    The one that matters is a scored arm whose lens is not being computed: without its CSV
+    that arm would come back silently empty after a full forward pass.
+    """
+    if args.extend and not selective:
+        raise SystemExit("--extend needs --signal-json: there is no selection to extend without one")
+    if args.dry_run and not args.extend:
+        raise SystemExit("--dry-run currently only applies to --extend")
+    if not selective:
+        return
+
+    scored = [m for m in select_methods if get_method(m).scored]
+    unscored = [m for m in select_methods if not get_method(m).scored]
+    missing_csv = [m for m in scored if m not in lenses]
+    if missing_csv:
+        raise SystemExit(
+            f"--select-methods asks for {missing_csv} but --lens {args.lens} writes no CSV for "
+            f"{'it' if len(missing_csv) == 1 else 'them'}; use --lens both"
+        )
+    print(f"selective gathering [{', '.join(select_methods)}]: top {args.select_num_tokens} "
+          f"token(s) x {args.select_num_layers} layer(s)"
+          + (f" + always {list(always_layers)}" if always_layers else "")
+          + (f", plus {args.select_random_tokens} control token(s)"
+             if unscored and args.select_random_tokens else ""), flush=True)
+    if unscored and args.select_random_tokens:
+        return
+    # Not fatal: --extend inherits the control the record already holds, which is the normal
+    # way to add a lens arm to a tree that has already been pruned.
+    print("  NOTE: no control arm is being drawn. "
+          + ("--extend will inherit the one in the record."
+             if args.extend
+             else "WARNING: on a fresh trajectory this is unrecoverable -- once the tree holds "
+                  "only the lens arm, a uniform draw over the chain cannot be made again. "
+                  "Add 'random' to --select-methods."), flush=True)
+
+
+@dataclass
+class TrajectoryPlan:
+    """What one trajectory needs from this invocation, or why it needs nothing."""
+
+    new_methods: list[str]  # arms to compute (all of them, unless --extend)
+    active: list[str]  # lenses whose CSV this run writes
+    existing_record: dict | None  # the record to merge into, under --extend
+    skip: str = ""  # non-empty means: report this and move on
+
+
+def plan_trajectory(traj_dir: Path, csv_paths: dict[str, Path], select_methods: list[str],
+                    lenses: list[str], extend: bool, overwrite: bool) -> TrajectoryPlan:
+    """Decide what still has to be done for one trajectory.
+
+    Under `--extend` this is what makes an already-pruned tree safe to add an arm to: the
+    arms the record already holds are neither recomputed nor redrawn, and only the lenses
+    whose arm is genuinely missing get a CSV pass.
+    """
+    if not extend:
+        active = list(lenses)
+        have = [lens for lens in active if csv_paths[lens].exists()]
+        if have and not overwrite and len(have) == len(active):
+            return TrajectoryPlan([], [], None, skip=f"CSV(s) for {have} exist (use --overwrite to redo)")
+        return TrajectoryPlan(list(select_methods), active, None)
+
+    path = record_path(traj_dir)
+    if not path.exists():
+        # Refusing here rather than falling back to a full selection: on a pruned tree a
+        # full gather would be a very different, much larger operation than asked for.
+        return TrajectoryPlan([], [], None, skip=f"--extend but no selection record at {path}")
+
+    existing = read_raw_record(path)
+    recorded, _ = read_selection_record(path)
+    new_methods = [m for m in select_methods if m not in recorded.arms]
+    if not new_methods:
+        return TrajectoryPlan([], [], None, skip=f"record already holds {recorded.names}, nothing to add")
+    active = [lens for lens in lenses if lens in new_methods or not csv_paths[lens].exists()]
+    return TrajectoryPlan(new_methods, active, existing)
+
+
+def build_pending(trajectory: dict, step_idxs: list[int], n_prefix: int, n_suffix: int) -> list[dict]:
+    """Everything each step needs, resolved before any of them runs.
+
+    Resolved up front so steps can be grouped by the length of the sequence they will need,
+    and so pass 2 can re-forward from the same records without re-reading the trajectory.
+    Steps with no reasoning tokens are dropped rather than carried as empty work.
+    """
+    prefix_ids = [t["token_id"] for t in trajectory["prompt"]["prompt_prefix_tokens"]]
+    suffix_ids = [t["token_id"] for t in trajectory["prompt"]["prompt_suffix_tokens"]]
+    pending = []
+    for si in step_idxs:
+        step = trajectory["steps"][si]
+        positions = reasoning_token_positions(trajectory, step)
+        if not positions:
+            continue
+        abs_positions = [p[1] for p in positions]
+        # full prompt = prefix + grid + suffix + output; truncate at the last needed pos
+        all_ids = (
+            prefix_ids
+            + [t["token_id"] for t in step["grid_state_tokens"]]
+            + suffix_ids
+            + [t["token_id"] for t in step["output_tokens"]]
+        )
+        pending.append({
+            "si": si,
+            "step_id": step["step_id"],
+            "agent_action": step.get("agent_action", ""),
+            "positions": positions,
+            "abs_positions": abs_positions,
+            "output_start": n_prefix + len(step["grid_state_tokens"]) + n_suffix,
+            "ids": all_ids[: max(abs_positions) + 1],
+        })
+    return pending
+
+
+def finalize_selection(*, args, stem, traj_dir, trajectory, pending, new_methods, tmp_paths,
+                       always_layers, existing_record, model, output_base, sanitized_model,
+                       writer_pool, prof) -> int | None:
+    """Filter the freshly-written CSVs, gather what they select, and record the choice.
+
+    Runs while the CSVs are still under their `.tmp` names: the selection is computed from
+    them and the activations gathered *before* they are renamed, so an interrupted run
+    leaves no CSV and is redone rather than skipped with a half-filled activation tree.
+
+    Returns:
+        The number of activation files written, or **None** when nothing was committed —
+        a `--dry-run`, or a record that was refused because writing it would have destroyed
+        an arm. The caller discards the `.tmp` CSVs in that case, leaving the trajectory
+        exactly as it was.
+    """
+    kept = top_filter(
+        args.signal_json,
+        traj_dir,
+        methods=new_methods,
+        num_tokens=args.select_num_tokens,
+        num_layers=args.select_num_layers,
+        always_layers=always_layers,
+        random_tokens=args.select_random_tokens,
+        random_layers=args.select_random_layers,
+        seed=args.select_seed,
+        seed_key=stem,
+        direction_classes=args.direction_classes,
+        top_k=TOP_K,
+        # The CSVs are still under their .tmp names, which is not where analysis_csv_path
+        # looks. Layer pools are left to default: each arm takes the layers its own CSV has
+        # rows for, which is exactly what delete_non_jlens_selected.py derives from the CSV
+        # alone -- and what keeps a pruned tree and a filtered gather on the same files.
+        csv_paths=tmp_paths,
+    )
+    kept = to_disk_coords(kept, trajectory)
+    summary = ", ".join(f"{len(kept[m])} {m}" for m in kept.names)
+
+    if args.dry_run:
+        would, present = _extension_cost(kept, output_base)
+        print(f"  DRY RUN: {summary} token(s); {present} file(s) already present, "
+              f"{would} to write", flush=True)
+        return None
+
+    record = build_record(
+        kept,
+        stem=stem,
+        model=sanitized_model,
+        config={
+            "signal_json": str(args.signal_json),
+            "direction_classes": args.direction_classes,
+            "num_tokens": args.select_num_tokens,
+            "num_layers": args.select_num_layers,
+            "always_layers": list(always_layers),
+            "random_tokens": args.select_random_tokens,
+            "random_layers": args.select_random_layers,
+            "seed": args.select_seed,
+            "top_k": TOP_K,
+            "lens": args.lens,
+        },
+        output_starts={item["step_id"]: item["output_start"] for item in pending},
+    )
+    if existing_record is not None:
+        # Arms already recorded keep their picks and their config verbatim. Redrawing a
+        # control against a pruned chain would sample the survivors, not the chain.
+        record = merge_records(existing_record, record)
+    elif not args.overwrite_record:
+        dropped = _arms_that_would_be_lost(record_path(traj_dir), record)
+        if dropped:
+            print(f"  REFUSED: writing this record would drop arm(s) {dropped} that cannot be "
+                  f"recomputed; re-run with --extend (to merge) or --overwrite-record", flush=True)
+            return None
+
+    kept_by_step: dict[int, dict[int, tuple[int, ...]]] = defaultdict(dict)
+    for (step_folder, token_idx), layers in kept.merged().items():
+        kept_by_step[step_folder][token_idx] = layers
+    total_count = save_selected_activations(
+        model, pending, kept_by_step, output_base, writer_pool, prof,
+        args.forward_batch_size, args.forward_batch_tokens,
+        skip_existing=args.extend,
+    )
+    write_selection_record(record_path(traj_dir), record)
+    print(f"  selected {summary} token(s) -> {total_count} activations", flush=True)
+    return total_count
+
+
+def _extension_cost(kept, output_base: Path) -> tuple[int, int]:
+    """(files this selection would write, files it already has) under `output_base`.
+
+    What --dry-run reports. The arms overlap heavily on genuinely direction-loaded tokens,
+    so the second number is usually large and the first is what actually costs disk.
+    """
+    paths = kept.activation_paths(output_base)
+    present = sum(1 for p in paths if p.exists())
+    return len(paths) - present, present
+
+
+def _arms_that_would_be_lost(path: Path, record: dict) -> list[str]:
+    """Arms an existing record holds that `record` does not — i.e. what writing it destroys.
+
+    An unscored control arm is a uniform draw over the *full* reasoning chain. Once the tree
+    is pruned, that draw exists nowhere else, so silently replacing the record that holds it
+    is unrecoverable data loss rather than an overwrite.
+    """
+    if not path.exists():
+        return []
+    try:
+        existing = read_raw_record(path)
+    except (ValueError, json.JSONDecodeError):
+        return []
+    return sorted(set(existing.get("arms", {})) - set(record.get("arms", {})))
+
+
 def save_selected_activations(
     model,
     pending: list[dict],
@@ -426,6 +762,7 @@ def save_selected_activations(
     prof: "Profiler",
     forward_batch_size: int,
     forward_batch_tokens: int,
+    skip_existing: bool = False,
 ) -> int:
     """Second pass: re-forward only what the selection needs, write only what it keeps.
 
@@ -440,6 +777,9 @@ def save_selected_activations(
         pending: the per-step records built for pass 1 (`ids`, `abs_positions`, `step_id`,
             `output_start`).
         kept_by_step: {step folder: {output-relative token index: layers to keep}}.
+        skip_existing: drop (token, layer) pairs whose `.pt` is already on disk. Used when
+            extending a tree that already holds another arm — the arms overlap heavily on
+            genuinely direction-loaded tokens, and rewriting an identical tensor is pure IO.
 
     Returns:
         Number of activation files queued for writing.
@@ -453,6 +793,19 @@ def save_selected_activations(
         if not wanted:
             continue
         start = item["output_start"]
+        if skip_existing:
+            wanted = {
+                token_idx: tuple(
+                    layer
+                    for layer in layers
+                    if not (output_base / f"layer_{layer}" / f"step_{item['step_id']}"
+                            / "output" / f"{token_idx}.pt").exists()
+                )
+                for token_idx, layers in wanted.items()
+            }
+            wanted = {token_idx: layers for token_idx, layers in wanted.items() if layers}
+            if not wanted:
+                continue
         # back to absolute positions, which is what the forward pass indexes by
         by_abs = {token_idx + start: layers for token_idx, layers in wanted.items()}
         abs_positions = sorted(p for p in by_abs if p in set(item["abs_positions"]))
@@ -592,27 +945,57 @@ def main() -> None:
                          "directory; both load under weights_only=True. Measure with "
                          "--benchmark-pt-write before switching.")
     ap.add_argument("--no-save-activations", dest="save_activations", action="store_false",
-                    help="Write only the jlens CSV, no .pt files. Diagnostic: the difference "
+                    help="Write only the lens CSV(s), no .pt files. Diagnostic: the difference "
                          "against a normal run is exactly what the activation tree costs.")
+    ap.add_argument("--lens", choices=["jlens", "logitlens", "both"], default="jlens",
+                    help="Which lens(es) to apply. 'jlens' (default) transports each layer into "
+                         "the layer-23 space through its fitted Jacobian before the unembed; "
+                         "'logitlens' unembeds each layer where it sits, needs no fitted matrix, "
+                         "and therefore covers every requested layer rather than only the lensed "
+                         "ones. 'both' emits both CSVs from ONE forward pass -- the extra cost is "
+                         "a second unembed per chunk, not a second pass. Only 'jlens'/'both' load "
+                         "gpt-oss-20b_jacobian_lens.pt.")
     ap.add_argument("--signal-json", type=Path, default=None,
                     help="Enable selective gathering: JSON mapping UP/DOWN/LEFT/RIGHT to token "
-                         "strings (e.g. data/jlens/direction_tokens_full.json). The full CSV is "
-                         "still written, but only the tokens/layers it selects get a .pt, cutting "
+                         "strings (e.g. data/jlens/direction_tokens_full.json). The full CSV(s) "
+                         "are still written, but only the tokens/layers selected get a .pt, cutting "
                          "the activation tree ~75x. Without this the script saves everything, as "
                          "before.")
+    ap.add_argument("--select-methods", default=",".join(DEFAULT_METHODS),
+                    help="Comma-separated arms to select and record (default 'jlens,random'). "
+                         f"Available: {','.join(METHODS)}. An unscored arm needs a lens alongside "
+                         "it to enumerate the reasoning chain. Every arm's files are kept -- the "
+                         "union is what survives on disk.")
+    ap.add_argument("--extend", action="store_true",
+                    help="Add arms to a trajectory that already has a selection record, instead of "
+                         "replacing it. Arms already recorded are preserved VERBATIM (picks and "
+                         "config both) and never redrawn; only arms the record lacks are computed, "
+                         "and only their not-yet-present .pt files are written. This is the only "
+                         "safe way to add a lens to a tree that has already been pruned: redrawing "
+                         "a control arm against a pruned chain would sample the survivors, not the "
+                         "chain.")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="With --extend: report per trajectory what would be added (new tokens per "
+                         "arm, files already present, files to write, estimated bytes) and write "
+                         "nothing. Run this before committing disk to an extension.")
+    ap.add_argument("--overwrite-record", action="store_true",
+                    help="Permit replacing a selection record that holds arms the new one does not. "
+                         "Refused by default: an unscored control arm cannot be redrawn once the "
+                         "tree is pruned, so dropping it from the record destroys it permanently.")
     ap.add_argument("--select-num-tokens", type=int, default=20,
-                    help="Tokens per trajectory kept by the jlens arm (default 20).")
+                    help="Tokens per trajectory kept by each scored (lens) arm (default 20).")
     ap.add_argument("--select-num-layers", type=int, default=3,
                     help="Top layers kept per selected token (default 3), before --select-always-layers.")
     ap.add_argument("--select-always-layers", default=",".join(str(i) for i in DEFAULT_ALWAYS_LAYERS),
-                    help="Layers kept for every selected token of both arms regardless of score "
+                    help="Layers kept for every selected token of every arm regardless of score "
                          "(default 15, the project's standing comparison layer). Added on top of "
                          "--select-num-layers, not counted against it. Empty string to disable.")
     ap.add_argument("--select-random-tokens", type=int, default=20,
-                    help="Size of the matched random control arm (default 20; 0 disables it). A "
-                         "jlens_direction result means nothing without a uniform-draw control, and "
-                         "once the tree is pruned that draw can no longer be made - so it is "
-                         "reserved now. Set 0 only if you will never compare the two.")
+                    help="Size of an unscored (control) arm (default 20; 0 disables it). A lens "
+                         "result means nothing without a uniform-draw control, and once the tree "
+                         "is pruned that draw can no longer be made - so it is reserved now. Only "
+                         "leave the control out when the record already holds one to inherit "
+                         "(see --extend), or when you will never compare the two.")
     ap.add_argument("--select-random-layers", type=int, default=None,
                     help="Layers per control token (default: --select-num-layers).")
     ap.add_argument("--select-seed", type=int, default=42,
@@ -654,8 +1037,8 @@ def main() -> None:
     layer_indices = parse_index_specification(args.layers, num_layers)
     print(f"{num_layers} layers; extracting {layer_indices}", flush=True)
 
-    print("loading jlens + unembed assets...", flush=True)
-    lens = torch.load(args.jlens_dir / "gpt-oss-20b_jacobian_lens.pt", map_location="cpu")
+    lenses = parse_lenses(args.lens)
+    print(f"loading unembed assets ({', '.join(lenses)})...", flush=True)
     assets = ensure_unembed_assets(args.jlens_dir)
     ids, tok = action_token_ids()
     id_cols = [ids[a] for a in ACTIONS]
@@ -665,24 +1048,7 @@ def main() -> None:
     norm_w = assets["norm_weight"].float().to(dev)
     eps = assets["rms_eps"]
 
-    # The lens matrices never change, so they move to the device once for the whole run
-    # rather than once per step (17 layers x 2880^2 fp32 is ~566 MB of H2D per step).
-    # A layer with no J is dropped from the CSV exactly as before, but still gets its .pt;
-    # TARGET_LAYER is the identity case and is checked first even if lens["J"] has an
-    # entry for it.
-    lens_layers = [i for i in layer_indices if i == TARGET_LAYER or i in lens["J"]]
-    if not lens_layers:
-        raise SystemExit(f"none of the requested layers {layer_indices} have a jlens matrix")
-    transported = [i for i in lens_layers if i != TARGET_LAYER]
-    J_stack = (
-        torch.stack([lens["J"][i].float() for i in transported]).to(dev)
-        if transported else torch.empty(0, device=dev)
-    )
-    # rows of the per-chunk [len(lens_layers), b, d] stack that J applies to
-    J_rows = torch.tensor([lens_layers.index(i) for i in transported], dtype=torch.long, device=dev)
-    skipped = sorted(set(layer_indices) - set(lens_layers))
-    if skipped:
-        print(f"no jlens matrix for layers {skipped}: activations saved, no CSV rows", flush=True)
+    layers_by_lens, transport_by_lens = build_lens_transports(lenses, layer_indices, args.jlens_dir, dev)
 
     # tok.decode() is a round-trip into the Rust tokenizer, and the row loop asks for TOP_K
     # of them per row - millions per trajectory on a long chain. The top-k sets repeat
@@ -700,16 +1066,9 @@ def main() -> None:
     # --no-save-activations had been given.
     selective = args.signal_json is not None
     always_layers = parse_always_layers(args.select_always_layers)
+    select_methods = parse_methods(args.select_methods)
     save_in_pass_one = args.save_activations and not selective
-    if selective:
-        print(f"selective gathering: top {args.select_num_tokens} token(s) x "
-              f"{args.select_num_layers} layer(s)"
-              + (f" + always {list(always_layers)}" if always_layers else "")
-              + (f", plus {args.select_random_tokens} random control token(s)"
-                 if args.select_random_tokens else ", NO random control"), flush=True)
-        if not args.select_random_tokens:
-            print("  WARNING: without a control arm the jlens selection cannot be compared "
-                  "against anything once the rest is gone", flush=True)
+    validate_selection_args(args, selective, select_methods, lenses, always_layers)
     writer_pool = ActivationWriter(
         max_workers=args.io_workers if args.save_activations else 0,
         use_zipfile=args.pt_format == "zip",
@@ -727,60 +1086,43 @@ def main() -> None:
     for traj_path in paths:
         stem = Path(traj_path).stem
         traj_dir = trajectory_activation_dir(args.activations_dir, stem)
-        csv_path = jlens_csv_path(args.activations_dir, stem)
-        if csv_path.exists() and not args.overwrite:
-            print(f"{stem}: CSV exists, skipping (use --overwrite to redo)", flush=True)
+        csv_paths = {lens: analysis_csv(args.activations_dir, stem, lens) for lens in lenses}
+
+        plan = plan_trajectory(traj_dir, csv_paths, select_methods, lenses, args.extend, args.overwrite)
+        if plan.skip:
+            print(f"{stem}: {plan.skip}, skipping", flush=True)
             continue
+        new_methods, active, existing_record = plan.new_methods, plan.active, plan.existing_record
 
         with open(traj_path) as f:
             trajectory = json.load(f)
         name = parse_name(stem)
         n_steps = len(trajectory["steps"])
         step_idxs = parse_index_specification(args.steps, n_steps, clamp=True)
-        print(f"{stem}: {len(step_idxs)}/{n_steps} steps", flush=True)
+        print(f"{stem}: {len(step_idxs)}/{n_steps} steps"
+              + (f" (extending with {new_methods})" if args.extend else ""), flush=True)
 
         n_prefix = len(trajectory["prompt"]["prompt_prefix_tokens"])
         n_suffix = len(trajectory["prompt"]["prompt_suffix_tokens"])
         output_base = traj_dir / sanitized_model
         traj_dir.mkdir(parents=True, exist_ok=True)
-        # write to a temp file and rename at the end, so a crashed run leaves no CSV
+        # write to temp files and rename at the end, so a crashed run leaves no CSV
         # and is redone on the next invocation instead of being skipped as done
-        tmp_path = csv_path.with_suffix(".csv.tmp")
+        tmp_paths = {lens: csv_paths[lens].with_suffix(".csv.tmp") for lens in active}
         nan_count = 0
         total_count = 0
 
-        with open(tmp_path, "w", newline="", encoding="utf-8") as fh:
-            writer = csv.writer(fh)
-            writer.writerow(header)
+        with ExitStack() as stack:
+            handles = {
+                lens: stack.enter_context(open(tmp_paths[lens], "w", newline="", encoding="utf-8"))
+                for lens in active
+            }
+            writers = {lens: csv.writer(fh) for lens, fh in handles.items()}
+            for w in writers.values():
+                w.writerow(header)
 
-            # Everything a step needs, resolved up front so steps can be grouped by the
-            # length of the sequence they will need before any of them runs.
             with prof("build"):
-                prefix_ids = [t["token_id"] for t in trajectory["prompt"]["prompt_prefix_tokens"]]
-                suffix_ids = [t["token_id"] for t in trajectory["prompt"]["prompt_suffix_tokens"]]
-                pending = []
-                for si in step_idxs:
-                    step = trajectory["steps"][si]
-                    positions = reasoning_token_positions(trajectory, step)
-                    if not positions:
-                        continue
-                    abs_positions = [p[1] for p in positions]
-                    # full prompt = prefix + grid + suffix + output; truncate at the last needed pos
-                    all_ids = (
-                        prefix_ids
-                        + [t["token_id"] for t in step["grid_state_tokens"]]
-                        + suffix_ids
-                        + [t["token_id"] for t in step["output_tokens"]]
-                    )
-                    pending.append({
-                        "si": si,
-                        "step_id": step["step_id"],
-                        "agent_action": step.get("agent_action", ""),
-                        "positions": positions,
-                        "abs_positions": abs_positions,
-                        "output_start": n_prefix + len(step["grid_state_tokens"]) + n_suffix,
-                        "ids": all_ids[: max(abs_positions) + 1],
-                    })
+                pending = build_pending(trajectory, step_idxs, n_prefix, n_suffix)
 
             groups = group_consecutive(
                 [len(p["ids"]) for p in pending],
@@ -844,102 +1186,70 @@ def main() -> None:
 
                     # chunk reasoning tokens so [B, vocab] logits stay bounded (bs=0 -> whole step)
                     bs = args.batch_size or n_pos
-                    # buffered per layer so the CSV keeps its layer-major row order while the
-                    # lens transport runs as one bmm across layers
-                    rows_by_layer: dict[int, list] = {layer: [] for layer in lens_layers}
+                    # buffered per (lens, layer) so each CSV keeps its layer-major row order
+                    # while each lens' transport runs as one bmm across its layers
+                    rows_by_lens: dict[str, dict[int, list]] = {
+                        lens: {layer: [] for layer in layers_by_lens[lens]} for lens in active
+                    }
                     row_prefix = [name["size"], name["comp"], name["run"], item["si"]]
                     for i in range(0, n_pos, bs):
                         chunk = positions[i : i + bs]
                         with torch.no_grad():
-                            with prof("lens"):
-                                # [L, b, d] straight off the device, no host round-trip
-                                h = torch.stack([blocks[layer][rows][i : i + bs] for layer in lens_layers]).float()
-                                h = apply_lens_transport(h, J_stack, J_rows, norm_w, eps)
-                            for li, layer in enumerate(lens_layers):
+                            # One forward pass feeds every lens: the residual streams in
+                            # `blocks` are the same, only the transport before the unembed
+                            # differs. This is what makes --lens both cost one extra unembed
+                            # rather than a second pass.
+                            for lens_name in active:
+                                lens_layer_list = layers_by_lens[lens_name]
+                                J_stack, J_rows = transport_by_lens[lens_name]
                                 with prof("lens"):
-                                    logits = (h[li].to(lm_head.dtype) @ lm_head.T).float()  # [b, vocab]
-                                    ranks = torch.stack(
-                                        [(logits > logits[:, t : t + 1]).sum(1) for t in id_cols], dim=1
-                                    )  # [b, 4], rank 0 = argmax
-                                    own = torch.stack([logits[:, t] for t in id_cols], dim=1)
-                                    logprobs = own - logits.logsumexp(-1, keepdim=True)
-                                    topk = logits.topk(TOP_K, dim=1).indices  # [b, TOP_K]
-                                    ranks = ranks.cpu().tolist()
-                                    logprobs = logprobs.cpu().tolist()
-                                    topk = topk.cpu().tolist()
-                                    del logits, own
-                                with prof("rows"):
-                                    rows_by_layer[layer].extend(
-                                        row_prefix + [rp, ap, token, layer, item["agent_action"]]
-                                        + r
-                                        + [round(x, 4) for x in lp]
-                                        + [decode_id(t) for t in tk]
-                                        for (rp, ap, token), r, lp, tk in zip(chunk, ranks, logprobs, topk, strict=True)
-                                    )
+                                    # [L, b, d] straight off the device, no host round-trip
+                                    h = torch.stack(
+                                        [blocks[layer][rows][i : i + bs] for layer in lens_layer_list]
+                                    ).float()
+                                    h = apply_lens_transport(h, J_stack, J_rows, norm_w, eps)
+                                for li, layer in enumerate(lens_layer_list):
+                                    with prof("lens"):
+                                        ranks, logprobs, topk = lens_predictions(h[li], lm_head, id_cols)
+                                    with prof("rows"):
+                                        rows_by_lens[lens_name][layer].extend(
+                                            row_prefix + [rp, ap, token, layer, item["agent_action"]]
+                                            + r
+                                            + [round(x, 4) for x in lp]
+                                            + [decode_id(t) for t in tk]
+                                            for (rp, ap, token), r, lp, tk in zip(
+                                                chunk, ranks, logprobs, topk, strict=True
+                                            )
+                                        )
+                                del h
                     with prof("csv"):
-                        for layer in lens_layers:
-                            writer.writerows(rows_by_layer[layer])
+                        for lens_name in active:
+                            for layer in layers_by_lens[lens_name]:
+                                writers[lens_name].writerows(rows_by_lens[lens_name][layer])
                 del blocks
 
-        # The CSV is complete but still under its .tmp name; the selection is computed from
-        # it and the activations gathered before it is renamed, so an interrupted run leaves
-        # no CSV and is redone rather than skipped with a half-filled activation tree.
+        # The CSVs are complete but still under their .tmp names; the selection is computed
+        # from them and the activations gathered before they are renamed, so an interrupted
+        # run leaves no CSV and is redone rather than skipped with a half-filled tree.
         if selective and args.save_activations:
-            kept = jlens_top_filter(
-                args.signal_json,
-                tmp_path,
-                num_tokens=args.select_num_tokens,
-                num_layers=args.select_num_layers,
-                always_layers=always_layers,
-                random_tokens=args.select_random_tokens,
-                random_layers=args.select_random_layers,
-                seed=args.select_seed,
-                seed_key=stem,
-                # lens_layers, not layer_indices: a layer with no jlens matrix gets no CSV
-                # rows, so it cannot be scored and must not be rankable. This is also
-                # exactly what delete_non_jlens_selected.py derives from the CSV alone,
-                # which is what keeps the two paths landing on the same files.
-                candidate_layers=lens_layers,
-                direction_classes=args.direction_classes,
-                top_k=TOP_K,
+            total_count = finalize_selection(
+                args=args, stem=stem, traj_dir=traj_dir, trajectory=trajectory, pending=pending,
+                new_methods=new_methods, tmp_paths=tmp_paths, always_layers=always_layers,
+                existing_record=existing_record, model=model, output_base=output_base,
+                sanitized_model=sanitized_model, writer_pool=writer_pool, prof=prof,
             )
-            kept = to_disk_coords(kept, trajectory)
-            kept_by_step: dict[int, dict[int, tuple[int, ...]]] = defaultdict(dict)
-            for (step_folder, token_idx), layers in kept.merged().items():
-                kept_by_step[step_folder][token_idx] = layers
-            total_count = save_selected_activations(
-                model, pending, kept_by_step, output_base, writer_pool, prof,
-                args.forward_batch_size, args.forward_batch_tokens,
-            )
-            write_selection_record(
-                record_path(traj_dir),
-                build_record(
-                    kept,
-                    stem=stem,
-                    model=sanitized_model,
-                    config={
-                        "signal_json": str(args.signal_json),
-                        "direction_classes": args.direction_classes,
-                        "num_tokens": args.select_num_tokens,
-                        "num_layers": args.select_num_layers,
-                        "always_layers": list(always_layers),
-                        "random_tokens": args.select_random_tokens,
-                        "random_layers": args.select_random_layers,
-                        "seed": args.select_seed,
-                        "top_k": TOP_K,
-                        "candidate_layers": lens_layers,
-                    },
-                    output_starts={item["step_id"]: item["output_start"] for item in pending},
-                ),
-            )
-            print(f"  selected {len(kept.jlens)} jlens + {len(kept.random)} control token(s)"
-                  f" -> {total_count} activations", flush=True)
+            if total_count is None:  # dry run, or a refused record: nothing was committed
+                for tmp in tmp_paths.values():
+                    tmp.unlink(missing_ok=True)
+                continue
 
         with prof("drain_pt"):
             nan_count += writer_pool.drain()
-        os.replace(tmp_path, csv_path)
+        for lens_name in active:
+            os.replace(tmp_paths[lens_name], csv_paths[lens_name])
         written += 1
-        print(f"  wrote {csv_path} ({total_count} activations)", flush=True)
+        print(f"  wrote {', '.join(str(csv_paths[x]) for x in active)} "
+              f"({total_count} activations)", flush=True)
         if nan_count > 0:
             print(f"  WARNING: {nan_count}/{total_count} activations contain NaN values!")
             print("  This is often caused by multi-GPU setups. Try using CUDA_VISIBLE_DEVICES=0")

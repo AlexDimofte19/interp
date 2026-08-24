@@ -1,33 +1,52 @@
 """The `{stem}_jlens_selection.json` provenance file.
 
 Once a trajectory's activation tree has been pruned to a selection, the selection itself
-becomes the only record of *why* those files are the survivors — and, for the random control
-arm, the only record of which of the survivors are the control. Re-deriving it from the CSV
-would work for the jlens arm but not the control: after pruning, a uniform draw over the
+becomes the only record of *why* those files are the survivors — and, for an unscored
+control arm, the only record of which of the survivors are the control. Re-deriving it from
+a CSV would work for a lens arm but not the control: after pruning, a uniform draw over the
 surviving tokens is no longer a uniform draw over the reasoning chain.
 
 So both `scripts/jlens_reasoning_tokens.py` (which prunes as it writes) and
 `scripts/delete_non_jlens_selected.py` (which prunes after the fact) drop this file next to
-the CSV, and `prepare_activations_for_probing`'s `recorded_jlens` / `recorded_random` modes
-read it back instead of re-scoring.
+the CSVs, and `prepare_activations_for_probing`'s `recorded_*` modes read it back instead of
+re-scoring.
 
 Positions are **disk coordinates**: `step` is the `step_M` folder and `token_idx` the `.pt`
-filename. `abs_pos` is carried along so a row can still be traced back to the CSV.
+filename. `abs_pos` is carried along so a row can still be traced back to a CSV.
+
+Format
+------
+v2 keys the arms by method name and gives each its **own config block**::
+
+    {"format_version": 2, "stem": ..., "model": ...,
+     "arms": {"jlens":     {"config": {...}, "picks": [...]},
+              "logitlens": {"config": {...}, "picks": [...]},
+              "random":    {"config": {...}, "picks": [...]}}}
+
+Per-arm config is not tidiness: an arm added later by an incremental gather carries that
+run's parameters, while the arms already on disk carry the original pruning run's. One
+shared block would have to misreport one of them.
+
+v1 — a flat `jlens`/`random` pair of lists and a single `config` — is still **read**, and
+must stay readable: every trajectory pruned before this change has a v1 record, and it is
+the only surviving trace of that trajectory's control arm. `_from_v1` lifts it into the v2
+shape in memory. The filename is unchanged for the same reason.
 """
 
 import json
 from pathlib import Path
 
-from .top_filter import KeptTokens, TokenPick
+from .top_filter import Arm, KeptTokens, TokenPick
 
 RECORD_SUFFIX = "_jlens_selection.json"
-RECORD_FORMAT_VERSION = 1
+RECORD_FORMAT_VERSION = 2
 
-ARMS = ("jlens", "random")
+# The arms a v1 record could hold, in the order it wrote them.
+V1_ARMS = ("jlens", "random")
 
 
 def record_path(trajectory_folder: Path) -> Path:
-    """`<folder>/<folder name>_jlens_selection.json`, beside the jlens CSV."""
+    """`<folder>/<folder name>_jlens_selection.json`, beside the analysis CSVs."""
     return trajectory_folder / f"{trajectory_folder.name}{RECORD_SUFFIX}"
 
 
@@ -39,7 +58,7 @@ def _pick_to_json(pick: TokenPick, output_start: int | None) -> dict:
     }
     if output_start is not None:
         entry["abs_pos"] = pick.pos + output_start
-    # Omitted entirely for the random arm -- see TokenPick's docstring for why the absence
+    # Omitted entirely for an unscored arm -- see TokenPick's docstring for why the absence
     # matters rather than merely being tidy.
     if pick.direction_count is not None:
         entry["token"] = pick.token
@@ -70,22 +89,73 @@ def build_record(
 ) -> dict:
     """Serialise a disk-coordinate `KeptTokens` into the record's JSON shape.
 
+    `config` describes the run that produced *these* arms and is stored against each of
+    them; merging two records is what gives a file arms with differing configs.
+
     `output_starts` maps a step folder index to that step's `output_start`, used only to
     restore the `abs_pos` column; leave it out and the field is omitted.
     """
-    record: dict = {
+    return {
         "format_version": RECORD_FORMAT_VERSION,
         "stem": stem,
         "model": model,
-        "config": config,
+        "arms": {
+            name: {
+                "config": config,
+                "picks": [
+                    _pick_to_json(pick, (output_starts or {}).get(pick.step))
+                    for _, pick in sorted(arm.items())
+                ],
+            }
+            for name, arm in kept.arms.items()
+        },
     }
-    for arm in ARMS:
-        picks = getattr(kept, arm)
-        record[arm] = [
-            _pick_to_json(pick, (output_starts or {}).get(pick.step))
-            for _, pick in sorted(picks.items())
-        ]
-    return record
+
+
+def merge_records(existing: dict, new: dict) -> dict:
+    """Fold `new`'s arms into `existing`, keeping every arm `new` does not mention.
+
+    This is what makes an incremental gather safe. An arm already on disk keeps its
+    recorded picks *and* its recorded config verbatim — recomputing a control arm against
+    a pruned chain would draw a different, biased sample, and every prepared dataset
+    pointing at this tree would silently stop matching it.
+    """
+    merged = dict(existing)
+    merged["format_version"] = RECORD_FORMAT_VERSION
+    for key in ("stem", "model"):
+        if new.get(key):
+            merged[key] = new[key]
+    merged["arms"] = {**existing.get("arms", {}), **new.get("arms", {})}
+    return merged
+
+
+def _from_v1(record: dict) -> dict:
+    """Lift a v1 record's flat arm lists and single config into the v2 shape."""
+    config = record.get("config", {})
+    return {
+        "format_version": RECORD_FORMAT_VERSION,
+        "stem": record.get("stem", ""),
+        "model": record.get("model", ""),
+        "arms": {
+            name: {"config": config, "picks": record[name]}
+            for name in V1_ARMS
+            if name in record
+        },
+    }
+
+
+def normalize_record(record: dict, path: Path | None = None) -> dict:
+    """Return `record` in the v2 shape, upgrading a v1 file in memory.
+
+    Raises ValueError on an unknown `format_version` rather than silently misreading a file
+    written by a future version.
+    """
+    version = record.get("format_version")
+    if version == 1:
+        return _from_v1(record)
+    if version == RECORD_FORMAT_VERSION:
+        return record
+    raise ValueError(f"{path or '<record>'}: unsupported selection record format_version={version!r}")
 
 
 def write_selection_record(path: Path, record: dict) -> None:
@@ -97,21 +167,32 @@ def write_selection_record(path: Path, record: dict) -> None:
     tmp.replace(path)
 
 
-def read_selection_record(path: Path) -> tuple[KeptTokens, dict]:
-    """Load a record back into (KeptTokens in disk coordinates, its config block).
-
-    Raises ValueError on an unknown `format_version` rather than silently misreading a file
-    written by a future version.
-    """
+def read_raw_record(path: Path) -> dict:
+    """The record as JSON, normalized to v2. For callers that want to merge into it."""
     with open(path, encoding="utf-8") as f:
-        record = json.load(f)
+        return normalize_record(json.load(f), path)
 
-    version = record.get("format_version")
-    if version != RECORD_FORMAT_VERSION:
-        raise ValueError(f"{path}: unsupported selection record format_version={version!r}")
 
-    arms = {}
-    for arm in ARMS:
-        picks = [_pick_from_json(entry) for entry in record.get(arm, [])]
-        arms[arm] = {pick.key: pick for pick in picks}
-    return KeptTokens(**arms), record.get("config", {})
+def read_selection_record(path: Path) -> tuple[KeptTokens, dict[str, dict]]:
+    """Load a record into (KeptTokens in disk coordinates, {arm name: its config})."""
+    record = read_raw_record(path)
+    arms: dict[str, Arm] = {}
+    configs: dict[str, dict] = {}
+    for name, block in record.get("arms", {}).items():
+        picks = [_pick_from_json(entry) for entry in block.get("picks", [])]
+        arms[name] = {pick.key: pick for pick in picks}
+        configs[name] = block.get("config", {})
+    return KeptTokens(arms), configs
+
+
+__all__ = [
+    "RECORD_FORMAT_VERSION",
+    "RECORD_SUFFIX",
+    "build_record",
+    "merge_records",
+    "normalize_record",
+    "read_raw_record",
+    "read_selection_record",
+    "record_path",
+    "write_selection_record",
+]

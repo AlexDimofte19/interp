@@ -74,47 +74,63 @@ By default every gathered token of every selected layer becomes a sample. Two or
 knobs narrow that down, so a probe can be trained on the reasoning positions where the
 Jacobian lens says direction information lives — and against matched controls.
 
+The mode names are **generated** from `telos_interp.jlens_utils.METHODS`, so every
+registered lens has both of its modes and a new one needs no edit here.
+
 | `--token-selection` | which reasoning tokens become samples |
 |---|---|
 | `all` (default) | every token matching `--output-indices` |
-| `jlens_direction` | the `--num-tokens` tokens of the trajectory whose j-space top-k contains the most direction tokens |
-| `random` | `--num-tokens` tokens drawn uniformly (the control for `jlens_direction`) |
+| `jlens_direction` | the `--num-tokens` tokens whose **Jacobian** lens top-k contains the most direction tokens |
+| `logitlens_direction` | the same, scored against the **logit** lens CSV |
+| `random` | `--num-tokens` tokens drawn uniformly (the control for either lens) |
 | `recorded_jlens` | the jlens arm of `{name}_jlens_selection.json`, chosen when the tree was pruned |
+| `recorded_logitlens` | the logitlens arm of that same record |
 | `recorded_random` | the control arm of that same record |
 
 **On a pruned tree, use the `recorded_*` modes.** Once
 `scripts/delete_non_jlens_selected.py` (or a `--signal-json` gather) has removed everything
-outside the selection, `jlens_direction` would still find the right tokens — but `random`
-would draw from the survivors, which is no longer a uniform draw over the reasoning chain.
-The control only exists in the record, so it has to be read back rather than recomputed.
-For `recorded_*`, `--num-tokens` is an optional cap on each arm's top-K, `--num-layers` and
-`--direction-tokens-path` are unused (the record fixed them), and `--layer-selection` must
-stay `spec` — narrow with `--layers` instead.
+outside the selection, a `<lens>_direction` mode would still find the right tokens — but
+`random` would draw from the survivors, which is no longer a uniform draw over the reasoning
+chain. The control only exists in the record, so it has to be read back rather than
+recomputed. For `recorded_*`, `--num-tokens` is an optional cap on each arm's top-K,
+`--num-layers` and `--direction-tokens-path` are unused (the record fixed them), and
+`--layer-selection` must stay `spec` — narrow with `--layers` instead.
+
+A `recorded_*` mode naming an arm the record does not hold selects **nothing** (reported
+under `--verbose`), which on an empty result surfaces as prepare's usual "no activations were
+extracted". That is correct rather than a bug: the arm you name is the arm you get. Add a
+missing arm with `scripts/jlens_reasoning_tokens.py --extend` — pruning removed the tokens it
+would need, so it cannot be re-derived here.
 
 | `--layer-selection` | which layers of each selected token become samples |
 |---|---|
 | `spec` (default) | every layer in `--layers` — use `--layers 15` for a fixed middle layer |
-| `jlens_direction` | that token's top `--num-layers` layers by direction count |
+| `jlens_direction` / `logitlens_direction` | that token's top `--num-layers` layers by direction count |
 | `random` | `--num-layers` layers drawn uniformly from the candidate pool |
+
+When both axes name a lens they must name the **same** one — a selection reads one CSV.
 
 `--layers` always defines the **candidate pool**; the non-`spec` modes pick within it. Layers
 are chosen per token, so two tokens may contribute different layers.
 
-The direction counts come from the `{trajectory_name}_jlens_analysis.csv` that
+The direction counts come from the `{trajectory_name}_{lens}_analysis.csv` that
 `scripts/jlens_reasoning_tokens.py` writes next to the activations: for each
 `(reasoning token, layer)` row, the score is how many of `top_1..top_k` appear in
 `--direction-tokens-path` (a JSON mapping `UP`/`DOWN`/`LEFT`/`RIGHT` to token strings). A
 token's trajectory-level score is the sum over the candidate layers; ranking is per
 trajectory, pooling all steps. `--direction-classes` restricts which lists count (default:
 the union of all four, so the selection does not depend on the label). Trajectories with no
-jlens CSV are skipped.
+CSV for the named lens are skipped. The two lenses' CSVs share a schema and differ only in
+filename — and in which layers they cover, since the Jacobian lens can only score layers it
+has a fitted matrix for.
 
-Samples chosen through a `jlens_direction` mode carry `token`, `direction_count` and
+Samples chosen through a `<lens>_direction` mode carry `token`, `direction_count` and
 `layer_direction_count` in the manifest for later analysis; the manifest also records the
 full selection under a `selection` key. Random draws are seeded per trajectory from `--seed`,
 so a dataset is reproducible regardless of trajectory ordering. Each combination is a
 separate prepared dataset — the auto-generated directory name encodes it
-(e.g. `..._next_action_tokjl20_layjl3`).
+(e.g. `..._next_action_tokjl20_layjl3`, or `tokll20` for the logit lens — the abbreviation
+comes from the registry).
 
 ## Folder Modes
 
@@ -173,11 +189,11 @@ In multi-size mode:
 | `output_path` | str \| None | None | Output **directory** (auto-named under `activations_dir` if None). If you pass a path ending in `.pt`, the suffix is stripped with a warning. |
 | `verbose` | bool | False | Print detailed progress |
 | `seed` | int | 42 | Random seed for reproducibility |
-| `token_selection` | str | "all" | `next_action` only: "all", "jlens_direction", "random", "recorded_jlens", "recorded_random" |
-| `layer_selection` | str | "spec" | `next_action` only: "spec", "jlens_direction", or "random" |
+| `token_selection` | str | "all" | `next_action` only: "all", "random", "<lens>_direction", "recorded_<method>" — generated from `jlens_utils.METHODS` |
+| `layer_selection` | str | "spec" | `next_action` only: "spec", "random", or "<lens>_direction" |
 | `num_tokens` | int \| None | None | N for the non-"all" modes; an optional top-K cap for `recorded_*` |
 | `num_layers` | int \| None | None | M for the non-"spec" `layer_selection` modes |
-| `direction_tokens_path` | str \| None | None | JSON of direction tokens; required by `jlens_direction` |
+| `direction_tokens_path` | str \| None | None | JSON of direction tokens; required by any `<lens>_direction` mode |
 | `direction_classes` | str | "all" | Which direction lists to count (e.g. "UP,DOWN") |
 | `jlens_top_k` | int | 20 | How many `top_i` columns of the jlens CSV to scan |
 
@@ -437,7 +453,7 @@ is copied into the output directory.
 ## Notes
 
 - At least one of `prompt_prefix_indices`, `prompt_suffix_indices`, `grid_state_indices`, or `output_indices` must be specified.
-- `next_action` requires `output_indices` to be set and ignores the other category indices. With the default `token_selection="all"` it expects the `output` tokens to have been gathered with `--output-indices eos` and a single `--layers` value; the `jlens_direction`/`random` modes instead pick from whatever reasoning tokens `scripts/jlens_reasoning_tokens.py` saved.
+- `next_action` requires `output_indices` to be set and ignores the other category indices. With the default `token_selection="all"` it expects the `output` tokens to have been gathered with `--output-indices eos` and a single `--layers` value; the `<lens>_direction`/`random`/`recorded_*` modes instead pick from whatever reasoning tokens `scripts/jlens_reasoning_tokens.py` saved.
 - `token_selection`/`layer_selection` apply to `next_action` only; passing them with another probe type is an error.
 - The activation vector itself is stored once per trajectory; per-cell `[row_id, col_id]` is folded in at training time.
 - Class balancing finds the minimum count across all cell types and samples equally from each.

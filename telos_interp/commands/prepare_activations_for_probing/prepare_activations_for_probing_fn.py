@@ -21,8 +21,13 @@ from typing import Literal
 import torch
 from tqdm import tqdm
 
+from telos_interp.jlens_utils import METHODS
+
 from .jlens_token_selection import (
+    LAYER_SELECTIONS,
     RECORDED_SELECTIONS,
+    SCORED_SELECTIONS,
+    TOKEN_SELECTIONS,
     LayerSelection,
     SampleRef,
     SelectionConfig,
@@ -553,12 +558,10 @@ def _generate_dirname(
             filename = filename.replace(".pt", f"_max{max_positions_per_trajectory}.pt")
 
     # next_action selection modes: keep each variant in its own auto-named directory.
-    short = {
-        "jlens_direction": "jl",
-        "random": "rnd",
-        "recorded_jlens": "recjl",
-        "recorded_random": "recrnd",
-    }
+    # Generated from the registry rather than listed, so a new method cannot KeyError here.
+    short = {mode: METHODS[method].abbrev for mode, method in SCORED_SELECTIONS.items()}
+    short.update({mode: f"rec{METHODS[method].abbrev}" for mode, method in RECORDED_SELECTIONS.items()})
+    short["random"] = METHODS["random"].abbrev
     if selection.token_selection != "all":
         tag = f"{short[selection.token_selection]}{selection.num_tokens or ''}"
         filename = filename.replace(".pt", f"_tok{tag}.pt")
@@ -661,30 +664,36 @@ def prepare_activations_for_probing(
             with a warning (v3 outputs a directory).
         verbose: Print per-trajectory progress.
         seed: Random seed for sampling determinism.
-        token_selection: Which reasoning tokens become samples (`next_action` only).
+        token_selection: Which reasoning tokens become samples (`next_action` only). The
+            lens-specific modes are generated from `telos_interp.jlens_utils.METHODS`, so
+            every registered lens has both of its modes.
             "all" (default) keeps today's behaviour — every token matching output_indices.
-            "jlens_direction" takes the `num_tokens` tokens of the trajectory whose j-space
-            top-k contains the most direction tokens, read from the trajectory's
-            `{name}_jlens_analysis.csv`. "random" draws `num_tokens` tokens uniformly, as a
+            "jlens_direction" / "logitlens_direction" take the `num_tokens` tokens whose
+            lens top-k contains the most direction tokens, read from that lens' own
+            `{name}_{lens}_analysis.csv`. "random" draws `num_tokens` tokens uniformly, as a
             matched control.
-            "recorded_jlens"/"recorded_random" read the two arms of the selection a pruning
-            run already made (`{name}_jlens_selection.json`), rather than re-scoring. These
-            are the modes to use on a tree that `delete_non_jlens_selected.py` has pruned:
-            re-scoring would still find the right jlens tokens, but "random" over the
-            survivors is no longer a uniform draw over the reasoning chain, so the control
-            has to come from the record. `num_tokens` optionally caps each arm to its top-K;
-            `layers` still narrows which of the recorded layers are used.
+            "recorded_jlens" / "recorded_logitlens" / "recorded_random" read one arm of the
+            selection a pruning or filtered-gather run already made
+            (`{name}_jlens_selection.json`), rather than re-scoring. These are the modes to
+            use on a tree that `delete_non_jlens_selected.py` has pruned: re-scoring would
+            still find the right lens tokens, but "random" over the survivors is no longer a
+            uniform draw over the reasoning chain, so the control has to come from the
+            record. `num_tokens` optionally caps each arm to its top-K; `layers` still
+            narrows which of the recorded layers are used. An arm the record does not hold
+            (e.g. "recorded_logitlens" on a tree pruned before that arm existed) yields
+            nothing — add it with `jlens_reasoning_tokens.py --extend`.
         layer_selection: Which layers of each selected token become samples (`next_action`
-            only). "spec" (default) uses every layer in `layers`; "jlens_direction" takes
+            only). "spec" (default) uses every layer in `layers`; "<lens>_direction" takes
             that token's top `num_layers` layers by direction count; "random" draws
             `num_layers` layers uniformly. `layers` always defines the candidate pool, so
-            a fixed middle layer is just `layers="15"` with layer_selection="spec".
+            a fixed middle layer is just `layers="15"` with layer_selection="spec". When
+            both axes name a lens they must name the same one — a selection reads one CSV.
         num_tokens: N for the non-"all" token_selection modes.
         num_layers: M for the non-"spec" layer_selection modes.
         direction_tokens_path: JSON mapping UP/DOWN/LEFT/RIGHT to token strings. Required
-            when either selection mode is "jlens_direction".
+            when either selection mode names a lens.
         direction_classes: Which of those lists to count, "all" (union) or e.g. "UP,DOWN".
-        jlens_top_k: How many top_i columns of the jlens CSV to scan (default 20).
+        jlens_top_k: How many top_i columns of the lens CSV to scan (default 20).
     """
     if seed is not None:
         random.seed(seed)
@@ -730,10 +739,18 @@ def prepare_activations_for_probing(
             f"but probe_type='{probe_type}' was given."
         )
 
-    if token_selection not in ("all", "jlens_direction", "random", *RECORDED_SELECTIONS):
-        raise ValueError(f"Unknown token_selection: '{token_selection}'")
-    if layer_selection not in ("spec", "jlens_direction", "random"):
-        raise ValueError(f"Unknown layer_selection: '{layer_selection}'")
+    if token_selection not in TOKEN_SELECTIONS:
+        raise ValueError(f"Unknown token_selection: '{token_selection}'; expected one of {list(TOKEN_SELECTIONS)}")
+    if layer_selection not in LAYER_SELECTIONS:
+        raise ValueError(f"Unknown layer_selection: '{layer_selection}'; expected one of {list(LAYER_SELECTIONS)}")
+    # Both axes score the same CSV, so naming two different lenses would silently rank
+    # tokens with one and their layers with another.
+    lenses = {SCORED_SELECTIONS[mode] for mode in (token_selection, layer_selection) if mode in SCORED_SELECTIONS}
+    if len(lenses) > 1:
+        raise ValueError(
+            f"token_selection='{token_selection}' and layer_selection='{layer_selection}' name different "
+            f"lenses ({sorted(lenses)}); one selection reads one CSV."
+        )
     if token_selection in RECORDED_SELECTIONS:
         # The record already fixed both N and the layers, so num_tokens is an optional cap
         # and a layer_selection would be re-deciding something that is no longer re-derivable
@@ -750,10 +767,10 @@ def prepare_activations_for_probing(
 
     # Resolve the direction vocabulary once; every trajectory's CSV is scored against it.
     direction_tokens: set[str] | None = None
-    if "jlens_direction" in (token_selection, layer_selection):
+    if lenses:
         if direction_tokens_path is None:
             raise ValueError(
-                "A 'jlens_direction' selection mode requires direction_tokens_path "
+                f"A scored selection mode ({sorted(lenses)}) requires direction_tokens_path "
                 "(the JSON mapping UP/DOWN/LEFT/RIGHT to token strings)."
             )
         direction_tokens = load_direction_tokens(direction_tokens_path, direction_classes)

@@ -46,15 +46,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.jlens_reasoning_tokens import parse_name  # noqa: E402
 from telos_interp.jlens_utils import (  # noqa: E402
     DEFAULT_ALWAYS_LAYERS,
-    DEFAULT_JLENS_CSV_SUFFIX,
+    DEFAULT_METHODS,
+    METHODS,
     build_record,
-    jlens_top_filter,
+    get_method,
+    merge_records,
     output_start,
+    parse_methods,
+    read_raw_record,
     record_path,
     step_folder_index,
     to_disk_coords,
+    top_filter,
     write_selection_record,
 )
+
+# Every lens CSV suffix, so a trajectory analysed with either lens is discoverable.
+CSV_SUFFIXES = tuple(m.csv_suffix for m in METHODS.values() if m.csv_suffix)
 
 
 @dataclass
@@ -96,17 +104,25 @@ def matches_filters(stem: str, sizes: set[str] | None, complexities: set[str] | 
 
 
 def find_jlens_csvs(activations_dir: Path) -> list[Path]:
-    """Locate every trajectory's jlens CSV without walking the activation tree.
+    """Locate every analysed trajectory's folder without walking the activation tree.
 
-    The CSV sits at `{root}/size{S}/{stem}/{stem}_jlens_analysis.csv`, or `{root}/{stem}/...`
+    A CSV sits at `{root}/size{S}/{stem}/{stem}_{lens}_analysis.csv`, or `{root}/{stem}/...`
     for a trajectory whose filename carries no size. `rglob` finds those too -- but only
     after descending into every `{model}/layer_N/step_M/output/` folder underneath, which is
     the tens of millions of `.pt` files this script exists to delete. Globbing at the two
     known depths keeps the search proportional to the number of trajectories instead.
+
+    One entry per trajectory even when several lenses have analysed it: the returned path is
+    only used for its parent folder, and each arm resolves its own CSV from there.
     """
-    found = set(activations_dir.glob(f"*/*/*{DEFAULT_JLENS_CSV_SUFFIX}"))
-    found.update(activations_dir.glob(f"*/*{DEFAULT_JLENS_CSV_SUFFIX}"))
-    return sorted(found)
+    found: set[Path] = set()
+    for suffix in CSV_SUFFIXES:
+        found.update(activations_dir.glob(f"*/*/*{suffix}"))
+        found.update(activations_dir.glob(f"*/*{suffix}"))
+    by_folder: dict[Path, Path] = {}
+    for path in sorted(found):
+        by_folder.setdefault(path.parent, path)
+    return [by_folder[folder] for folder in sorted(by_folder)]
 
 
 def prune_empty_dirs(root: Path) -> None:
@@ -132,9 +148,24 @@ def prune_trajectory(csv_path: Path, args) -> Outcome:
         return Outcome(stem, "skipped", "no trajectory JSON")
     trajectory_data = json.loads(trajectory_json.read_text())
 
-    kept = jlens_top_filter(
+    # An existing record means this trajectory has already been pruned to some set of arms.
+    # Asking for an arm it does not hold is a request this script cannot fulfil: the tokens
+    # that arm would select were deleted by the earlier prune. Deleting is not the operation
+    # that adds an arm.
+    existing_record = read_raw_record(record_path(trajectory_folder)) if record_path(trajectory_folder).exists() else None
+    if existing_record is not None:
+        new_arms = sorted(set(args.methods) - set(existing_record.get("arms", {})))
+        if new_arms:
+            return Outcome(
+                stem, "skipped",
+                f"record holds {sorted(existing_record.get('arms', {}))}, cannot add {new_arms} by "
+                f"deleting -- use jlens_reasoning_tokens.py --extend",
+            )
+
+    kept = top_filter(
         args.signal_json,
-        csv_path,
+        trajectory_folder,
+        methods=args.methods,
         num_tokens=args.select_num_tokens,
         num_layers=args.select_num_layers,
         always_layers=args.always_layers,
@@ -154,9 +185,20 @@ def prune_trajectory(csv_path: Path, args) -> Outcome:
 
     absent = [p for p in keep_paths if not p.exists()]
     if absent and not args.tolerate_missing:
-        # Either the coordinate mapping is wrong or this trajectory was gathered with a
-        # different layer set. Deleting on that basis would destroy the wrong files.
-        return Outcome(stem, "skipped", f"{len(absent)}/{len(keep_paths)} selected files missing")
+        # Either the coordinate mapping is wrong, this trajectory was gathered with a
+        # different layer set, or an arm was requested whose tokens are already gone.
+        # Deleting on any of those bases would destroy the wrong files. Naming the arm is
+        # what distinguishes "the mapping is broken" from "that lens arrived too late".
+        starved = sorted(
+            name for name in kept.names
+            if any(not p.exists() for p in kept.activation_paths(model, arms=[name]))
+        )
+        return Outcome(
+            stem, "skipped",
+            f"{len(absent)}/{len(keep_paths)} selected files missing (arm(s) {starved}); a lens arm "
+            f"whose tokens were already pruned cannot be recovered here -- "
+            f"use jlens_reasoning_tokens.py --extend",
+        )
 
     on_disk = list(model.rglob("*.pt"))
     doomed = [p for p in on_disk if p not in keep_paths]
@@ -166,28 +208,30 @@ def prune_trajectory(csv_path: Path, args) -> Outcome:
         for path in doomed:
             path.unlink()
         prune_empty_dirs(model)
-        write_selection_record(
-            record_path(trajectory_folder),
-            build_record(
-                kept,
-                stem=stem,
-                model=model.name,
-                config={
-                    "signal_json": str(args.signal_json),
-                    "direction_classes": args.direction_classes,
-                    "num_tokens": args.select_num_tokens,
-                    "num_layers": args.select_num_layers,
-                    "always_layers": list(args.always_layers),
-                    "random_tokens": args.select_random_tokens,
-                    "random_layers": args.select_random_layers,
-                    "seed": args.select_seed,
-                    "top_k": args.jlens_top_k,
-                    "candidate_layers": args.candidate_layers,
-                    "pruned_from": len(on_disk),
-                },
-                output_starts=_output_starts(trajectory_data),
-            ),
+        record = build_record(
+            kept,
+            stem=stem,
+            model=model.name,
+            config={
+                "signal_json": str(args.signal_json),
+                "direction_classes": args.direction_classes,
+                "num_tokens": args.select_num_tokens,
+                "num_layers": args.select_num_layers,
+                "always_layers": list(args.always_layers),
+                "random_tokens": args.select_random_tokens,
+                "random_layers": args.select_random_layers,
+                "seed": args.select_seed,
+                "top_k": args.jlens_top_k,
+                "candidate_layers": args.candidate_layers,
+                "pruned_from": len(on_disk),
+            },
+            output_starts=_output_starts(trajectory_data),
         )
+        if existing_record is not None:
+            # Merged, never overwritten: an arm this run did not rebuild keeps its recorded
+            # picks and config. Dropping one would destroy a control that cannot be redrawn.
+            record = merge_records(existing_record, record)
+        write_selection_record(record_path(trajectory_folder), record)
 
     return Outcome(stem, "pruned", "", kept=len(on_disk) - len(doomed), deleted=len(doomed), freed=freed)
 
@@ -232,6 +276,12 @@ def main() -> None:
                          "coordinate mapping is wrong, and deleting on that basis is unrecoverable.")
     ap.add_argument("--sizes", default=None, help="Comma-separated grid sizes to prune, e.g. '11,15'.")
     ap.add_argument("--complexities", default=None, help="Comma-separated complexities, e.g. '0.0,0.2'.")
+    ap.add_argument("--select-methods", default=",".join(DEFAULT_METHODS),
+                    help=f"Comma-separated arms to keep (default '{','.join(DEFAULT_METHODS)}'). "
+                         f"Available: {','.join(METHODS)}. The union of every arm survives. Asking "
+                         "for an arm a trajectory's record does not already hold is refused: the "
+                         "tokens it would select were removed by the earlier prune, and only "
+                         "jlens_reasoning_tokens.py --extend can gather them back.")
     ap.add_argument("--select-num-tokens", type=int, default=20)
     ap.add_argument("--select-num-layers", type=int, default=3)
     ap.add_argument("--select-always-layers", default=",".join(str(i) for i in DEFAULT_ALWAYS_LAYERS),
@@ -255,6 +305,7 @@ def main() -> None:
     args = ap.parse_args()
 
     args.always_layers = tuple(int(p) for p in args.select_always_layers.split(",") if p.strip())
+    args.methods = parse_methods(args.select_methods)
     args.candidate_layers = (
         [int(p) for p in args.candidate_layers.split(",") if p.strip()] if args.candidate_layers else None
     )
@@ -265,15 +316,16 @@ def main() -> None:
     csvs = find_jlens_csvs(args.activations_dir)
     csvs = [p for p in csvs if matches_filters(p.parent.name, sizes, complexities)]
     if not csvs:
-        raise SystemExit(f"no {DEFAULT_JLENS_CSV_SUFFIX} files under {args.activations_dir}")
+        raise SystemExit(f"no {' / '.join(CSV_SUFFIXES)} files under {args.activations_dir}")
     if args.limit is not None:
         csvs = csvs[: args.limit]
 
     mode = "APPLYING" if args.apply else "DRY RUN (pass --apply to delete)"
     print(f"{mode}: {len(csvs)} trajectory folder(s) under {args.activations_dir}", flush=True)
-    if args.select_random_tokens == 0:
-        print("WARNING: --select-random-tokens 0 discards the matched control arm permanently",
-              flush=True)
+    print(f"keeping arms: {', '.join(args.methods)}", flush=True)
+    if args.select_random_tokens == 0 or not any(not get_method(m).scored for m in args.methods):
+        print("WARNING: no control arm in this selection -- a lens result cannot be compared "
+              "against anything once the rest is gone", flush=True)
 
     # Reported as we go rather than collected first: each trajectory means listing and
     # unlinking ~12k files, so a batch of thousands is a long time to sit silent.

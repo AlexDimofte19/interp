@@ -137,10 +137,64 @@ code.
   `torch.allclose` cross-check against an existing `gather_activations` tree have **not**
   been done yet.
 
+## 3. `jlens_reasoning_tokens.py` — throughput rework
+
+The sweep was unacceptably slow on the high-complexity cells. The cause is not grid size:
+every per-step cost scales linearly with the length of the reasoning chain, and comp
+0.6–1.0 trajectories reason far longer. A ~700-token chain over 17 layers is ~12k `.pt`
+files *and* ~12k CSV rows per step, against roughly 0.5 s of actual GPU work.
+
+The changes are all semantics-preserving — same tree, same rows, every token kept:
+
+- **`--io-workers` (default 16).** `ActivationWriter` in `gather_activations_utils.py`
+  writes the per-token tree from a thread pool, overlapping it with the next forward pass.
+  Same paths, same tensors, same NaN accounting; `save_activations_to_files` is now a thin
+  serial wrapper around it, so `gather_activations` is untouched. Drained before the CSV is
+  `os.replace`d, and worker exceptions are re-raised there — a failed write can never be
+  mistaken for a finished trajectory.
+- **Decode memo.** `tok.decode([i])` ran TOP_K times per row, millions of times per
+  trajectory. Now a dict lookup after the first sighting.
+- **Lens matrices hoisted.** They were being `.float().to(dev)`-ed *per step* — 566 MB of
+  H2D for weights that never change. Now once, and the per-layer `h @ J.T` is one `bmm`
+  (`apply_lens_transport`).
+- **`extract_activations_batched`.** Returns one stacked `(N, d)` tensor per layer via a
+  single `index_select`, replacing ~12k individual `.cpu()` copies per step and the
+  re-upload that followed. The residual streams stay on the device for the lens.
+- **`--forward-batch-size` (default 4) / `--forward-batch-tokens`.** Packs consecutive
+  steps into one right-padded forward pass. Consecutive and never reordered, so the CSV
+  stays in step order.
+- **`--batch-size` now defaults to 256** instead of "the whole step", and the per-step
+  `torch.cuda.empty_cache()` is gone.
+
+**Measure before tuning:** `--profile` prints the per-phase split (`build` / `forward` /
+`save_pt` / `drain_pt` / `lens` / `rows` / `csv`) per trajectory and for the run.
+`--no-save-activations` and `--benchmark-pt-write N` isolate what the `.pt` tree costs on
+that host — a local NVMe does ~10k files/s, a network volume can be two orders of magnitude
+slower, and which one you have decides whether the threading is enough.
+
+### What is verified, and what is not
+
+`tests/test_jlens_reasoning_tokens.py` runs the whole script against a stub 24-layer model
+whose activations are a closed-form function of (layer, token id, position). It asserts the
+rewritten loop reproduces **the pre-change implementation byte-for-byte** — the golden
+reference `_reference_run` is the old inner loop transcribed verbatim — for the CSV and
+tensor-for-tensor for the `.pt` tree, with batching and lens chunking on.
+
+The one thing that stub cannot test: on the real model, batched bf16 GEMMs may reassociate
+and shift a logit in its last bits, which could flip a rank between two near-tied tokens.
+Use `--forward-batch-size 1` for bit-exact agreement with an unbatched run; that setting
+disables only the packing, and every other optimisation above still applies.
+
 ## Open threads
 
 - Run `scripts/jlens_reasoning_tokens.sh` on the GPU host to produce a real
   `{activations_dir}` tree; nothing local has jlens CSVs yet.
+- On the GPU host, run one comp-0.8 trajectory with `--profile` and record the split, then
+  tune `--io-workers` against it. If file creation still dominates after threading, the next
+  lever is a sharded `.pt` container (one file per (layer, step) instead of per token,
+  ~150x fewer inodes) — deliberately not done, because it changes the on-disk contract.
+- Confirm on the real model whether `--forward-batch-size 4` changes any CSV byte versus
+  `1`. If it does, decide whether the speedup is worth the bf16 noise.
 - Cross-check one saved tensor against an existing `gather_activations` run for the same
   trajectory/layer/step/token (`torch.allclose`) — both capture decoder-block outputs from
   the same truncated prefix, so they must match.

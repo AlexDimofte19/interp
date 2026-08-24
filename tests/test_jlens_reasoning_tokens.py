@@ -248,20 +248,20 @@ def test_crashed_run_leaves_no_csv(env, monkeypatch):
 
 def _expected_selection(env, full_run_dir, signal_json, **overrides):
     """What the filter selects, computed from an unfiltered run's CSV."""
-    from telos_interp.jlens_utils import jlens_top_filter, to_disk_coords
+    from telos_interp.jlens_utils import to_disk_coords, top_filter
 
     kwargs = {
+        "methods": ["jlens", "random"],
         "num_tokens": 2,
         "num_layers": 2,
         "always_layers": (),
         "random_tokens": 1,
         "seed": 42,
         "seed_key": env["stem"],
-        "candidate_layers": SCORABLE_LAYERS,
         "top_k": jrt.TOP_K,
     }
     kwargs.update(overrides)
-    kept = jlens_top_filter(signal_json, full_run_dir / f"{env['stem']}_jlens_analysis.csv", **kwargs)
+    kept = top_filter(signal_json, full_run_dir, **kwargs)
     return to_disk_coords(kept, json.loads(env["traj_path"].read_text()))
 
 
@@ -300,10 +300,10 @@ def test_selection_record_is_written_and_reloadable(env, signal_json):
     full = _run(env, "full")
     picked = _run(env, "picked", *_select_args(signal_json))
 
-    kept, config = read_selection_record(record_path(picked))
+    kept, configs = read_selection_record(record_path(picked))
     assert kept == _expected_selection(env, full, signal_json)
-    assert config["num_tokens"] == 2 and config["candidate_layers"] == SCORABLE_LAYERS
-    assert len(kept.jlens) == 2 and len(kept.random) == 1
+    assert configs["jlens"]["num_tokens"] == 2
+    assert len(kept["jlens"]) == 2 and len(kept["random"]) == 1
 
 
 def test_control_arm_carries_no_counts(env, signal_json):
@@ -312,8 +312,8 @@ def test_control_arm_carries_no_counts(env, signal_json):
 
     picked = _run(env, "picked", *_select_args(signal_json, **{"random-tokens": 2}))
     kept, _ = read_selection_record(record_path(picked))
-    assert all(p.direction_count is not None for p in kept.jlens.values())
-    assert all(p.direction_count is None for p in kept.random.values())
+    assert all(p.direction_count is not None for p in kept["jlens"].values())
+    assert all(p.direction_count is None for p in kept["random"].values())
 
 
 def test_always_layers_are_forced_into_every_pick(env, signal_json):
@@ -321,7 +321,7 @@ def test_always_layers_are_forced_into_every_pick(env, signal_json):
 
     picked = _run(env, "picked", *_select_args(signal_json, **{"always-layers": "20", "num-layers": 1}))
     kept, _ = read_selection_record(record_path(picked))
-    for pick in list(kept.jlens.values()) + list(kept.random.values()):
+    for pick in list(kept["jlens"].values()) + list(kept["random"].values()):
         assert 20 in pick.layers, pick
 
 
@@ -330,9 +330,8 @@ def test_unscorable_layers_are_never_selected(env, signal_json):
     from telos_interp.jlens_utils import read_selection_record, record_path
 
     picked = _run(env, "picked", *_select_args(signal_json, **{"always-layers": "19", "num-layers": 1}))
-    kept, config = read_selection_record(record_path(picked))
-    assert 19 not in config["candidate_layers"]
-    assert all(19 not in pick.layers for pick in kept.jlens.values())
+    kept, _ = read_selection_record(record_path(picked))
+    assert all(19 not in pick.layers for pick in kept["jlens"].values())
     assert not list(picked.glob("**/layer_19/**/*.pt"))
 
 
@@ -361,3 +360,203 @@ def test_selective_crash_leaves_no_csv(env, signal_json, monkeypatch):
         _run(env, "crashed", *_select_args(signal_json))
     out = env["tmp"] / "crashed"
     assert list(out.rglob("*_jlens_analysis.csv")) == []
+
+
+# --- the logit lens ----------------------------------------------------------------------
+#
+# The logit lens is the same code path with nothing transported (see
+# jrt.build_lens_transports), so what these pin is not the arithmetic but the two things
+# that genuinely differ: which layers each lens can score, and that one forward pass really
+# does feed both.
+
+
+def _csv_rows(path):
+    with open(path, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def test_lens_both_writes_two_csvs_from_one_pass(env):
+    out = _run(env, "both", "--lens", "both")
+    jlens = out / f"{env['stem']}_jlens_analysis.csv"
+    logit = out / f"{env['stem']}_logitlens_analysis.csv"
+    assert jlens.exists() and logit.exists()
+
+    # the jlens can only score layers it has a matrix for; the logit lens needs none
+    assert sorted({int(r["layer"]) for r in _csv_rows(jlens)}) == SCORABLE_LAYERS
+    assert sorted({int(r["layer"]) for r in _csv_rows(logit)}) == [19, *SCORABLE_LAYERS]
+
+
+def test_the_lenses_agree_at_the_target_layer(env):
+    """At TARGET_LAYER the jlens is the identity, so it *is* the logit lens there.
+
+    A free end-to-end check that --lens both did not cross its wires: the two CSVs are
+    produced by different transports but must coincide on the one layer where the transports
+    are the same function.
+    """
+    out = _run(env, "both", "--lens", "both")
+    def at_target(name):
+        rows = _csv_rows(out / f"{env['stem']}_{name}_analysis.csv")
+        return [r for r in rows if int(r["layer"]) == jrt.TARGET_LAYER]
+
+    jlens_rows, logit_rows = at_target("jlens"), at_target("logitlens")
+    assert jlens_rows and jlens_rows == logit_rows
+
+
+def test_logitlens_alone_never_loads_the_jacobian(env):
+    """--lens logitlens must not need gpt-oss-20b_jacobian_lens.pt at all."""
+    (env["jlens_dir"] / "gpt-oss-20b_jacobian_lens.pt").unlink()
+    out = _run(env, "logit", "--lens", "logitlens")
+    assert (out / f"{env['stem']}_logitlens_analysis.csv").exists()
+    assert not (out / f"{env['stem']}_jlens_analysis.csv").exists()
+
+
+def test_a_missing_lens_csv_means_unfinished(env):
+    """A trajectory analysed by one lens is not done under --lens both."""
+    _run(env, "tree", "--lens", "jlens")
+    out = _run(env, "tree", "--lens", "both")
+    assert (out / f"{env['stem']}_logitlens_analysis.csv").exists()
+
+
+def test_selecting_a_lens_whose_csv_is_not_written_is_refused(env, signal_json):
+    with pytest.raises(SystemExit, match="writes no CSV"):
+        _run(env, "bad", "--lens", "jlens", *_select_args(signal_json, methods="jlens,logitlens"))
+
+
+# --- extending an already-selected tree --------------------------------------------------
+#
+# The real tree has been pruned to jlens+random, so the logitlens arm cannot be recovered by
+# re-filtering -- the tokens it would pick are gone. `--extend` is the only path that adds
+# one, and it is only safe if it leaves the existing arms completely alone.
+
+
+def _extend(env, out_name, signal_json, *extra):
+    return _run(env, out_name, "--lens", "both", "--extend",
+                *_select_args(signal_json, methods="jlens,logitlens,random"), *extra)
+
+
+def test_extend_adds_an_arm_without_disturbing_the_others(env, signal_json):
+    from telos_interp.jlens_utils import read_selection_record, record_path
+
+    picked = _run(env, "tree", *_select_args(signal_json, methods="jlens,random"))
+    before_kept, before_configs = read_selection_record(record_path(picked))
+    before_files = {p: p.stat().st_mtime_ns for p in picked.rglob("*.pt")}
+    assert before_kept.names == ["jlens", "random"]
+
+    _extend(env, "tree", signal_json)
+
+    after_kept, after_configs = read_selection_record(record_path(picked))
+    assert sorted(after_kept.names) == ["jlens", "logitlens", "random"]
+    # the arms that were already there are untouched, picks and config alike
+    assert after_kept["jlens"] == before_kept["jlens"]
+    assert after_kept["random"] == before_kept["random"]
+    assert after_configs["random"] == before_configs["random"]
+    assert after_kept["logitlens"], "the new arm has to have selected something"
+
+    # files that already existed were not rewritten -- the arms overlap heavily
+    after_files = {p: p.stat().st_mtime_ns for p in picked.rglob("*.pt")}
+    assert set(before_files) <= set(after_files), "extending must never delete"
+    assert all(after_files[p] == mtime for p, mtime in before_files.items())
+
+    # ...and the new arm's files are now on disk
+    model_dir = picked / "stub__model"
+    assert after_kept.activation_paths(model_dir, arms=["logitlens"]) <= set(after_files)
+
+
+def test_extend_writes_a_v2_record_with_per_arm_config(env, signal_json):
+    from telos_interp.jlens_utils import RECORD_FORMAT_VERSION, read_raw_record, record_path
+
+    picked = _run(env, "tree", *_select_args(signal_json, methods="jlens,random"))
+    _extend(env, "tree", signal_json)
+
+    record = read_raw_record(record_path(picked))
+    assert record["format_version"] == RECORD_FORMAT_VERSION
+    assert sorted(record["arms"]) == ["jlens", "logitlens", "random"]
+    assert record["arms"]["logitlens"]["config"]["lens"] == "both"
+    assert record["arms"]["jlens"]["config"]["lens"] == "jlens"
+
+
+def test_extend_is_idempotent(env, signal_json):
+    from telos_interp.jlens_utils import read_selection_record, record_path
+
+    picked = _run(env, "tree", *_select_args(signal_json, methods="jlens,random"))
+    _extend(env, "tree", signal_json)
+    once, _ = read_selection_record(record_path(picked))
+    files = sorted(p.relative_to(picked) for p in picked.rglob("*.pt"))
+
+    _extend(env, "tree", signal_json)
+    twice, _ = read_selection_record(record_path(picked))
+    assert twice == once
+    assert sorted(p.relative_to(picked) for p in picked.rglob("*.pt")) == files
+
+
+def test_extend_dry_run_writes_nothing(env, signal_json, capsys):
+    from telos_interp.jlens_utils import read_selection_record, record_path
+
+    picked = _run(env, "tree", *_select_args(signal_json, methods="jlens,random"))
+    before_kept, _ = read_selection_record(record_path(picked))
+    before = sorted(p.relative_to(picked) for p in picked.rglob("*.pt"))
+
+    _extend(env, "tree", signal_json, "--dry-run")
+
+    after_kept, _ = read_selection_record(record_path(picked))
+    assert after_kept == before_kept, "a dry run must not touch the record"
+    assert sorted(p.relative_to(picked) for p in picked.rglob("*.pt")) == before
+    assert not (picked / f"{env['stem']}_logitlens_analysis.csv").exists()
+    assert "DRY RUN" in capsys.readouterr().out
+
+
+def test_extend_without_a_record_is_skipped(env, signal_json, capsys):
+    """A never-selected trajectory is not silently given a full gather instead."""
+    _extend(env, "fresh", signal_json)
+    assert not list((env["tmp"] / "fresh").rglob("*.pt"))
+    assert "no selection record" in capsys.readouterr().out
+
+
+def test_dropping_an_arm_is_refused_without_extend(env, signal_json, capsys):
+    """The guard that protects the control arm: it cannot be redrawn once the tree is cut."""
+    from telos_interp.jlens_utils import read_selection_record, record_path
+
+    picked = _run(env, "tree", *_select_args(signal_json, methods="jlens,random"))
+    before, _ = read_selection_record(record_path(picked))
+
+    _run(env, "tree", "--lens", "logitlens", "--overwrite",
+         *_select_args(signal_json, methods="logitlens"))
+
+    after, _ = read_selection_record(record_path(picked))
+    assert after == before, "the record must survive a run that would have dropped an arm"
+    assert "REFUSED" in capsys.readouterr().out
+
+
+def test_overwrite_record_permits_it_explicitly(env, signal_json):
+    from telos_interp.jlens_utils import read_selection_record, record_path
+
+    picked = _run(env, "tree", *_select_args(signal_json, methods="jlens,random"))
+    _run(env, "tree", "--lens", "logitlens", "--overwrite", "--overwrite-record",
+         *_select_args(signal_json, methods="logitlens"))
+    after, _ = read_selection_record(record_path(picked))
+    assert after.names == ["logitlens"]
+
+
+def test_the_extend_wrapper_invocation_works(env, signal_json):
+    """Exactly what scripts/jlens_extend_logitlens.sh runs, on an already-selected tree.
+
+    --lens logitlens (the jlens CSV is not recomputed), --select-methods logitlens (only the
+    new arm), --select-random-tokens 0 (the control is inherited from the record, never
+    redrawn -- a fresh draw could only sample the survivors).
+    """
+    from telos_interp.jlens_utils import read_selection_record, record_path
+
+    picked = _run(env, "tree", *_select_args(signal_json, methods="jlens,random"))
+    before, _ = read_selection_record(record_path(picked))
+
+    _run(env, "tree", "--lens", "logitlens", "--extend",
+         *_select_args(signal_json, methods="logitlens", **{"random-tokens": 0}))
+
+    after, _ = read_selection_record(record_path(picked))
+    assert sorted(after.names) == ["jlens", "logitlens", "random"]
+    assert after["random"] == before["random"], "the inherited control must be untouched"
+    assert after["jlens"] == before["jlens"]
+    assert after["logitlens"]
+    # the jlens CSV was never rewritten, and the logitlens one now exists beside it
+    assert (picked / f"{env['stem']}_jlens_analysis.csv").exists()
+    assert (picked / f"{env['stem']}_logitlens_analysis.csv").exists()

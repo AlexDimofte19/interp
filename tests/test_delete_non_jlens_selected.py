@@ -226,3 +226,36 @@ def test_csv_discovery_does_not_walk_the_activation_tree(env, signal_json, monke
 
     assert found == [full / f"{env['stem']}_jlens_analysis.csv"]
     assert not [p for p in listed if "step_" in str(p)], "descended into the activation tree"
+
+
+def test_cannot_widen_an_existing_selection(env, signal_json, capsys):
+    """Deleting is not the operation that adds an arm.
+
+    On a tree already pruned to jlens+random, the tokens a logitlens arm would pick are
+    gone. Asking for one here must report that plainly and touch nothing, rather than
+    deleting on the basis of an arm it cannot satisfy.
+    """
+    full = _run(env, "full")
+    _prune(env["tmp"] / "full", env, signal_json, "--apply")
+    after_first = _pts(full)
+
+    _prune(env["tmp"] / "full", env, signal_json, "--apply",
+           "--select-methods", "jlens,logitlens,random")
+
+    assert _pts(full) == after_first
+    out = capsys.readouterr().out
+    assert "cannot add ['logitlens']" in out
+    assert "--extend" in out
+
+
+def test_a_logitlens_tree_prunes_on_its_own_csv(env, signal_json):
+    """The pruner is lens-agnostic: same filter, different CSV, same equivalence."""
+    full = _run(env, "full", "--lens", "logitlens")
+    filtered = _run(env, "filtered", "--lens", "logitlens",
+                    *_select_args(signal_json, methods="logitlens,random"))
+
+    _prune(env["tmp"] / "full", env, signal_json, "--apply",
+           "--select-methods", "logitlens,random")
+
+    assert _pts(full) == _pts(filtered)
+    assert _pts(full), "the selection cannot legitimately be empty"

@@ -29,3 +29,359 @@ okay so far the analysis i did was on the test set. This is not good. I need to 
 4. Activation patching - if we use jlens to locate directionally rich tokens, can we also modify the jspace to affect results - is this necessary? we already know from anthropic that this would be the case
 	do we need to do activation patching using the probe itself?
 
+
+=====================================================================
+2026-08-19 -- NEW THREAD: cognitive map probe (grid_tile), phase 1
+=====================================================================
+
+Everything above is the direction / next_action line. This is the parallel line for
+the cognitive map probe. Same idea - use the jlens to pick which reasoning tokens to
+train on - but the label is per-cell grid identity, not the action, so it needs its
+own token vocabulary. direction_tokens_full.json is 539 action words, no use here.
+
+Rule we agreed on: the vocabulary is built from the MODEL VOCABULARY ONLY. Not from
+what is popular in the j-space. Building it from j-space and then measuring how
+grid-loaded the j-space is would be circular. direction_tokens.ipynb never reads a
+csv either, and that is what makes the direction number mean anything.
+
+5. Phase 1 - the word list [DONE]
+	5.1 notebooks/grid_tokens.ipynb (new). Same two stages as direction_tokens.ipynb,
+	    ported intact - difflib over word pieces + mean-centred, rank-normalised
+	    embeddings. score_part() and the RANK/by_form block are byte-identical, the
+	    rest differs only by a dropped demo line.
+	5.2 classes: WALL, OPEN, GOAL, AGENT, AXIS, STATUS. No RELATION - counted the
+	    analysis channel of every trajectory we have locally (17,434 chars) and
+	    below/corner/edge/N-S-E-W/closer/diagonal/"steps away" never appear at all.
+	    above and adjacent appear once each. The model reasons in absolute
+	    coordinates + cardinal directions, never egocentrically.
+	5.3 tested the lexical stage against a contamination probe list before shipping.
+	    First run leaked 4/19. The one that mattered was ' OpenAI' - parts_of()
+	    camel-splits it to ['open','ai','openai'] so the exact-match guard misses it,
+	    and this model definitely emits that token (own system prompt says "trained
+	    by OpenAI"). Dropped 'open' from LEX_SEEDS, same treatment le/alt/sol/port got
+	    in the direction notebook. Now 18/18 probes rejected, 16/16 grid words kept.
+	    The open/empty sense is left to the semantic anchors.
+
+6. Fixed notebooks/direction_token_location_analysis.ipynb [DONE]
+	6.1 accumulation bug - dict_counts[token] = {...} was INSIDE the row loop, so a
+	    repeated token got overwritten instead of summed. Verified on a synthetic csv:
+	    old code says Ġleft LEFT = 3, correct answer is 5. Every per-token number ever
+	    printed from that notebook is a last-occurrence artifact. Recompute them.
+	6.2 was loading direction_tokens.json (old 4-way file), now _full.json (539).
+	6.3 was pd.read_csv + iterrows on the 3.2GB combined csv. Now csv.DictReader,
+	    streams, and takes either the combined csv OR a directory of the new
+	    per-trajectory ones. Verified pandas turns the token 'NA' into nan while
+	    DictReader keeps 'NA' - that was silently corrupting counts.
+	6.4 added a self-test cell on a synthetic csv so it is checkable without the data.
+
+7. FINDING that changes the plan - the pipeline cannot reach the symbols
+	The plan assumed '#' '_' '?' '*' could go in as seeds/anchors the way the arrows
+	up/down/left/right did for directions. They cannot. All of them are inside SEP_RE,
+	so strip_token() and parts_of() reduce them to the empty string and neither stage
+	can ever score them. Arrows survive because SEP_RE does not contain them. G/A/D/K
+	survive but as single-letter hubs.
+	Same reason digits are unreachable - a bare '4' is not semantically near any grid
+	seed and difflib will not bridge to it.
+	So the coordinate signal, which IS the dominant one (490 occurrences of the (r,c)
+	form, 98 unique, 119 rowN, 121 colN), is out of this vocabulary's reach by
+	construction. Not a tuning problem.
+
+8. Phase 2 - NOT started, deliberately. Analysis before implementation.
+	8.1 take grid_tokens_full.json into the j-space: coverage against the full
+	    top_1..top_20 distribution, per-class counts, which layers / reasoning_pos
+	    carry the signal.
+	8.2 span detection, for the coordinate signal 7 says the vocabulary cannot reach.
+	    A span is a contiguous run of output-token indices matching a spatial pattern.
+	    Checked against step 0 of the size11 trajectory we have locally:
+	        COORD    out_idx 10-14   Ġ( 9 , 4 )
+	        AXIS     out_idx 41-44   Ġrow 8 / Ġcol 4
+	        ASSERT   out_idx 41-47   Ġrow 8 Ġcol 4 Ġis Ġ'# '?
+	        ROWDUMP  out_idx 51-61   Ġ"# Ġ_ Ġ# Ġ_ Ġ# Ġ# Ġ# Ġ# Ġ# Ġ# Ġ#
+	    that ROWDUMP run is exactly 11 tokens on an 11-wide grid - the model
+	    transcribing row 8 one token per cell. Unambiguous by position even though no
+	    single token in it is. Reads steps[i]["output_tokens"], needs NO lens output,
+	    so it works on trajectories that were never run through jlens.
+	    Complement to the vocabulary, not a competitor.
+	8.3 measure whether span-selected and j-space-selected tokens actually coincide
+	    (expected) and where they diverge (digits + punctuation, which no vocabulary
+	    can reach). If they coincide, span is the cheaper equivalent.
+	8.4 only then wire grid_tile into prepare_activations_for_probing: one sample per
+	    (trajectory, step, token, layer), optional concat-layers / concat-tokens.
+
+9. Landmine to fix before 8.4, not before
+	train_cognitive_map_probe_fn.py _prepare_train_eval_v3 splits with
+	torch.randperm(T) over ROWS. That was fine when one row == one trajectory. The
+	moment a trajectory contributes N*M rows, tokens from the same trajectory land on
+	both sides of the train/eval split and the accuracy is inflated. Must split over
+	unique trajectory_names. Same applies to the subset draw above it.
+
+10. Also noticed
+	10.1 grid_params.legend has fog = '*' but CELL_SYMBOL_TO_ID has no '*'.
+	     parse_grid_state silently drops those cells and pads them as '+' (id 7).
+	     Harmless while everything is fully_observable: true, silently wrong the
+	     moment it is not.
+	10.2 grid_params.agent_start_coordinates and goal_coordinates are in every
+	     trajectory and NO python in the repo reads them. Free labels if we ever want
+	     a "where is A" position probe instead of the per-cell "what is at (r,c)".
+	10.3 the conda env note in claude_session_readme.md is wrong for the laptop -
+	     there is no conda on the mac, it is .venv / uv. pytest baseline 82 passed.
+
+=====================================================================
+2026-08-20 -- jlens_reasoning_tokens.py throughput
+=====================================================================
+
+11. Why the comp 0.6/0.8/1.0 cells were so slow
+	Not grid size. Every per-step cost in the script scales with the LENGTH OF THE
+	REASONING CHAIN, and the high-complexity trajectories reason far longer. Per
+	step, with 700 analysis tokens and layers 7:23 (17 layers), that is ~11.9k CSV
+	rows and ~11.9k .pt files. Measured shapes come from the one trajectory we have
+	locally (size11 comp1.0 run 987: prefix 414, grid 297, suffix 3, 157 analysis
+	tokens in its single step).
+	The GPU was never the problem. Per step:
+	    forward pass (~2.5k tokens, 3.6B active)     ~0.1-0.5 s
+	    lens matmuls (17 x [700,2880]@[2880,201088])  ~0.15 s
+	against filesystem + Python work one to two orders of magnitude larger. The
+	four things actually eating the time:
+	    a) one torch.save per (token, layer), fully serial
+	    b) tok.decode([i]) x TOP_K per row - 238k Rust round-trips per step
+	    c) 11.9k individual .cpu() copies in extract_activations_single_pass, then
+	       a re-upload of the same values for the lens
+	    d) lens["J"][layer].float().to(dev) inside the STEP loop - 566 MB of H2D
+	       per step for matrices that never change
+	Plus torch.cuda.empty_cache() every step (a sync, and it discards the caching
+	allocator) and 11.9k separate writer.writerow calls.
+
+12. What changed [DONE]
+	All semantics-preserving. Same tree, same rows, every token kept - checked, not
+	assumed (see 13).
+	12.1 ActivationWriter (gather_activations_utils.py): thread pool over the same
+	     mkdir + torch.save calls, so the .pt writes overlap the next forward pass.
+	     --io-workers, default 16. Drained before the CSV is os.replace'd and worker
+	     exceptions re-raised there, so a failed write cannot be skipped as done.
+	     save_activations_to_files is now a wrapper around it (max_workers=0), so
+	     gather_activations itself is unchanged.
+	12.2 decode memo, J hoisted out of the loop and applied as one bmm
+	     (apply_lens_transport), extract_activations_batched returning one stacked
+	     (N,d) tensor per layer, writerows instead of writerow, empty_cache dropped,
+	     --batch-size defaulting to 256 rather than "whole step".
+	12.3 --forward-batch-size (default 4) / --forward-batch-tokens: consecutive steps
+	     packed into one right-padded forward. Right padding is safe under causal
+	     attention - a real token at position i only attends to j <= i, all real.
+	     Groups are consecutive and never reordered, so CSV row order is unchanged.
+	12.4 --profile, --no-save-activations, --benchmark-pt-write: measure the split
+	     before tuning. Mac SSD does ~10k files/s (legacy container 19% faster and
+	     16% smaller than zip); a network volume can be far worse, and which one the
+	     host has decides whether 12.1 is sufficient.
+
+13. Verification
+	tests/test_jlens_reasoning_tokens.py drives the whole script against a stub
+	24-layer model whose activations are a closed form of (layer, token id,
+	position). _reference_run in that file is the PRE-CHANGE inner loop transcribed
+	verbatim; the test asserts the new code reproduces it byte-for-byte on the CSV
+	and tensor-for-tensor on the .pt tree, with batching and chunking on. Also
+	covered: batched == unbatched exactly, .pt holds its own token (a view saved by
+	mistake would drag its whole storage), layer 19 with no J gets activations but no
+	CSV rows, --batch-size does not change a row, a crash leaves no CSV.
+	101 tests pass (was 82).
+
+14. Not done, on purpose
+	14.1 Sharded .pt container (one file per (layer, step), ~150x fewer inodes). It
+	     is the largest single I/O win left, but it changes the documented on-disk
+	     contract that prepare_activations_for_probing and jlens_token_selection
+	     both build paths against. Revisit only if --profile shows file creation
+	     still dominating after the threading.
+	14.2 Any thinning of tokens or layers. Full coverage is the point of the sweep.
+	14.3 Multi-GPU sharding - the host has one GPU. (device_map="auto" is still the
+	     NaN landmine, unrelated.)
+	14.4 Prefix KV-cache reuse across steps: the prefix is 414 of ~2500 tokens, so
+	     ~19% of a cost bucket that is already small.
+
+15. Caveat on 12.3 that the local tests cannot reach
+	The stub's activations do not depend on batch composition, so batched and
+	unbatched agree exactly there. On the real MoE, batched bf16 GEMMs can
+	reassociate and move a logit in its last bits, which could flip a rank between
+	two near-tied tokens. --forward-batch-size 1 is the bit-exact setting and still
+	keeps every other optimisation. Worth one check on the host: run a trajectory at
+	1 and at 4 and diff the CSVs.
+
+=====================================================================
+2026-08-22 -- seeds and anchors come from the model vocabulary only
+=====================================================================
+
+16. The rule
+	direction_tokens.ipynb and grid_tokens.ipynb always built their CANDIDATE set
+	from the model vocabulary alone. What they scored it against was not:
+	hand-written seeds and anchors that are not tokens ('sinistra', 'aristera',
+	'vaenster', 'hoeger', 'vpravo', the Korean two-syllable forms), multi-word
+	anchors ('en haut', 'al di sopra', 'nach links', 'open space', 'grid row'),
+	and /usr/share/dict as a negative guard in the lexical stage.
+	Now: every seed and every anchor must itself be a token (admissible(), cell 2),
+	and the dictionary is gone. MiniLM stays -- it scores strings, it never
+	supplies one. The inadmissible entries are LEFT IN THE SOURCE and filtered at
+	run time, so what the rule costs is printed, not hidden.
+
+17. What the strict rule costs (measured on the 200,019-token vocabulary)
+	direction, lexical seeds / semantic anchors kept:
+	    UP 15/22, 9/17 | DOWN 13/19, 10/17 | LEFT 5/24, 5/14 | RIGHT 11/26, 6/14
+	CJK and the arrows survive as tokens (上 4286, 下 3771, 左 30520, 右 29848,
+	↑ 38816, ↓ 38040, ← 75391, → 15155). What dies is Slavic / Greek / Nordic /
+	Turkish left-and-right and every disambiguating phrase. LEFT is now the
+	thinnest class -- the mirror image of the CJK asymmetry that motivated moving
+	to the full vocabulary in the first place. Recorded, not patched.
+	grid, same order: wall 11/25, 6/13 | open 14/22, 0/11 | goal 11/15, 8/12 |
+	agent 5/7, 5/8 | axis 21/37, 5/14 | status 4/13, 2/8.
+
+18. Two seed-level decisions the rule forced
+	18.1 grid 'open' would have lost its semantic stage entirely: all eleven of its
+	     anchors were phrases, precisely because the bare word collides with
+	     open()/OpenAI, and it has no lexical seed for the same reason. Anchors are
+	     now the admissible single words that are NOT the homograph: empty, blank,
+	     vacant. 'leer' / 'vide' / 'frei' / '空' were tried and dropped -- all four
+	     are cross-language homographs (leer = to read in Spanish, vide = vid-,
+	     空 = sky/air, frei = free-as-in-liberty) and between them admitted 82
+	     tokens, nearly all junk.
+	18.2 direction 'monter' dropped. It is a token, but 16 of its 17 lexical hits
+	     were Monster / Monsters / Monte / Monterey / monaster / montr / montrer.
+	     The dictionary used to suppress those for free. Same criterion that
+	     already excluded 'sol' / 'port' / 'alt'; the UP sense is still carried by
+	     subir, sopra, arriba, boven, acima.
+
+19. Result
+	direction  540 -> 446 tokens  (UP 149, DOWN 119, LEFT 52, RIGHT 126)
+	grid      1258 -> 927 tokens  (786 kept, 472 dropped, 141 added)
+	Both notebooks now run start to finish off the workstation: direction_tokens
+	picked up grid_tokens' CACHE_DIR / OUT_DIR resolution, and OLD_SUBSET (the
+	28,973-token list_all_tokens.npy, print-only) is gone. A contamination-probe
+	cell was added to direction_tokens, mirroring grid cell 9.
+
+20. The price of dropping the dictionary, and where to spend the next hour
+	The word list was doing real work: an English word had to match at .95 instead
+	of .85. Without it the lexical stage admits ~95 new junk tokens in grid,
+	concentrated in ten seeds -- objectif->object (25), pared->pare/paired (12),
+	livre->live (11), agent->gent/argent (10), ligne->Line (10),
+	position->opposition/potion (8), barrier->carrier (5), blocked->locked (5),
+	destination->estimation/designation (4), inaccessible->accessible (4).
+	direction gets off lighter: the probe cell reports ' bright' and ' Wright'
+	(both 'right' at ratio .909) and nothing else.
+	No frequency proxy fixes this. BPE merge order was tried as a dictionary
+	replacement and rejected: the words that leak sit ABOVE any usable cutoff
+	(Alberta 64446, destiny 74957, Colonel 114666, offend 173928, parted 184550)
+	while the cutoff needed to reach them also removes real hits (' baixo' 59536,
+	' cima' 54162, ' izquier', ' rechten', ' верх'). The remedy that fits the
+	methodology is to drop the ten seeds above, one line each, and re-run.
+
+21. Disk: the gather was saving ~150x more than any probe reads
+	jlens_reasoning_tokens wrote one .pt per (reasoning token, layer). A 700-token
+	chain over 17 layers is ~12k files and ~68 MB PER STEP, and the volume ran out
+	while the sweep was still going. A probe reads maybe 40 tokens' worth of that.
+	Fix, in telos_interp/jlens_utils/ (stdlib only, no torch, so the pruning script
+	does not load the model stack): one jlens_top_filter shared by three consumers.
+	  - jlens_reasoning_tokens.py --signal-json: full CSV as before, then a second
+	    cheap forward pass that saves only the selection. Buffering the first pass
+	    instead was rejected -- hundreds of MB on a long multi-step chain, and the
+	    GPU was never the bottleneck here, the .pt writes were.
+	  - scripts/delete_non_jlens_selected.py: the same filter negatively, for the
+	    thousands of trajectories already gathered in full. Dry-run by default.
+	  - prepare_activations_for_probing --token-selection recorded_jlens /
+	    recorded_random reads the {stem}_jlens_selection.json both of those write.
+	The test that matters is prune(full gather) == filtered gather, byte for byte.
+	It failed the first time for a real reason: the gather was passing --layers as
+	the candidate pool while the pruner derived it from the CSV, and a layer with
+	no jlens matrix emits no CSV rows. The CSV's layers are the right pool -- a
+	layer that cannot be scored must not be rankable -- and both now use it.
+
+22. The control arm had to be reserved BEFORE the deletion
+	Pruning to the jlens top-N destroys the matched random control permanently:
+	afterwards "draw N tokens uniformly" can only draw from the top-N. So the
+	filter returns two arms and both survive the prune, ~2x the jlens-only
+	footprint and still ~75x smaller than before. The record is the only place the
+	control exists, which is why prepare grew recorded_* rather than re-scoring.
+	Its entries deliberately carry NO direction counts: split_next_action_manifest
+	keys off that absence to sample rather than rank, and a control that recorded
+	counts would take the lowest layer of every trajectory and stop being one.
+	Layer 15 is force-kept for every selected token of both arms (on top of the
+	top-M, not counted against it), so --layers 15 still yields the fixed-layer
+	baseline without another GPU run.
+
+23. Top-K is now a training-time knob
+	split_next_action_manifest gained --tokens-per-trajectory K alongside the
+	existing --layers-per-token, ranked with select_token_layer_pairs' exact
+	tie-break, so it equals having prepared with --num-tokens K. One prepared
+	dataset serves top-1/2/3; train_next_action_direction_probe.sh sweeps
+	TOKENS_PER_TRAJ="1 2 3" x {jlens, random} x {lr, mlp}.
+	One trap found while writing it: split_names buckets a trajectory by its
+	DOMINANT action, and on multi-step data thinning tokens can change which
+	action dominates -- giving a different train/eval split at K=1 than at K=3 and
+	making the sweep incomparable. Strata are now computed from the unthinned
+	samples. Single-step data is unaffected; this only bites when multi-step lands.
+
+	Landmines for whoever runs this:
+	  - do NOT prune while prepare_next_action_jlens_by_complexity.sh is walking
+	    the tree (it also rm -rf's its own $VIEW symlink farm every run).
+	  - any already-prepared next_action manifest dies at the prune; its
+	    activations_root points at files that are about to go. Re-run prepare.
+	  - asking prepare for more tokens than --select-num-tokens after pruning
+	    yields tokens with no files.
+
+24. Selection is method-dispatched; logit lens added beside the jlens
+	The selection was jlens-shaped in three places at once -- KeptTokens.jlens /
+	.random, ARMS = ("jlens","random") in record.py, and a hand-written
+	RECORDED_SELECTIONS dict -- so adding a lens meant editing all three plus every
+	call site. It is now one registry: telos_interp/jlens_utils/methods.py holds
+	METHODS = {jlens, logitlens, random}, KeptTokens is arm-keyed by method name,
+	and prepare's mode names (<lens>_direction, recorded_<method>) are GENERATED
+	from it. Adding a future method is a registry entry.
+
+	Two axes per method, both properties of the method rather than caller flags:
+	which CSV it scores (None = no CSV), and whether it ranks by direction count or
+	samples uniformly. `scored` has to live on the method because an unscored arm
+	must record no counts -- split_next_action_manifest keys off that absence.
+
+	The logit lens turned out to be nearly free. apply_lens_transport with an empty
+	J_rows IS the logit lens: no transport, just final RMS norm + unembed. That is
+	already the TARGET_LAYER=23 case, which is why the jlens is the identity there.
+	So the two lenses are one function called two ways, and --lens both emits both
+	CSVs from ONE forward pass -- the cost is a second unembed per chunk, not a
+	second pass. Free correctness check, now a test: at layer 23 the two CSVs must
+	be row-for-row identical, since the transports coincide there.
+	They differ in exactly two ways: eligible layers (the jlens needs a fitted J,
+	the logit lens needs nothing, so it covers every requested layer -- and can
+	therefore select layers the jlens never could), and the transport itself.
+
+	The awkward part: the tree was ALREADY pruned to jlens+random, ~5 layers per
+	token. So a logitlens arm cannot be recovered by re-filtering -- the tokens it
+	would pick are gone. delete_non_jlens_selected.py now refuses to widen an
+	existing selection and says so, rather than deleting on the basis of an arm it
+	cannot satisfy. The path that works is jlens_reasoning_tokens.py --extend:
+	one CSV-only forward pass for the new lens (the CSV comes from the model, not
+	from the tree, so pruning is no obstacle), gather only the .pt files not
+	already present (the arms overlap heavily on genuinely direction-loaded
+	tokens), and MERGE the arm into the record. Wrapped by
+	scripts/jlens_extend_logitlens.sh, dry-run by default.
+
+	The control arm is deliberately NOT redrawn on extend. The one in the record is
+	a uniform draw over the FULL chain, taken before anything was deleted, so it is
+	a valid matched control for the logitlens arm as it stands. A fresh draw now
+	could only sample the survivors -- exactly the bias the recorded control exists
+	to avoid. arm_seed() freezes random's formula at f"{seed}-{seed_key}" for the
+	same reason: the tree on disk was cut to controls drawn with it.
+
+	Record format is v2 (arms: {name: {config, picks}}), per-arm config because an
+	arm added by --extend carries that run's parameters while the arms already on
+	disk carry the original prune's. v1 is still read -- it must be, every pruned
+	trajectory has one and it is the only surviving trace of that control arm.
+	Filename unchanged for the same reason.
+
+	Comparability note for the writeup: the jlens and logitlens arms were selected
+	at different times, but both from a full-chain CSV of the same trajectory, so
+	both are honest top-20s over the whole chain. What differs is only the lens
+	that ranked them. The random arm is shared between them, which makes the
+	three-way comparison tighter than a re-drawn control would have been.
+
+	Landmines, in addition to entry 23's:
+	  - the logitlens arm can select layers with no jlens matrix, which were pruned
+	    away entirely. Its disk cost is NOT bounded by the jlens candidate pool --
+	    run --extend --dry-run and read the projected file count first.
+	  - prepare with recorded_logitlens against a trajectory whose record predates
+	    the extension yields nothing (and says so under --verbose). That is the
+	    correct outcome, not a bug: the arm you name is the arm you get.

@@ -29,8 +29,10 @@ RANDOM_TOKENS=${RANDOM_TOKENS:-20}
 SELECT_SEED=${SELECT_SEED:-42}
 DIRECTION_CLASSES=${DIRECTION_CLASSES:-all}
 
+METHODS=${METHODS:-jlens,random}    # arms to keep; the union survives
 SIZES=${SIZES:-}                    # e.g. "11,15"; empty for all
 COMPLEXITIES=${COMPLEXITIES:-}      # e.g. "0.0,0.2,0.4"; empty for all
+LIMIT=${LIMIT:-}                    # stop after N trajectories -- use it for a first --apply
 APPLY=${APPLY:-}                    # 1 to actually delete
 TOLERATE_MISSING=${TOLERATE_MISSING:-}
 VERBOSE=${VERBOSE:-1}               # one line per trajectory
@@ -48,6 +50,7 @@ uv run --project "$REPO" python "$REPO/scripts/delete_non_jlens_selected.py" \
     --activations-dir "$ACTIVATIONS_DIR" \
     --trajectories-dir "$TRAJECTORIES" \
     --signal-json "$SIGNAL_JSON" \
+    --select-methods "$METHODS" \
     --select-num-tokens "$NUM_TOKENS" \
     --select-num-layers "$NUM_LAYERS" \
     --select-always-layers "$ALWAYS_LAYERS" \
@@ -56,6 +59,7 @@ uv run --project "$REPO" python "$REPO/scripts/delete_non_jlens_selected.py" \
     --direction-classes "$DIRECTION_CLASSES" \
     ${SIZES:+--sizes "$SIZES"} \
     ${COMPLEXITIES:+--complexities "$COMPLEXITIES"} \
+    ${LIMIT:+--limit "$LIMIT"} \
     ${TOLERATE_MISSING:+--tolerate-missing} \
     ${VERBOSE:+--verbose} \
     ${APPLY:+--apply}

@@ -1,16 +1,20 @@
 """Pick which reasoning tokens and layers a `next_action` probe trains on.
 
 `scripts/jlens_reasoning_tokens.py` writes, per trajectory, both the residual-stream
-activations (gather_activations layout) and a `{stem}_jlens_analysis.csv` holding the
-top-20 j-space predictions for every (reasoning token, layer). This module turns that
-CSV into a selection: the tokens whose j-space is most *direction-loaded* (the
+activations (gather_activations layout) and one `{stem}_{lens}_analysis.csv` per lens,
+holding the top-20 predictions for every (reasoning token, layer). This module turns those
+CSVs into a selection: the tokens whose lens output is most *direction-loaded* (the
 per-trajectory version of notebooks/direction_token_location_analysis.ipynb), plus the
 matched random controls.
 
-The CSV reading, scoring and layer ranking live in `telos_interp.jlens_utils`, shared with
-the two scripts that prune the activation tree, so a probe dataset and a pruned tree can
-never disagree about which tokens matter. What stays here is the probe-side wrapping: the
-CLI's selection modes, and the `SampleRef` list a manifest is built from.
+The method registry, CSV reading, scoring and ranking all live in
+`telos_interp.jlens_utils`, shared with the two scripts that prune the activation tree, so
+a probe dataset and a pruned tree can never disagree about which tokens matter. What stays
+here is the probe-side wrapping: the CLI's selection modes, and the `SampleRef` list a
+manifest is built from.
+
+The mode names are **generated from the registry** rather than listed, so a new lens gets
+its `<lens>_direction` and `recorded_<lens>` modes for free.
 
 Stdlib only — no torch — so the selection logic is testable on its own.
 """
@@ -22,14 +26,18 @@ from pathlib import Path
 from telos_interp.jlens_utils import (
     DEFAULT_JLENS_CSV_SUFFIX,
     DIRECTION_CLASSES,
+    METHODS,
     TokenScore,
+    analysis_csv_path,
     jlens_csv_path,
     load_direction_tokens,
     output_start,
     rank_layers_by_direction,
+    rank_tokens,
     read_direction_counts,
     read_selection_record,
     record_path,
+    scored_methods,
     step_folder_index,
 )
 
@@ -38,7 +46,8 @@ from telos_interp.jlens_utils import (
 __all__ = [
     "DEFAULT_JLENS_CSV_SUFFIX",
     "DIRECTION_CLASSES",
-    "LayerSelection",
+    "RECORDED_SELECTIONS",
+    "SCORED_SELECTIONS",
     "SampleRef",
     "SelectionConfig",
     "TokenScore",
@@ -51,12 +60,20 @@ __all__ = [
     "step_folder_index",
 ]
 
-TokenSelection = str  # "all" | "jlens_direction" | "random" | "recorded_jlens" | "recorded_random"
-LayerSelection = str  # "spec" | "jlens_direction" | "random"
+TokenSelection = str  # "all" | "<lens>_direction" | "random" | "recorded_<method>"
+LayerSelection = str  # "spec" | "<lens>_direction" | "random"
 
-# token_selection values that read a pruned tree's {stem}_jlens_selection.json instead of
-# re-scoring the CSV. Mapped to the arm of the record they take.
-RECORDED_SELECTIONS = {"recorded_jlens": "jlens", "recorded_random": "random"}
+# Scored modes that re-score a lens CSV, mapped to the method they score. `jlens_direction`
+# is the pre-existing name and keeps working -- the recorded invocations in configs/**/*.conf
+# depend on it.
+SCORED_SELECTIONS = {f"{name}_direction": name for name in scored_methods()}
+
+# Modes that read a pruned tree's {stem}_jlens_selection.json instead of re-scoring, mapped
+# to the arm of the record they take.
+RECORDED_SELECTIONS = {f"recorded_{name}": name for name in METHODS}
+
+TOKEN_SELECTIONS = ("all", "random", *SCORED_SELECTIONS, *RECORDED_SELECTIONS)
+LAYER_SELECTIONS = ("spec", "random", *SCORED_SELECTIONS)
 
 
 @dataclass
@@ -84,11 +101,25 @@ class SelectionConfig:
         """True when selection reduces to the pre-existing behaviour (no CSV needed)."""
         return self.token_selection == "all" and self.layer_selection == "spec"
 
+    @property
+    def method(self) -> str | None:
+        """The registry method this selection scores or reads, if any.
+
+        >>> SelectionConfig(token_selection="logitlens_direction").method
+        'logitlens'
+        >>> SelectionConfig(token_selection="recorded_random").method
+        'random'
+        >>> SelectionConfig().method is None
+        True
+        """
+        return SCORED_SELECTIONS.get(self.token_selection) or RECORDED_SELECTIONS.get(self.token_selection)
+
     def to_manifest(self) -> dict:
         """JSON-serializable record of how the samples were chosen."""
         return {
             "token_selection": self.token_selection,
             "layer_selection": self.layer_selection,
+            "method": self.method,
             "num_tokens": self.num_tokens,
             "num_layers": self.num_layers,
             "direction_tokens_path": self.direction_tokens_path,
@@ -126,7 +157,7 @@ def _pick_layers(
         if num_layers >= len(candidate_layers):
             return list(candidate_layers)
         return sorted(rng.sample(candidate_layers, num_layers))
-    if layer_selection == "jlens_direction":
+    if layer_selection in SCORED_SELECTIONS:
         return sorted(rank_layers_by_direction(token_layers, candidate_layers)[:num_layers])
     raise ValueError(f"Unknown layer_selection: {layer_selection}")
 
@@ -142,10 +173,10 @@ def _select_from_record(
 ) -> tuple[list["SampleRef"], int]:
     """Take the selection a pruning run already made, instead of re-scoring the CSV.
 
-    On a tree that has been pruned to a selection, re-scoring works for the jlens arm but
+    On a tree that has been pruned to a selection, re-scoring works for a lens arm but
     *not* for the control: a uniform draw over the surviving tokens is no longer a uniform
     draw over the reasoning chain. The record is the only place the control survives, so
-    both arms are read from it.
+    every arm is read from it.
 
     `candidate_layers`/`candidate_steps` still narrow the result, which is what makes
     `--layers 15` a layer-15 dataset carved out of the same record.
@@ -156,8 +187,14 @@ def _select_from_record(
             print(f"  Skipped: no selection record at {path}")
         return [], 0
 
+    method = RECORDED_SELECTIONS[selection.token_selection]
     kept, _ = read_selection_record(path)
-    arm = getattr(kept, RECORDED_SELECTIONS[selection.token_selection])
+    arm = kept[method]
+    if not arm and verbose:
+        # A record that predates this method -- e.g. asking for `logitlens` on a tree pruned
+        # before that arm existed. Nothing to train on, and nothing that can be recovered
+        # here: the arm has to be added by jlens_reasoning_tokens.py --extend.
+        print(f"  Skipped: selection record at {path} has no '{method}' arm (has {kept.names})")
     step_set, layer_set = set(candidate_steps), set(candidate_layers)
 
     # An explicit num_tokens caps the arm to its top-K. The record is written in rank order
@@ -203,7 +240,6 @@ def select_token_layer_pairs(
     candidate_steps: list[int],
     available_tokens_by_step: dict[int, list[int]],
     selection: SelectionConfig,
-    csv_suffix: str = DEFAULT_JLENS_CSV_SUFFIX,
     verbose: bool = False,
 ) -> tuple[list[SampleRef], int]:
     """Select the (token, layer) activation files to train on for one trajectory.
@@ -236,16 +272,19 @@ def select_token_layer_pairs(
 
     rng = random.Random(f"{selection.seed}-{trajectory_folder.name}")
     num_tokens, num_layers = selection.num_tokens, selection.num_layers
-    needs_csv = "jlens_direction" in (selection.token_selection, selection.layer_selection)
+    # Either axis can name a lens; they must name the same one, which the caller validates.
+    scoring_method = SCORED_SELECTIONS.get(selection.token_selection) or SCORED_SELECTIONS.get(
+        selection.layer_selection
+    )
 
     scores: dict[tuple[int, int], TokenScore] = {}
-    if needs_csv:
+    if scoring_method is not None:
         if selection.direction_tokens is None:
-            raise ValueError("direction_tokens is required when a jlens_direction mode is used")
-        csv_path = jlens_csv_path(trajectory_folder, csv_suffix)
-        if not csv_path.exists():
+            raise ValueError(f"direction_tokens is required when a '{scoring_method}' mode is used")
+        csv_path = analysis_csv_path(trajectory_folder, scoring_method)
+        if csv_path is None or not csv_path.exists():
             if verbose:
-                print(f"  Skipped: no jlens CSV at {csv_path}")
+                print(f"  Skipped: no {scoring_method} CSV at {csv_path}")
             return [], 0
         scores = read_direction_counts(csv_path, selection.direction_tokens, top_k=selection.jlens_top_k)
 
@@ -261,9 +300,11 @@ def select_token_layer_pairs(
 
     # Candidate tokens as (step folder index, output-relative index).
     step_set = set(candidate_steps)
-    if selection.token_selection == "jlens_direction":
-        candidates = [key for key in by_disk if key[0] in step_set]
-        candidates.sort(key=lambda key: (-by_disk[key].total(candidate_layers), key[0], key[1]))
+    if selection.token_selection in SCORED_SELECTIONS:
+        # rank_tokens is the same ordering jlens_utils.top_filter selects with, shared so a
+        # prepared dataset and a pruned tree cannot disagree about which tokens rank highest.
+        candidates = rank_tokens({key: score for key, score in by_disk.items() if key[0] in step_set},
+                                 candidate_layers)
         if num_tokens is not None:
             if verbose and num_tokens > len(candidates):
                 print(f"  Only {len(candidates)} scored tokens available (asked for {num_tokens})")
