@@ -385,3 +385,27 @@ csv either, and that is what makes the direction number mean anything.
 	  - prepare with recorded_logitlens against a trajectory whose record predates
 	    the extension yields nothing (and says so under --verbose). That is the
 	    correct outcome, not a bug: the arm you name is the arm you get.
+
+25. GPU-host paths, recorded because they are not guessable
+	--jlens_dir is /workspace/jlens/gridenv, NOT /workspace/jlens. The module
+	docstring in jlens_reasoning_tokens.py said the latter and was simply wrong;
+	fixed. Layout:
+
+	  /workspace/jlens/
+	      direction_tokens_full.json      <- --signal-json
+	      gridenv/                        <- --jlens_dir
+	          gpt-oss-20b_jacobian_lens.pt
+	          gpt-oss-20b_unembed.pt
+
+	Two traps in that:
+	  - the direction vocabulary is one level UP from the lens matrices, so the
+	    two paths do not share a prefix beyond /workspace/jlens.
+	  - --jlens_dir also holds the cached unembed (lm_head + final norm), which is
+	    why --lens logitlens still requires it even though it never reads the
+	    Jacobian. ensure_unembed_assets falls back to downloading a 4.2 GB HF shard
+	    when the cache is not where it looked, so a wrong --jlens_dir costs a long
+	    download rather than failing fast.
+
+	The scripts/*.sh defaults now encode this layout; the repo's own
+	data/jlens/direction_tokens_full.json is the source-controlled copy the
+	notebooks write, deployed to /workspace/jlens/ on the host.

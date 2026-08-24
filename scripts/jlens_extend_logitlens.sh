@@ -33,8 +33,8 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)   # so uv finds pyproject.
 
 ACT=${ACT:-/workspace/activations/jlens_reasoning_tokens}
 TRAJ=${TRAJ:-/workspace/trajectories/reveng/trajectories_train_single_step}
-JLENS_DIR=${JLENS_DIR:-/workspace/jlens}
-SIGNAL_JSON=${SIGNAL_JSON:-$REPO/data/jlens/direction_tokens_full.json}
+JLENS_DIR=${JLENS_DIR:-/workspace/jlens/gridenv/}
+SIGNAL_JSON=${SIGNAL_JSON:-/workspace/jlens/direction_tokens_full.json}
 
 LAYERS=${LAYERS:-7:23}
 METHODS=${METHODS:-logitlens}     # arms to add; ones already recorded are left alone

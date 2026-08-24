@@ -27,10 +27,16 @@ ensure_unembed_assets), reused from jlens_action_ranks_sampled.py.
 Usage:
   python scripts/jlens_reasoning_tokens.py \
     --trajectory-paths /workspace/trajectories/trajectories_test_full \
-    --jlens_dir /workspace/jlens \
+    --jlens_dir /workspace/jlens/gridenv \
     --layers 7:23 \
     --per-combo 200 \
     --activations-dir /workspace/activations/jlens_reasoning_tokens
+
+--jlens_dir is the folder holding gpt-oss-20b_jacobian_lens.pt *and* the cached
+gpt-oss-20b_unembed.pt, so it is required even for --lens logitlens, which never
+reads the Jacobian. On the GPU host that is /workspace/jlens/gridenv -- note the
+direction vocabulary passed to --signal-json lives one level up, at
+/workspace/jlens/direction_tokens_full.json.
 
 --per-combo caps the run count per (size, complexity) cell rather than globally,
 so the sweep stays evenly spread over the grid: 200 across a 6x6 grid = 7200
@@ -891,7 +897,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--trajectory-paths", nargs="+", required=True,
                     help="Trajectory JSON file(s), directory, or glob(s).")
-    ap.add_argument("--jlens_dir", type=Path, required=True)
+    ap.add_argument("--jlens_dir", type=Path, required=True,
+                    help="Folder holding gpt-oss-20b_jacobian_lens.pt and the cached "
+                         "gpt-oss-20b_unembed.pt (/workspace/jlens/gridenv on the GPU host). "
+                         "Required even for --lens logitlens, which reads the unembed cache but "
+                         "never the Jacobian -- point it at the wrong folder and the first run "
+                         "re-downloads a 4.2 GB shard to rebuild that cache.")
     ap.add_argument("--activations-dir", type=Path, required=True,
                     help="Base dir for the gather_activations-style tree: per-trajectory "
                          "activations under size{S}/{stem}/{model}/layer_N/step_M/output/ and the "

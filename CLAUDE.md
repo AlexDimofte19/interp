@@ -35,6 +35,22 @@ Linux GPU hosts; on this Mac there is no conda.
 consume already-extracted artifacts (CSVs, `.pt` files, manifests, notebooks). Extract activations on a
 **single** GPU: `device_map="auto"` across multiple GPUs produces NaNs for this MoE model.
 
+**GPU-host paths.** `--jlens_dir` is **`/workspace/jlens/gridenv`**, not `/workspace/jlens`. It holds
+`gpt-oss-20b_jacobian_lens.pt` *and* the cached `gpt-oss-20b_unembed.pt` (lm_head + final norm), so it is
+required even for `--lens logitlens`, which never reads the Jacobian — get it wrong and the first run
+re-downloads a 4.2 GB shard to rebuild the unembed cache. The direction vocabulary is one level **up**, at
+`/workspace/jlens/direction_tokens_full.json` — the deployed copy of the repo's
+`data/jlens/direction_tokens_full.json`, which is where the notebooks write it. The `scripts/*.sh`
+defaults encode this layout; pass `JLENS_DIR` / `SIGNAL_JSON` to override.
+
+```
+/workspace/jlens/
+    direction_tokens_full.json        <- --signal-json / --direction-tokens-path
+    gridenv/                          <- --jlens_dir
+        gpt-oss-20b_jacobian_lens.pt
+        gpt-oss-20b_unembed.pt        (built on first run, reused after)
+```
+
 ## Architecture
 
 ### CLI
@@ -90,7 +106,8 @@ copies nothing and its manifest's `samples` point into the original activations 
 `scripts/jlens_reasoning_tokens.py` does one forward pass per trajectory and emits both the activations
 and a per-trajectory `{stem}_{lens}_analysis.csv` of top-20 lens predictions per (reasoning token, layer).
 Tokens are scored by how many of their top-k lens predictions are direction words, using a vocabulary
-JSON (`data/jlens/direction_tokens_full.json`, `data/jlens/grid_tokens_full.json`).
+JSON (`data/jlens/direction_tokens_full.json`, `data/jlens/grid_tokens_full.json` in the repo; deployed to
+`/workspace/jlens/` on the GPU host — see **GPU-host paths** above).
 
 `--lens jlens|logitlens|both`. The two lenses are **one code path**: `apply_lens_transport` with an empty
 `J_rows` *is* the logit lens (unembed each layer where it sits), and layer 23 is that case already, which
