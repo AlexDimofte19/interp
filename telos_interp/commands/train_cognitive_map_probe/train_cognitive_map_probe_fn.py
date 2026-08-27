@@ -11,7 +11,6 @@ from tqdm import tqdm
 from telos_interp.commands.prepare_activations_for_probing.manifest_loader import (
     GridTileCompactDataset,
     IndexedGridTileCompactDataset,
-    build_flat_grid_tile,
     detect_format,
     load_grid_tile_compact,
     load_v3_manifest,
@@ -550,9 +549,77 @@ def _load_and_preprocess_train_data_v1(
     }
 
 
+CACHE_FILENAME = "_packed_activations.pt"
+CACHE_VERSION = 1
+
+
+def _cache_fingerprint(manifest_path: Path, manifest: dict) -> dict:
+    """Identity of the manifest a cache was built from.
+
+    A token-major grid_tile manifest references activations in place through
+    `activations_root`, so the cache is only valid while that manifest is unchanged. Size
+    and mtime catch a rewritten manifest; the entry count and root catch a manifest swapped
+    for a same-sized one. Mismatch means rebuild, never silently reuse.
+    """
+    stat = manifest_path.stat()
+    return {
+        "cache_version": CACHE_VERSION,
+        "probe_type": manifest.get("probe_type"),
+        "manifest_size": stat.st_size,
+        "manifest_mtime_ns": stat.st_mtime_ns,
+        "num_entries": len(manifest.get("trajectories", [])),
+        "activations_root": str(manifest.get("activations_root", "")),
+    }
+
+
+def _load_grid_tile_compact_cached(
+    manifest: dict,
+    manifest_path: Path,
+    use_cache: bool,
+    verbose: bool,
+) -> dict:
+    """`load_grid_tile_compact`, optionally through a packed cache beside the manifest.
+
+    A token-major manifest names every activation individually and copies none of them, so
+    a run opens one .pt per sample -- tens of thousands of small reads that dominate wall
+    clock and leave the GPU idle. Repeated training over one dataset (a seed sweep, an
+    lr/mlp pair) pays that every time. The cache changes only how the tensors are fetched:
+    same tensors, same order, so a cached run and an uncached one train on identical data.
+    Invalidated by `_cache_fingerprint`, not trusted blindly, and rebuilt rather than
+    failing when unreadable.
+    """
+    if not use_cache:
+        return load_grid_tile_compact(manifest, manifest_path)
+
+    cache_path = manifest_path.parent / CACHE_FILENAME
+    fingerprint = _cache_fingerprint(manifest_path, manifest)
+
+    if cache_path.exists():
+        try:
+            blob = torch.load(cache_path, map_location="cpu", weights_only=False)
+            if blob.get("fingerprint") == fingerprint:
+                if verbose:
+                    print(f"  loaded {blob['compact']['base_act'].shape[0]} entries from cache {cache_path}")
+                return blob["compact"]
+            if verbose:
+                print(f"  cache at {cache_path} is stale, rebuilding")
+        except Exception as exc:  # a truncated or unreadable cache must not fail the run
+            if verbose:
+                print(f"  cache at {cache_path} unreadable ({exc}), rebuilding")
+
+    compact = load_grid_tile_compact(manifest, manifest_path)
+    tmp = cache_path.with_suffix(".pt.tmp")
+    torch.save({"fingerprint": fingerprint, "compact": compact}, tmp)
+    tmp.replace(cache_path)
+    if verbose:
+        print(f"  wrote cache {cache_path}")
+    return compact
+
+
 def _load_and_preprocess_train_data_v3(
     train_path: Path,
     verbose: bool,
+    use_cache: bool = False,
 ) -> dict:
     """Load v3 training data (manifest dir) and filter NaN trajectories.
 
@@ -574,7 +641,7 @@ def _load_and_preprocess_train_data_v3(
             f"Expected probe_type='grid_tile', got '{probe_type}'. This command only supports grid_tile probe data."
         )
 
-    compact = load_grid_tile_compact(manifest, manifest_path)
+    compact = _load_grid_tile_compact_cached(manifest, manifest_path, use_cache, verbose)
 
     if verbose:
         num_trajectories = compact["base_act"].shape[0]
@@ -611,11 +678,12 @@ def _load_and_preprocess_train_data_v3(
 def _load_and_preprocess_train_data(
     train_path: Path,
     verbose: bool,
+    use_cache: bool = False,
 ) -> dict:
     """Detect format (v1 .pt or v3 manifest dir) and dispatch."""
     fmt = detect_format(train_path)
     if fmt == 3:
-        return _load_and_preprocess_train_data_v3(train_path, verbose)
+        return _load_and_preprocess_train_data_v3(train_path, verbose, use_cache)
     return _load_and_preprocess_train_data_v1(train_path, verbose)
 
 
@@ -688,6 +756,7 @@ def _load_separate_eval_data_v3(
     eval_path: Path,
     label_to_idx: dict[int, int],
     verbose: bool,
+    use_cache: bool = False,
 ) -> dict:
     """Load and process separate evaluation data from a v3 manifest dir.
 
@@ -709,7 +778,7 @@ def _load_separate_eval_data_v3(
     if probe_type != "grid_tile":
         raise ValueError(f"Expected probe_type='grid_tile' in eval manifest, got '{probe_type}'.")
 
-    compact = load_grid_tile_compact(manifest, manifest_path)
+    compact = _load_grid_tile_compact_cached(manifest, manifest_path, use_cache, verbose)
 
     # NaN filter on trajectories
     nan_mask = torch.isnan(compact["base_act"]).any(dim=1)
@@ -874,6 +943,7 @@ def _prepare_train_eval_v3(
     per_class_max_count: int | None,
     seed: int,
     verbose: bool,
+    use_cache: bool = False,
 ) -> dict:
     """V3 (manifest dir) flow: operate on compact (T, D) + (T, C, 2) + (T, C) tensors throughout.
 
@@ -886,6 +956,29 @@ def _prepare_train_eval_v3(
     activation_dim = compact["D"]
     num_trajectories = compact["base_act"].shape[0]
 
+    # Both `subset` and the internal split permute ENTRIES. One entry is one trajectory in
+    # a classic manifest, so both are trajectory-level there. In a token-major manifest a
+    # trajectory owns ~20 entries that share its grid, and a permutation over entries puts
+    # near-duplicates of every eval row into training -- the landmine CLAUDE.md records,
+    # firing for real. Refuse rather than silently inflate: pre-split the manifest with
+    # scripts/split_next_action_manifest.py and pass the halves explicitly.
+    token_major = len(set(compact["trajectory_names"])) < num_trajectories
+    if token_major:
+        if eval_data_path is None:
+            raise ValueError(
+                f"{num_trajectories} entries cover only {len(set(compact['trajectory_names']))} "
+                "trajectories, so this manifest is token-major and an internal --eval-split "
+                "would put the same trajectory in both halves. Split it by trajectory first "
+                "(scripts/split_next_action_manifest.py ... --train-out X_train --eval-out "
+                "X_eval) and pass --eval-data-path."
+            )
+        if subset < 1.0:
+            raise ValueError(
+                f"--subset {subset} drops individual (token, layer) entries, not whole "
+                "trajectories, on a token-major manifest. Thin it at split time instead "
+                "(--tokens-per-trajectory / --layers-per-token) and keep --subset 1.0."
+            )
+
     # Subset by trajectory
     num_to_keep = max(1, int(num_trajectories * subset))
     perm = torch.randperm(num_trajectories)
@@ -893,7 +986,8 @@ def _prepare_train_eval_v3(
     base_act = compact["base_act"][keep_idx]
     positions = compact["positions"][keep_idx]
     raw_labels = compact["labels"][keep_idx]
-    print(f"Subset: keeping {num_to_keep}/{num_trajectories} trajectories ({subset * 100:.1f}%)")
+    unit = "token samples" if token_major else "trajectories"
+    print(f"Subset: keeping {num_to_keep}/{num_trajectories} {unit} ({subset * 100:.1f}%)")
     print(f"  Remaining samples: {num_to_keep * cells_per_trajectory}")
 
     # Remap labels (flatten -> remap -> reshape)
@@ -906,15 +1000,15 @@ def _prepare_train_eval_v3(
     debug_trajectory_positions = None
     debug_trajectory_labels = None
     if num_to_keep > 0:
-        first_act = base_act[0]                           # (D,)
-        first_pos_float = positions[0].float()            # (C, 2)
+        first_act = base_act[0]  # (D,)
+        first_pos_float = positions[0].float()  # (C, 2)
         # Reconstruct (C, D+2) for the model. This stores positions un-normalized;
         # if normalization is on we'll compose the position-pad-normalized version
         # back in the main body before calling the model.
         debug_trajectory_activations = torch.cat(
             [first_act.unsqueeze(0).expand(cells_per_trajectory, activation_dim), first_pos_float],
             dim=1,
-        ).clone()                                          # (C, D+2)
+        ).clone()  # (C, D+2)
         debug_trajectory_positions = positions[0].clone()  # (C, 2) original ints
         debug_trajectory_labels = remapped_labels[0].clone()  # (C,)
 
@@ -944,7 +1038,7 @@ def _prepare_train_eval_v3(
             raise FileNotFoundError(f"Evaluation data not found: {eval_path}")
         if detect_format(eval_path) != 3:
             raise ValueError("Train data is v3 (manifest dir) but eval data is v1 — formats must match.")
-        eval_compact = _load_separate_eval_data_v3(eval_path, label_to_idx, verbose)
+        eval_compact = _load_separate_eval_data_v3(eval_path, label_to_idx, verbose, use_cache)
         eval_base_act = eval_compact["base_act"]
         eval_positions = eval_compact["positions"]
         eval_labels_2d = eval_compact["labels"]
@@ -1080,6 +1174,7 @@ def train_cognitive_map_probe(
     seed: int = 42,
     verbose: bool = True,
     per_class_max_count: int | None = None,
+    cache_activations: bool = False,
 ) -> CognitiveMapProbe:
     """Train a cognitive map probing classifier on prepared activations.
 
@@ -1121,6 +1216,12 @@ def train_cognitive_map_probe(
             If not provided, uses CUDA if available.
         seed: Random seed for reproducibility
         verbose: Print training progress
+        per_class_max_count: Cap per class when balance_classes upsamples
+        cache_activations: Pack (activations, positions, labels) into
+            `_packed_activations.pt` beside the manifest on first load and reuse it
+            afterwards. Worth it for a token-major manifest, which references the gathered
+            tree in place and so opens one .pt per sample; a fingerprint over the manifest
+            invalidates it, and the tensors are identical either way.
 
     Returns:
         Trained CognitiveMapProbe instance (also saved to output_path)
@@ -1141,7 +1242,7 @@ def train_cognitive_map_probe(
     if not 0.0 < subset <= 1.0:
         raise ValueError(f"subset must be in (0.0, 1.0], got {subset}")
 
-    load_result = _load_and_preprocess_train_data(train_path, verbose)
+    load_result = _load_and_preprocess_train_data(train_path, verbose, cache_activations)
 
     if load_result["format"] == 3:
         bundle = _prepare_train_eval_v3(
@@ -1154,6 +1255,7 @@ def train_cognitive_map_probe(
             per_class_max_count=per_class_max_count,
             seed=seed,
             verbose=verbose,
+            use_cache=cache_activations,
         )
     else:
         bundle = _prepare_train_eval_v1(

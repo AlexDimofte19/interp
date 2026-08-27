@@ -51,11 +51,17 @@ def jlens_samples(num_trajectories=8, tokens=4, layers=(7, 15, 23)):
         label = i % 4
         for token_id in range(tokens):
             for layer in layers:
-                rows.append(sample(
-                    name, 0, token_id, layer, label,
-                    direction_count=10 - token_id,
-                    layer_direction_count={7: 1, 15: 5, 23: 3}[layer],
-                ))
+                rows.append(
+                    sample(
+                        name,
+                        0,
+                        token_id,
+                        layer,
+                        label,
+                        direction_count=10 - token_id,
+                        layer_direction_count={7: 1, 15: 5, 23: 3}[layer],
+                    )
+                )
     return rows
 
 
@@ -163,8 +169,7 @@ def test_split_is_identical_across_top_k():
     rows = jlens_samples(num_trajectories=20)
     strata = split.trajectory_strata(rows)
     splits = [
-        split.split_names(split.thin_tokens(rows, k, 42), eval_split=0.25, seed=42, strata=strata)
-        for k in (1, 2, 3)
+        split.split_names(split.thin_tokens(rows, k, 42), eval_split=0.25, seed=42, strata=strata) for k in (1, 2, 3)
     ]
     assert splits[0] == splits[1] == splits[2]
 
@@ -192,14 +197,18 @@ def test_empty_split_is_an_error():
 def _write_manifest(tmp_path, rows):
     prepared = tmp_path / "prepared"
     prepared.mkdir()
-    (prepared / "manifest.json").write_text(json.dumps({
-        "format_version": 3,
-        "probe_type": "next_action",
-        "activation_dim": 8,
-        "activations_root": str(tmp_path / "acts"),
-        "action_to_id": ACTIONS,
-        "samples": rows,
-    }))
+    (prepared / "manifest.json").write_text(
+        json.dumps(
+            {
+                "format_version": 3,
+                "probe_type": "next_action",
+                "activation_dim": 8,
+                "activations_root": str(tmp_path / "acts"),
+                "action_to_id": ACTIONS,
+                "samples": rows,
+            }
+        )
+    )
     return prepared
 
 
@@ -240,3 +249,135 @@ def test_end_to_end_on_a_control_manifest(tmp_path):
     train, evaluation = _run(prepared, "--tokens-per-trajectory", "2", "--layers-per-token", "1")
     assert train["samples"] and evaluation["samples"]
     assert all("direction_count" not in s for s in train["samples"])
+
+
+# --- grid_tile manifests ------------------------------------------------------------------
+#
+# A grid arm is the same token selection with a different label, so it has to survive the
+# same reshaping. Two things differ and both can fail quietly: the entries live under
+# `trajectories` rather than `samples`, and there is no scalar label to stratify or count.
+
+
+def grid_samples(num_trajectories=8, tokens=4, layers=(7, 15, 23), sizes=(5, 15)):
+    """Token-major grid entries: no `label`, a `cells_key`, and a per-trajectory size."""
+    rows = []
+    for i in range(num_trajectories):
+        name = f"traj_{i:03d}"
+        for token_id in range(tokens):
+            for layer in layers:
+                row = sample(
+                    name,
+                    0,
+                    token_id,
+                    layer,
+                    label=0,
+                    direction_count=10 - token_id,
+                    layer_direction_count={7: 1, 15: 5, 23: 3}[layer],
+                )
+                del row["label"]
+                row["cells_key"] = f"{name}|0"
+                row["size"] = sizes[i % len(sizes)]
+                rows.append(row)
+    return rows
+
+
+def _write_grid_manifest(tmp_path, rows):
+    prepared = tmp_path / "prepared_grid"
+    prepared.mkdir()
+    names = sorted({r["name"] for r in rows})
+    (prepared / "manifest.json").write_text(
+        json.dumps(
+            {
+                "format_version": 3,
+                "probe_type": "grid_tile",
+                "activation_dim": 8,
+                "activations_root": str(tmp_path / "acts"),
+                "num_cells_per_trajectory": 4,
+                "cells": {
+                    f"{name}|0": {"positions": [[0, 0], [0, 1], [1, 0], [1, 1]], "labels": [0, 1, 2, 3]}
+                    for name in names
+                },
+                "trajectories": rows,
+            }
+        )
+    )
+    return prepared
+
+
+def _run_grid(prepared, *extra):
+    argv = ["split_next_action_manifest.py", str(prepared), "--seed", "42", *extra]
+    old, sys.argv = sys.argv, argv
+    try:
+        split.main()
+    finally:
+        sys.argv = old
+    return (
+        json.loads((prepared.with_name(prepared.name + "_train") / "manifest.json").read_text()),
+        json.loads((prepared.with_name(prepared.name + "_eval") / "manifest.json").read_text()),
+    )
+
+
+def test_grid_split_writes_under_the_trajectories_key(tmp_path):
+    prepared = _write_grid_manifest(tmp_path, grid_samples(num_trajectories=20))
+    train, evaluation = _run_grid(prepared, "--tokens-per-trajectory", "2", "--layers-per-token", "1")
+
+    assert "samples" not in train, "grid entries keep the key the loader reads"
+    assert len(train["trajectories"]) + len(evaluation["trajectories"]) == 20 * 2
+    assert not ({s["name"] for s in train["trajectories"]} & {s["name"] for s in evaluation["trajectories"]})
+    assert train["activations_root"] == str(tmp_path / "acts")
+
+
+def test_grid_split_prunes_the_cells_map(tmp_path):
+    """An eval manifest carrying the training grids around is dead weight in every run."""
+    prepared = _write_grid_manifest(tmp_path, grid_samples(num_trajectories=20))
+    train, evaluation = _run_grid(prepared, "--layers-per-token", "1")
+
+    assert set(train["cells"]) == {s["cells_key"] for s in train["trajectories"]}
+    assert set(evaluation["cells"]) == {s["cells_key"] for s in evaluation["trajectories"]}
+    assert not (set(train["cells"]) & set(evaluation["cells"]))
+
+
+def test_grid_strata_fall_back_to_size(tmp_path):
+    """With no scalar label, the size mix is what has to match across the halves."""
+    rows = grid_samples(num_trajectories=20)
+    strata = split.trajectory_strata(rows)
+    assert set(strata.values()) == {5, 15}
+
+    prepared = _write_grid_manifest(tmp_path, rows)
+    train, evaluation = _run_grid(prepared, "--layers-per-token", "1")
+    for half in (train, evaluation):
+        assert len({s["size"] for s in half["trajectories"]}) == 2
+
+
+def test_grid_split_honours_eval_names(tmp_path):
+    """The shared test set is the point of the grid rerun: same trajectories as every arm."""
+    prepared = _write_grid_manifest(tmp_path, grid_samples(num_trajectories=10))
+    names_file = tmp_path / "eval_names.txt"
+    wanted = [f"traj_{i:03d}" for i in (1, 4, 7)]
+    names_file.write_text("\n".join(wanted))
+
+    train, evaluation = _run_grid(prepared, "--layers-per-token", "1", "--eval-names", str(names_file))
+    assert {s["name"] for s in evaluation["trajectories"]} == set(wanted)
+    assert not ({s["name"] for s in train["trajectories"]} & set(wanted))
+
+
+def test_a_copied_manifest_is_refused(tmp_path):
+    """A grid_tile dataset prepared without a selection is one entry per trajectory and
+    carries none of the per-token fields the thinning ranks on."""
+    prepared = tmp_path / "copied"
+    prepared.mkdir()
+    (prepared / "manifest.json").write_text(
+        json.dumps(
+            {
+                "format_version": 3,
+                "probe_type": "grid_tile",
+                "activation_dim": 8,
+                "num_cells_per_trajectory": 4,
+                "trajectories": [
+                    {"name": "traj_000", "act_path": "activations/traj_000.pt", "positions": [[0, 0]], "labels": [0]}
+                ],
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="token-selection"):
+        split.load_manifest(prepared)

@@ -9,6 +9,14 @@ Each per-trajectory .pt holds a single (D,) activation tensor. Per-cell
 positions/labels (for grid_tile) and other probe-type metadata live in
 manifest.json. The trainer loads activations into a (T, D) tensor and
 materializes per-cell rows on the fly via a Dataset.
+
+Two manifests copy no activations at all and instead reference the gathered tree in
+place, through an absolute `activations_root`: `next_action`, and `grid_tile` prepared
+with a token selection. Both are **token-major** -- one entry per (token, layer) rather
+than per trajectory, so a trajectory name repeats across entries. A token-major
+`grid_tile` manifest carries its per-cell payload once per (trajectory, step) under
+`cells`, keyed by each entry's `cells_key`, rather than repeating ~225 positions on every
+one of that trajectory's ~20 entries.
 """
 
 import json
@@ -32,20 +40,35 @@ def load_per_trajectory_activations(
 
     Total size is T * D * 4 bytes. For T=5000, D=131072 that's ~2.6 GB —
     comfortably fits in RAM for typical workloads.
+
+    `act_path` is relative to the manifest for a dataset that copied its activations, and
+    relative to the absolute `activations_root` for one that references the gathered tree
+    in place. A token-major manifest has one entry per (token, layer), so T counts entries,
+    not trajectories.
     """
-    root = manifest_path.parent
+    root = Path(manifest["activations_root"]) if "activations_root" in manifest else manifest_path.parent
     entries = manifest["trajectories"]
     num_trajectories = len(entries)
     activation_dim = manifest["activation_dim"]
     out = torch.empty((num_trajectories, activation_dim), dtype=torch.float32)
     for i, entry in enumerate(entries):
-        act = torch.load(root / entry["act_path"], map_location="cpu", weights_only=True)
+        act_path = Path(entry["act_path"])
+        act = torch.load(
+            act_path if act_path.is_absolute() else root / act_path,
+            map_location="cpu",
+            weights_only=True,
+        )
         out[i] = act.float()
     return out
 
 
 def load_grid_tile_compact(manifest: dict, manifest_path: Path) -> dict:
     """Load grid_tile manifest into compact tensors.
+
+    On a token-major manifest each entry is one (token, layer) and the per-cell payload
+    lives once per (trajectory, step) under `cells`; T is then the number of token samples
+    and `trajectory_names` repeats, which is what the trainer needs to refuse a row-level
+    train/eval split.
 
     Returns:
         Dict with keys:
@@ -59,6 +82,7 @@ def load_grid_tile_compact(manifest: dict, manifest_path: Path) -> dict:
     """
     base_act = load_per_trajectory_activations(manifest, manifest_path)
     entries = manifest["trajectories"]
+    cells = manifest.get("cells")
     num_trajectories = len(entries)
     cells_per_trajectory = manifest["num_cells_per_trajectory"]
     activation_dim = manifest["activation_dim"]
@@ -68,8 +92,9 @@ def load_grid_tile_compact(manifest: dict, manifest_path: Path) -> dict:
     sizes: list[int] = []
     has_sizes = False
     for i, entry in enumerate(entries):
-        positions[i] = torch.tensor(entry["positions"], dtype=torch.int16)
-        labels[i] = torch.tensor(entry["labels"], dtype=torch.int64)
+        payload = cells[entry["cells_key"]] if cells is not None else entry
+        positions[i] = torch.tensor(payload["positions"], dtype=torch.int16)
+        labels[i] = torch.tensor(payload["labels"], dtype=torch.int64)
         names.append(entry["name"])
         if "size" in entry:
             has_sizes = True

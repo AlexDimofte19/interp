@@ -12,7 +12,10 @@
 # split_next_action_manifest.py reshapes each arm before training:
 #   * TOKENS_PER_TRAJ -- each trajectory's K top-ranked tokens, identical to having prepared
 #     with --num-tokens K. Sweeping it here rather than at prepare time is why top-1/2/3
-#     costs three splits instead of three prepares.
+#     costs three splits instead of three prepares. "all" is the no-thinning case: the
+#     --tokens-per-trajectory flag is left off entirely, so every token the selection
+#     record holds for that arm is trained on (~20/trajectory). It is not a large K --
+#     a large K would still print a per-trajectory budget it never applies.
 #   * LAYERS_PER_TOKEN -- one layer per token: the trainer pools every row into one (N, D)
 #     matrix fit by a single weight vector, and layers 7 and 22 are not in a shared basis.
 #   * a trajectory-grouped, label-stratified holdout: train_next_action_probe's own
@@ -23,6 +26,7 @@
 #
 #   PREPARED=/workspace/prepared/next_action ./scripts/train_next_action_arms.sh
 #   ARMS="jlens logitlens" TOKENS_PER_TRAJ="1 3" ./scripts/train_next_action_arms.sh
+#   TOKENS_PER_TRAJ=all ./scripts/train_next_action_arms.sh            # every selected token
 #   MODEL_TYPES=lr DEVICE=cpu ./scripts/train_next_action_arms.sh      # quick smoke run
 set -euo pipefail
 
@@ -34,7 +38,7 @@ PROBES=${PROBES:-/workspace/probes/next_action}
 LOGS=${LOGS:-$PROBES/logs}
 
 EVAL_SPLIT=${EVAL_SPLIT:-0.2}
-TOKENS_PER_TRAJ=${TOKENS_PER_TRAJ:-"1 2 3"}   # top-K sweep; one prepared dataset serves all
+TOKENS_PER_TRAJ=${TOKENS_PER_TRAJ:-"1 2 3"}   # top-K sweep, or "all"; one dataset serves all
 LAYERS_PER_TOKEN=${LAYERS_PER_TOKEN:-1}
 SEED=${SEED:-42}
 MODEL_TYPES=${MODEL_TYPES:-"lr mlp"}
@@ -68,11 +72,19 @@ train_arm() {
         echo "Arm: ${arm_name}   top-${k} token(s)/trajectory   ($prepared)"
         echo "============================================================"
 
+        # "all" omits the flag rather than passing a large K: split_next_action_manifest.py
+        # skips thin_tokens entirely when it is absent, which is the real no-thinning path
+        # for both the ranked arms and the uniformly-sampled control.
+        local token_args=()
+        if [ "$k" != "all" ]; then
+            token_args=(--tokens-per-trajectory "$k")
+        fi
+
         # Writes ${split_dir}_train and ${split_dir}_eval, each a lone manifest.json --
         # next_action copies no activations, so a split costs nothing but the JSON.
         uv run --project "$REPO" python "$REPO/scripts/split_next_action_manifest.py" \
             "$prepared" \
-            --tokens-per-trajectory "$k" \
+            "${token_args[@]}" \
             --layers-per-token "$LAYERS_PER_TOKEN" \
             --eval-split "$EVAL_SPLIT" \
             --seed "$SEED" \

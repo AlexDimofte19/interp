@@ -51,7 +51,7 @@ BATCH_SIZE=${BATCH_SIZE:-256}
 IO_WORKERS=${IO_WORKERS:-16}
 FORWARD_BATCH_SIZE=${FORWARD_BATCH_SIZE:-4}
 DEVICE=${DEVICE:-cuda}
-APPLY=${APPLY:-}                  # 1 to actually write; otherwise --dry-run
+APPLY=${APPLY:-1}                  # 1 to actually write; otherwise --dry-run
 
 # --select-random-tokens 0: the control is inherited from the record, never redrawn.
 # --lens logitlens: the jlens CSV already exists and is not recomputed.

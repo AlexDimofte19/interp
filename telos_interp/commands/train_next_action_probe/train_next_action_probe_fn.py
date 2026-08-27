@@ -328,15 +328,43 @@ def _evaluate(
     }
 
 
-def _load_and_preprocess_train_data(train_path: Path, verbose: bool) -> dict:
+CACHE_FILENAME = "_packed_activations.pt"
+CACHE_VERSION = 1
+
+
+def _cache_fingerprint(manifest_path: Path, manifest: dict) -> dict:
+    """Identity of the manifest a cache was built from.
+
+    A next_action manifest references activations in place through `activations_root`,
+    so the cache is only valid while that manifest is unchanged. Size and mtime catch a
+    rewritten manifest; the sample count and root catch a manifest swapped for a
+    same-sized one. Mismatch means rebuild, never silently reuse.
+    """
+    stat = manifest_path.stat()
+    return {
+        "cache_version": CACHE_VERSION,
+        "manifest_size": stat.st_size,
+        "manifest_mtime_ns": stat.st_mtime_ns,
+        "num_samples": len(manifest.get("samples", [])),
+        "activations_root": str(manifest.get("activations_root", "")),
+    }
+
+
+def _load_and_preprocess_train_data(train_path: Path, verbose: bool, use_cache: bool = False) -> dict:
     """Load a v3 next_action manifest and filter per-sample NaN activations.
 
     Returns a dict with keys: activations (N, D), labels (N,).
+
+    With `use_cache`, the packed (activations, labels) pair is written next to the
+    manifest on first load and reused afterwards. The manifest names every activation
+    individually and they are NOT copied into the dataset, so a run opens one .pt per
+    sample -- tens of thousands of small reads that dominate wall clock and leave the
+    GPU idle. The cache changes only how those tensors are fetched: same tensors, same
+    order, same NaN filtering, so a cached run and an uncached one train on identical
+    data. It is invalidated by `_cache_fingerprint`, not trusted blindly.
     """
     if detect_format(train_path) != 3:
-        raise ValueError(
-            f"Expected a v3 manifest directory for next_action, but {train_path} is not one."
-        )
+        raise ValueError(f"Expected a v3 manifest directory for next_action, but {train_path} is not one.")
 
     manifest_path = resolve_manifest_path(train_path)
     manifest = load_v3_manifest(manifest_path)
@@ -351,9 +379,36 @@ def _load_and_preprocess_train_data(train_path: Path, verbose: bool) -> dict:
     if verbose:
         print(f"Loading training data from {train_path}")
 
-    compact = load_next_action_compact(manifest, manifest_path)
-    activations = compact["base_act"]
-    labels = compact["labels"]
+    cache_path = manifest_path.parent / CACHE_FILENAME
+    fingerprint = _cache_fingerprint(manifest_path, manifest) if use_cache else None
+
+    cached = None
+    if use_cache and cache_path.exists():
+        try:
+            blob = torch.load(cache_path, map_location="cpu", weights_only=False)
+            if blob.get("fingerprint") == fingerprint:
+                cached = blob
+            elif verbose:
+                print(f"  cache at {cache_path} is stale, rebuilding")
+        except Exception as exc:  # a truncated or unreadable cache must not fail the run
+            if verbose:
+                print(f"  cache at {cache_path} unreadable ({exc}), rebuilding")
+
+    if cached is not None:
+        activations = cached["activations"]
+        labels = cached["labels"]
+        if verbose:
+            print(f"  loaded {activations.shape[0]} samples from cache {cache_path}")
+    else:
+        compact = load_next_action_compact(manifest, manifest_path)
+        activations = compact["base_act"]
+        labels = compact["labels"]
+        if use_cache:
+            tmp = cache_path.with_suffix(".pt.tmp")
+            torch.save({"fingerprint": fingerprint, "activations": activations, "labels": labels}, tmp)
+            tmp.replace(cache_path)  # atomic, so a killed run cannot leave a half cache
+            if verbose:
+                print(f"  wrote cache {cache_path}")
 
     if verbose:
         print(f"Loaded {activations.shape[0]} token samples")
@@ -419,6 +474,7 @@ def train_next_action_probe(
     seed: int = 42,
     verbose: bool = True,
     per_class_max_count: int | None = None,
+    cache_activations: bool = False,
 ) -> NextActionProbe:
     """Train a next-action probing classifier on prepared EOS-token activations.
 
@@ -447,6 +503,10 @@ def train_next_action_probe(
         normalize: If True, normalize activations with train-set mean/std (saved with probe).
         device: "cuda"/"cpu"; defaults to CUDA if available.
         seed: Random seed.
+        cache_activations: pack the loaded (activations, labels) beside each manifest on
+            first use and reuse them after. Same tensors in the same order, so results are
+            unchanged; it only skips reopening one .pt per sample. Worth it whenever the
+            same dataset is trained more than once (a seed sweep, a model-type sweep).
         verbose: Print training progress.
         per_class_max_count: Cap per-class samples when balancing.
 
@@ -463,7 +523,7 @@ def train_next_action_probe(
     if not 0.0 < subset <= 1.0:
         raise ValueError(f"subset must be in (0.0, 1.0], got {subset}")
 
-    load_result = _load_and_preprocess_train_data(train_path, verbose)
+    load_result = _load_and_preprocess_train_data(train_path, verbose, cache_activations)
     activations = load_result["activations"]
     labels = load_result["labels"]
 
@@ -495,7 +555,7 @@ def train_next_action_probe(
         eval_path = Path(eval_data_path)
         if not eval_path.exists():
             raise FileNotFoundError(f"Evaluation data not found: {eval_path}")
-        eval_load = _load_and_preprocess_train_data(eval_path, verbose)
+        eval_load = _load_and_preprocess_train_data(eval_path, verbose, cache_activations)
         eval_activations = eval_load["activations"]
         eval_labels_raw = eval_load["labels"]
         # Remap eval labels with the training mapping; drop labels unseen in training.

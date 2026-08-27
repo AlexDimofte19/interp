@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Narrow a next_action v3 manifest to the top tokens/layers, then split it by trajectory.
+"""Narrow a token-major v3 manifest to the top tokens/layers, then split it by trajectory.
+
+Token-major means one entry per (token, layer) rather than per trajectory: `next_action`
+manifests, and `grid_tile` manifests prepared with a token selection. Both reference the
+gathered tree in place through `activations_root` and copy nothing, so a split costs one
+JSON file. The two differ only in the label -- one action per entry, or one grid -- and
+everything below is about *which entries* survive, so both go through this script
+unchanged.
 
 Three reshapes that all have to happen before `train_next_action_probe` sees the data:
 
@@ -19,15 +26,26 @@ Three reshapes that all have to happen before `train_next_action_probe` sees the
    documents the samples as i.i.d. That is false here: one trajectory owns every one of
    its selected tokens, all carrying that trajectory's `agent_action`. A row-level split
    puts near-duplicates of every eval row into training and inflates accuracy. (Same
-   landmine as `_prepare_train_eval_v3` in the cognitive-map trainer, per CLAUDE.md.)
+   landmine as `_prepare_train_eval_v3` in the cognitive-map trainer, per CLAUDE.md --
+   which now refuses an internal split on a token-major manifest and points here.)
+
+   The seeded split is a function of the names *present*, so two datasets covering
+   different trajectory sets get different eval sets at the same seed -- which silently
+   scores two probes on different test data. `--eval-names FILE` pins the eval set to a
+   list instead, so an arm prepared from a wider tree (e.g. the full reasoning-eos tree,
+   36000 trajectories) is scored on exactly the trajectories the 3600-trajectory lens
+   arms were scored on. Every listed name must be present, or it raises rather than
+   quietly shrinking the shared test set.
 
 Throughout, a `random` control arm is recognised by carrying **no** direction counts, and
 is sampled uniformly wherever the jlens arm would be ranked. Ranking a control by a count
 that is always absent would collapse every trajectory onto its lowest index and quietly
 turn the comparison into a comparison of two jlens-shaped things.
 
-next_action manifests copy no activations -- `act_path` is resolved against the absolute
+Token-major manifests copy no activations -- `act_path` is resolved against the absolute
 `activations_root` -- so each output is a lone manifest.json and costs nothing to write.
+A grid_tile one also carries a `cells` map, its per-cell payload stored once per
+(trajectory, step); each half keeps only the keys its own entries reference.
 
     python scripts/split_next_action_manifest.py PREPARED_DIR \
         --tokens-per-trajectory 3 --layers-per-token 1
@@ -41,16 +59,39 @@ import random
 from collections import Counter
 from pathlib import Path
 
+ENTRY_KEYS = ("samples", "trajectories")
+
+
+def entries_key(manifest: dict) -> str:
+    """Which manifest key holds the per-sample entries.
+
+    `next_action` calls them `samples`; `grid_tile` keeps the `trajectories` key it has
+    always used, token-major or not. The name is all that differs -- both are one entry per
+    (token, layer) here.
+    """
+    for key in ENTRY_KEYS:
+        if key in manifest:
+            return key
+    raise ValueError(f"manifest has none of {ENTRY_KEYS}; is it a v3 prepared manifest?")
+
 
 def load_manifest(prepared_dir: Path) -> dict:
-    """Read the manifest of a prepared dir and check it is a next_action v3 one."""
+    """Read the manifest of a prepared dir and check it is a token-major v3 one."""
     manifest_path = prepared_dir / "manifest.json" if prepared_dir.is_dir() else prepared_dir
     with open(manifest_path, encoding="utf-8") as f:
         manifest = json.load(f)
-    if manifest.get("probe_type") != "next_action":
-        raise ValueError(f"{manifest_path} has probe_type={manifest.get('probe_type')!r}, expected 'next_action'")
-    if "samples" not in manifest:
-        raise ValueError(f"{manifest_path} has no 'samples' key; is it a next_action manifest?")
+    probe_type = manifest.get("probe_type")
+    if probe_type not in ("next_action", "grid_tile"):
+        raise ValueError(f"{manifest_path} has probe_type={probe_type!r}, expected 'next_action' or 'grid_tile'")
+    # `activations_root` is exactly what marks a manifest as token-major. A grid_tile
+    # dataset prepared without a selection has one entry per trajectory and copied its
+    # activations; it carries no per-token fields for the thinning below to rank.
+    if "activations_root" not in manifest:
+        raise ValueError(
+            f"{manifest_path} copied its activations, so it is one entry per trajectory. "
+            "This script splits token-major manifests -- prepare with --token-selection."
+        )
+    entries_key(manifest)
     return manifest
 
 
@@ -83,16 +124,22 @@ def thin_layers(samples: list[dict], layers_per_token: int, seed: int) -> list[d
 
 
 def trajectory_strata(samples: list[dict]) -> dict[str, int]:
-    """Each trajectory's dominant action label.
+    """Each trajectory's stratum: its dominant action label, or its grid size.
 
     Computed from the **unthinned** samples on purpose. On a multi-step trajectory,
     thinning tokens can change which action dominates and so move the trajectory between
     strata -- which would give a different train/eval split at K=1 than at K=3 and make the
     top-K comparison meaningless. Single-step trajectories are unaffected either way.
+
+    A grid_tile entry has no scalar label -- a trajectory carries one per cell -- so those
+    stratify by grid size instead. That is the dimension whose mix has to match across the
+    halves for a size-pooled probe to be readable: a 5x5 grid and a 15x15 grid padded to
+    the same width have very different label distributions.
     """
+    field = "label" if all("label" in sample for sample in samples) else "size"
     labels_by_name: dict[str, Counter] = {}
     for sample in samples:
-        labels_by_name.setdefault(sample["name"], Counter())[sample["label"]] += 1
+        labels_by_name.setdefault(sample["name"], Counter())[sample.get(field, 0)] += 1
     return {name: counts.most_common(1)[0][0] for name, counts in labels_by_name.items()}
 
 
@@ -165,10 +212,48 @@ def split_names(
     return train, evaluation
 
 
+def eval_names_from_file(samples: list[dict], path: Path) -> tuple[set[str], set[str]]:
+    """Use the trajectory names in `path` as the eval set verbatim; the rest train.
+
+    `split_names` derives the partition from the names present plus the seed, so two
+    datasets covering different trajectory sets get different eval sets even at the same
+    seed. Comparing probes then compares them on different test data. This pins the eval
+    set instead, so an arm prepared from a wider tree can be scored on exactly the
+    trajectories the narrower arms were scored on.
+
+    Every listed name must be present -- a silently-missing one would shrink the shared
+    test set and reintroduce the mismatch this exists to prevent.
+    """
+    wanted = {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+    if not wanted:
+        raise ValueError(f"{path} lists no trajectory names")
+
+    present = {sample["name"] for sample in samples}
+    missing = wanted - present
+    if missing:
+        example = ", ".join(sorted(missing)[:3])
+        raise ValueError(
+            f"{len(missing)} of {len(wanted)} names in {path} are absent from the manifest "
+            f"(e.g. {example}). The eval set would not match the arms it is meant to share."
+        )
+
+    train = present - wanted
+    if not train:
+        raise ValueError(f"{path} covers every trajectory in the manifest; nothing left to train on")
+    return train, set(wanted)
+
+
 def label_histogram(samples: list[dict], id_to_action: dict[int, str]) -> str:
-    """`UP=12 DOWN=9 ...` over a sample list, for the summary print."""
-    counts = Counter(sample["label"] for sample in samples)
-    return " ".join(f"{id_to_action.get(k, k)}={counts[k]}" for k in sorted(counts))
+    """`UP=12 DOWN=9 ...` over a sample list, for the summary print.
+
+    A grid_tile split falls back to `size5=120 size7=80 ...`: those entries carry a whole
+    grid rather than one label, and the size mix is the thing worth eyeballing there.
+    """
+    if all("label" in sample for sample in samples):
+        counts = Counter(sample["label"] for sample in samples)
+        return " ".join(f"{id_to_action.get(k, k)}={counts[k]}" for k in sorted(counts))
+    sizes = Counter(sample["size"] for sample in samples if "size" in sample)
+    return " ".join(f"size{k}={sizes[k]}" for k in sorted(sizes))
 
 
 def layer_histogram(samples: list[dict]) -> str:
@@ -183,10 +268,16 @@ def write_split(
     out_dir: Path,
     layers_per_token: int | None,
     tokens_per_trajectory: int | None = None,
+    key: str = "samples",
 ) -> None:
     """Write a copy of `manifest` carrying only `samples`, plus a record of the split."""
     out = dict(manifest)
-    out["samples"] = samples
+    out[key] = samples
+    if "cells" in manifest:
+        # Each half keeps only the per-cell payloads its own entries point at, so an eval
+        # manifest does not carry the training grids around with it.
+        referenced = {sample["cells_key"] for sample in samples}
+        out["cells"] = {k: v for k, v in manifest["cells"].items() if k in referenced}
     out["split"] = {
         "source_manifest": str(manifest.get("_source", "")),
         "num_samples": len(samples),
@@ -202,14 +293,14 @@ def write_split(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("prepared_dir", type=Path, help="v3 next_action manifest directory")
+    parser.add_argument("prepared_dir", type=Path, help="v3 token-major manifest directory (next_action or grid_tile)")
     parser.add_argument("--eval-split", type=float, default=0.2, help="fraction of trajectories held out")
     parser.add_argument(
         "--tokens-per-trajectory",
         type=int,
         default=None,
         help="keep only each trajectory's K top-ranked tokens (same ranking as --num-tokens K "
-             "in prepare); a control arm is sampled uniformly instead",
+        "in prepare); a control arm is sampled uniformly instead",
     )
     parser.add_argument(
         "--layers-per-token",
@@ -218,6 +309,14 @@ def main() -> None:
         help="keep only each token's N best layers (1 = one probe, one representation space)",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--eval-names",
+        type=Path,
+        default=None,
+        help="file of trajectory names, one per line, to use as the eval set verbatim; "
+        "everything else trains. Overrides --eval-split. Use it to hold a fixed test "
+        "set across datasets that do not cover the same trajectories",
+    )
     parser.add_argument("--train-out", type=Path, default=None, help="default: <prepared_dir>_train")
     parser.add_argument("--eval-out", type=Path, default=None, help="default: <prepared_dir>_eval")
     args = parser.parse_args()
@@ -225,7 +324,8 @@ def main() -> None:
     prepared_dir = args.prepared_dir
     manifest = load_manifest(prepared_dir)
     manifest["_source"] = str(prepared_dir.resolve())
-    samples = manifest["samples"]
+    key = entries_key(manifest)
+    samples = manifest[key]
 
     # Strata come from the full sample set, so every --tokens-per-trajectory value lands on
     # the same train/eval split and the top-K results stay comparable.
@@ -237,9 +337,11 @@ def main() -> None:
         before = len(samples)
         samples = thin_tokens(samples, args.tokens_per_trajectory, args.seed)
         ranked = any(s.get("direction_count") is not None for s in samples)
-        print(f"Tokens: kept {args.tokens_per_trajectory}/trajectory "
-              f"({'top-ranked' if ranked else 'uniform draw -- control arm'}), "
-              f"{before} -> {len(samples)} samples")
+        print(
+            f"Tokens: kept {args.tokens_per_trajectory}/trajectory "
+            f"({'top-ranked' if ranked else 'uniform draw -- control arm'}), "
+            f"{before} -> {len(samples)} samples"
+        )
 
     if args.layers_per_token is not None:
         if args.layers_per_token < 1:
@@ -249,15 +351,18 @@ def main() -> None:
         print(f"Layers: kept {args.layers_per_token}/token, {before} -> {len(samples)} samples")
         print(f"  {layer_histogram(samples)}")
 
-    train_names, eval_names = split_names(samples, args.eval_split, args.seed, strata)
+    if args.eval_names is not None:
+        train_names, eval_names = eval_names_from_file(samples, args.eval_names)
+    else:
+        train_names, eval_names = split_names(samples, args.eval_split, args.seed, strata)
     train_samples = [s for s in samples if s["name"] in train_names]
     eval_samples = [s for s in samples if s["name"] in eval_names]
 
     id_to_action = {v: k for k, v in manifest.get("action_to_id", {}).items()}
     train_out = args.train_out or prepared_dir.with_name(prepared_dir.name + "_train")
     eval_out = args.eval_out or prepared_dir.with_name(prepared_dir.name + "_eval")
-    write_split(manifest, train_samples, train_out, args.layers_per_token, args.tokens_per_trajectory)
-    write_split(manifest, eval_samples, eval_out, args.layers_per_token, args.tokens_per_trajectory)
+    write_split(manifest, train_samples, train_out, args.layers_per_token, args.tokens_per_trajectory, key)
+    write_split(manifest, eval_samples, eval_out, args.layers_per_token, args.tokens_per_trajectory, key)
 
     num_trajectories = len(train_names) + len(eval_names)
     print(f"Source: {prepared_dir}  ({len(samples)} samples, {num_trajectories} trajectories)")

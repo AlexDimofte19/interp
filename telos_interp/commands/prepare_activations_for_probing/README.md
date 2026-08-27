@@ -189,8 +189,9 @@ In multi-size mode:
 | `output_path` | str \| None | None | Output **directory** (auto-named under `activations_dir` if None). If you pass a path ending in `.pt`, the suffix is stripped with a warning. |
 | `verbose` | bool | False | Print detailed progress |
 | `seed` | int | 42 | Random seed for reproducibility |
-| `token_selection` | str | "all" | `next_action` only: "all", "random", "<lens>_direction", "recorded_<method>" — generated from `jlens_utils.METHODS` |
-| `layer_selection` | str | "spec" | `next_action` only: "spec", "random", or "<lens>_direction" |
+| `token_selection` | str | "all" | `next_action` and `grid_tile` only: "all", "random", "<lens>_direction", "recorded_<method>" — generated from `jlens_utils.METHODS` |
+| `layer_selection` | str | "spec" | `next_action` and `grid_tile` only: "spec", "random", or "<lens>_direction" |
+| `token_major` | bool | False | `grid_tile` only: one sample per gathered token instead of one per trajectory. Implied by any `token_selection`; the flag is for a tree with no selection record to read |
 | `num_tokens` | int \| None | None | N for the non-"all" modes; an optional top-K cap for `recorded_*` |
 | `num_layers` | int \| None | None | M for the non-"spec" `layer_selection` modes |
 | `direction_tokens_path` | str \| None | None | JSON of direction tokens; required by any `<lens>_direction` mode |
@@ -367,9 +368,10 @@ In multi-size mode the per-trajectory `.pt` files are namespaced by size:
 
 Each per-trajectory `.pt` holds a single `(D,)` activation tensor — there is no per-cell replication on disk. For `grid_tile`, the trainer assembles `[activation, row, col]` rows lazily via `GridTileCompactDataset` (see `manifest_loader.py`).
 
-**Exception — `next_action`:** this mode writes **no** `activations/` directory at all. The
-output is just `manifest.json`, whose `samples` entries point at the existing gathered token
-`.pt` files (relative to `activations_root`). Nothing is copied.
+**Exception — token-major modes:** `next_action`, and `grid_tile` with a `token_selection`
+or `token_major=True`, write **no** `activations/` directory at all. The output is just
+`manifest.json`, whose entries point at the existing gathered token `.pt` files (relative to
+`activations_root`). Nothing is copied.
 
 ### `manifest.json` schema
 
@@ -403,7 +405,51 @@ output is just `manifest.json`, whose `samples` entries point at the existing ga
 }
 ```
 
-`act_path` is **always relative to `manifest.json`**, so the directory is portable: rename or move it without breaking references.
+`act_path` is relative to `manifest.json` whenever the dataset copied its activations, so
+that directory is portable: rename or move it without breaking references. A token-major
+manifest instead carries an absolute `activations_root` and resolves `act_path` against it —
+it references the gathered tree in place, so it is only as movable as that tree.
+
+#### token-major `grid_tile` manifest schema
+
+With a `token_selection` (or `token_major=True`), `grid_tile` keeps its `trajectories` key
+but one entry is now one **(token, layer)**, so a trajectory name repeats across entries:
+
+```jsonc
+{
+  "format_version": 3,
+  "probe_type": "grid_tile",
+  "activation_dim": 2880,                       // hidden_dim (one token, one layer)
+  "activations_root": "/abs/path/to/activations_dir",
+  "num_cells_per_trajectory": 225,
+  "selection": { /* same block as next_action */ },
+  "cells": {                                    // per-cell payload, stored ONCE per
+    "traj_0001|0": {                            // (trajectory, step) rather than repeated
+      "positions": [[0, 0], [0, 1]],            // on each of that trajectory's ~20 entries
+      "labels": [1, 4]
+    }
+  },
+  "trajectories": [
+    {
+      "name": "traj_0001",
+      "act_path": "traj_0001/<model>/layer_15/step_0/output/532.pt",
+      "cells_key": "traj_0001|0",               // which `cells` payload labels this token
+      "layer": 15, "step": 0, "token_id": 532, "category": "output",
+      "token": " left", "direction_count": 7, "layer_direction_count": 3
+    }
+  ]
+}
+```
+
+The cells are keyed by **(trajectory, step)**, not by trajectory: a token selected from step
+3 is labeled with the grid the agent saw at step 3, the same way `next_action` labels each
+token with its own step's action.
+
+Two consequences for the trainer, both enforced rather than documented-and-hoped:
+`train_cognitive_map_probe` refuses an internal `--eval-split` on such a manifest (its
+`randperm` is over entries, so a trajectory would land in both halves — pre-split with
+`scripts/split_next_action_manifest.py` and pass `--eval-data-path`), and it refuses
+`--subset < 1.0` for the same reason.
 
 #### `next_action` manifest schema
 
@@ -454,7 +500,7 @@ is copied into the output directory.
 
 - At least one of `prompt_prefix_indices`, `prompt_suffix_indices`, `grid_state_indices`, or `output_indices` must be specified.
 - `next_action` requires `output_indices` to be set and ignores the other category indices. With the default `token_selection="all"` it expects the `output` tokens to have been gathered with `--output-indices eos` and a single `--layers` value; the `<lens>_direction`/`random`/`recorded_*` modes instead pick from whatever reasoning tokens `scripts/jlens_reasoning_tokens.py` saved.
-- `token_selection`/`layer_selection` apply to `next_action` only; passing them with another probe type is an error.
+- `token_selection`/`layer_selection` apply to `next_action` and `grid_tile` only; passing them with another probe type is an error. On `grid_tile` they make the manifest **token-major** (see below); `token_major=True` does the same without a selection, and is an error for any other probe type.
 - The activation vector itself is stored once per trajectory; per-cell `[row_id, col_id]` is folded in at training time.
 - Class balancing finds the minimum count across all cell types and samples equally from each.
 - When `balance_classes_per_trajectory` and `max_positions_per_trajectory` are both set, `max_positions` is adjusted to be divisible by the number of classes.

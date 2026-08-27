@@ -79,6 +79,7 @@ def _sample_triples(
     triples: list[list[int]],
     balance_classes: bool,
     max_positions: int | None,
+    rng: random.Random,
 ) -> list[list[int]]:
     """Sample triples with optional class balancing and max position limits.
 
@@ -87,6 +88,9 @@ def _sample_triples(
         balance_classes: If True, ensure equal representation of each cell_identity_id
         max_positions: Maximum number of triples to return. If combined with
             balance_classes, will be adjusted to nearest divisor of num_classes.
+        rng: The stream to draw from. Passed in rather than taken from the global
+            `random` so the draw depends on the trajectory alone — see
+            `_grid_cell_payload`.
 
     Returns:
         Sampled list of triples
@@ -126,15 +130,61 @@ def _sample_triples(
             if len(group) <= samples_per_class:
                 result.extend(group)
             else:
-                result.extend(random.sample(group, samples_per_class))
+                result.extend(rng.sample(group, samples_per_class))
 
         return result
 
     else:
         # Only max_positions is specified, no balancing
         if max_positions is not None and len(triples) > max_positions:
-            return random.sample(triples, max_positions)
+            return rng.sample(triples, max_positions)
         return triples
+
+
+def _grid_cell_payload(
+    trajectory_data: dict,
+    *,
+    trajectory_name: str,
+    step_idx: int,
+    pad_to_size: int | None,
+    max_positions: int | None,
+    balance_classes: bool,
+    seed: int | None,
+) -> tuple[dict, int] | None:
+    """One trajectory's per-cell positions/labels at `step_idx`, or None if unusable.
+
+    The cell draw is seeded per (trajectory, step) rather than taken from the global
+    `random` stream. Two selection arms emit different numbers of samples per trajectory
+    and so consume different numbers of draws, and a shared global stream would then hand
+    them different cells for the same trajectory -- the arms would differ by which cells
+    they were scored on as well as by which tokens they selected. Seeding per trajectory
+    makes the cells a function of the trajectory alone, which is what
+    `select_token_layer_pairs` already does for its own random draws.
+
+    A trajectory with no `--max-positions-per-trajectory` and no per-trajectory balancing
+    keeps every cell, so the RNG is never consulted and the seed cannot matter.
+    """
+    try:
+        grid_triples = parse_grid_state_from_trajectory(
+            trajectory_data,
+            step_idx=step_idx,
+            pad_to_size=pad_to_size,
+        )
+    except (ValueError, KeyError):
+        return None
+
+    selected_triples = _sample_triples(
+        grid_triples,
+        balance_classes=balance_classes,
+        max_positions=max_positions,
+        rng=random.Random(f"{trajectory_name}:{step_idx}:{seed}"),
+    )
+    if not selected_triples:
+        return None
+
+    positions = [[int(t[0]), int(t[1])] for t in selected_triples]
+    labels = [int(t[2]) for t in selected_triples]
+    return {"positions": positions, "labels": labels}, len(selected_triples)
 
 
 def _selection_candidates(
@@ -180,6 +230,108 @@ def _next_action_label(trajectory_data: dict, step_idx: int) -> int | None:
     if not agent_action:
         return None
     return NEXT_ACTION_TO_ID.get(agent_action.upper())
+
+
+def _is_token_major(probe_type: ProbeType, selection: SelectionConfig, token_major: bool = False) -> bool:
+    """True when one manifest entry is one (token, layer), not one trajectory.
+
+    `next_action` is always token-major. `grid_tile` becomes token-major as soon as a
+    selection is asked for -- a selection picks tokens, so its entries can only be tokens --
+    or when `token_major` asks for it outright, which is how a tree with no selection record
+    (the reasoning-EOS control) gets one sample per gathered token. Without either it keeps
+    its original shape -- one entry per trajectory, holding the pooled activation the loading
+    spec asks for -- so every dataset prepared before this existed still reads back
+    identically.
+
+    >>> _is_token_major("grid_tile", SelectionConfig())
+    False
+    >>> _is_token_major("grid_tile", SelectionConfig(token_selection="recorded_jlens"))
+    True
+    >>> _is_token_major("grid_tile", SelectionConfig(), token_major=True)
+    True
+    >>> _is_token_major("distance", SelectionConfig(), token_major=True)
+    False
+    """
+    if probe_type == "next_action":
+        return True
+    return probe_type == "grid_tile" and (token_major or not selection.is_default)
+
+
+def _selected_refs(
+    *,
+    trajectory_folder: Path,
+    trajectory_data: dict,
+    layers: str,
+    steps: str,
+    output_indices: str | None,
+    selection: SelectionConfig,
+    verbose: bool,
+) -> tuple[list[SampleRef], int] | None:
+    """The (token, layer) activation files one trajectory contributes, and how many are missing.
+
+    None means the trajectory has no layers/steps matching the specs on disk; the caller
+    counts that as skipped. Shared by `next_action` and token-major `grid_tile` so the two
+    probe types land on exactly the same files for the same selection -- the whole point of
+    the grid arms is that they differ from the action arms only in the label.
+    """
+    if selection.is_default:
+        # Every gathered token of every selected layer/step, as before.
+        token_files = discover_output_token_files(
+            trajectory_folder=trajectory_folder,
+            layers=layers,
+            steps=steps,
+            output_indices=output_indices,
+            verbose=verbose,
+        )
+        return [
+            SampleRef(layer=layer_idx, step=step_idx, token_idx=token_idx, path=abs_path)
+            for layer_idx, step_idx, token_idx, abs_path in token_files
+        ], 0
+
+    model_folder, candidate_layers, candidate_steps, tokens_by_step = _selection_candidates(
+        trajectory_folder, layers, steps
+    )
+    if model_folder is None or not candidate_layers or not candidate_steps:
+        return None
+    return select_token_layer_pairs(
+        trajectory_folder=trajectory_folder,
+        model_folder=model_folder,
+        trajectory_data=trajectory_data,
+        candidate_layers=candidate_layers,
+        candidate_steps=candidate_steps,
+        available_tokens_by_step=tokens_by_step,
+        selection=selection,
+        verbose=verbose,
+    )
+
+
+def _token_entry(
+    ref: SampleRef,
+    *,
+    name: str,
+    activations_root: Path,
+    size_name: str | None,
+) -> dict:
+    """The manifest entry for one selected (token, layer), minus its label.
+
+    `act_path` is relative to `activations_root`, not to the manifest: token-major modes
+    reference the gathered tree in place and copy nothing.
+    """
+    entry: dict = {
+        "name": name,
+        "act_path": ref.path.relative_to(activations_root).as_posix(),
+        "layer": ref.layer,
+        "step": ref.step,
+        "token_id": ref.token_idx,
+        "category": "output",
+    }
+    if ref.direction_count is not None:
+        entry["token"] = ref.token
+        entry["direction_count"] = ref.direction_count
+        entry["layer_direction_count"] = ref.layer_direction_count
+    if size_name is not None:
+        entry["size"] = int(size_name.replace("size", ""))
+    return entry
 
 
 def _discover_size_subfolders(base_dir: Path) -> list[Path]:
@@ -241,7 +393,8 @@ def _process_single_folder(
     activations_root: Path,
     verbose: bool,
     selection: SelectionConfig | None = None,
-) -> tuple[list[dict], int, int | None, int | None, int | None]:
+    token_major_flag: bool = False,
+) -> tuple[list[dict], int, int | None, int | None, int | None, dict[str, dict]]:
     """Process trajectories in a single folder; write per-trajectory .pt files.
 
     Args:
@@ -260,23 +413,30 @@ def _process_single_folder(
 
     Returns:
         Tuple of (manifest_entries, skipped_count, activation_dim,
-                  num_cells_per_trajectory_or_None, max_seq_len_or_None)
+                  num_cells_per_trajectory_or_None, max_seq_len_or_None, cells_by_key).
+
+        `cells_by_key` is empty except in token-major `grid_tile` mode, where it maps
+        `"{trajectory name}|{step}"` to that step's per-cell positions/labels. The payload
+        is stored once per (trajectory, step) instead of on each of the trajectory's ~20
+        token entries: at 225 cells that is an 8 MB manifest rather than a 165 MB one.
     """
     selection = selection or SelectionConfig()
+    token_major = _is_token_major(probe_type, selection, token_major_flag)
 
-    # next_action references existing token files in place, so it writes no activations.
-    if probe_type != "next_action":
+    # Token-major modes reference existing token files in place, so they write no activations.
+    if not token_major:
         output_acts_dir.mkdir(parents=True, exist_ok=True)
 
     trajectory_folders = discover_trajectory_folders(activations_dir_path)
     if not trajectory_folders:
-        return [], 0, None, None, None
+        return [], 0, None, None, None, {}
 
     manifest_entries: list[dict] = []
+    cells_by_key: dict[str, dict] = {}  # token-major grid_tile only
     skipped = 0
     activation_dim: int | None = None
-    num_cells_first: int | None = None       # grid_tile only
-    max_seq_len_seen: int = 0                # action_sequence only
+    num_cells_first: int | None = None  # grid_tile only
+    max_seq_len_seen: int = 0  # action_sequence only
 
     desc = f"Processing {activations_dir_path.name}"
     for trajectory_folder in tqdm(trajectory_folders, desc=desc):
@@ -296,42 +456,24 @@ def _process_single_folder(
         # next_action mode: emit one manifest entry per gathered EOS token, each
         # referencing the existing token .pt file (no new files written). All tokens
         # from this trajectory share the trajectory's agent_action label.
-        if probe_type == "next_action":
-            if selection.is_default:
-                # Every gathered token of every selected layer/step, as before.
-                token_files = discover_output_token_files(
-                    trajectory_folder=trajectory_folder,
-                    layers=layers,
-                    steps=steps,
-                    output_indices=output_indices,
-                    verbose=verbose,
-                )
-                selected = [
-                    SampleRef(layer=layer_idx, step=step_idx, token_idx=token_idx, path=abs_path)
-                    for layer_idx, step_idx, token_idx, abs_path in token_files
-                ]
-                missing = 0
-            else:
-                model_folder, candidate_layers, candidate_steps, tokens_by_step = _selection_candidates(
-                    trajectory_folder, layers, steps
-                )
-                if model_folder is None or not candidate_layers or not candidate_steps:
-                    skipped += 1
-                    if verbose:
-                        print("  Skipped: no layers/steps matching the specs on disk")
-                    continue
-                selected, missing = select_token_layer_pairs(
-                    trajectory_folder=trajectory_folder,
-                    model_folder=model_folder,
-                    trajectory_data=trajectory_data,
-                    candidate_layers=candidate_layers,
-                    candidate_steps=candidate_steps,
-                    available_tokens_by_step=tokens_by_step,
-                    selection=selection,
-                    verbose=verbose,
-                )
-                if missing and verbose:
-                    print(f"  Warning: {missing} selected token file(s) not found on disk")
+        if token_major:
+            refs = _selected_refs(
+                trajectory_folder=trajectory_folder,
+                trajectory_data=trajectory_data,
+                layers=layers,
+                steps=steps,
+                output_indices=output_indices,
+                selection=selection,
+                verbose=verbose,
+            )
+            if refs is None:
+                skipped += 1
+                if verbose:
+                    print("  Skipped: no layers/steps matching the specs on disk")
+                continue
+            selected, missing = refs
+            if missing and verbose:
+                print(f"  Warning: {missing} selected token file(s) not found on disk")
 
             if not selected:
                 skipped += 1
@@ -339,35 +481,63 @@ def _process_single_folder(
                     print("  Skipped: no output token activations found")
                 continue
 
-            # Each token is labeled by the action of the step it came from, so multi-step
-            # selections stay correct (identical to the old fixed-step label when steps="0").
+            # Each token is labeled from the step it came from, so multi-step selections
+            # stay correct (identical to the old fixed-step label when steps="0"): the
+            # action of that step for next_action, the grid the agent saw at that step for
+            # grid_tile. Labeling a step-3 token with the step-0 grid would be silent and
+            # wrong.
             unlabeled = 0
             for ref in selected:
-                action_id = _next_action_label(trajectory_data, ref.step)
-                if action_id is None:
-                    unlabeled += 1
-                    continue
+                if probe_type == "next_action":
+                    action_id = _next_action_label(trajectory_data, ref.step)
+                    if action_id is None:
+                        unlabeled += 1
+                        continue
+                    label_fields = {"label": action_id}
+                else:
+                    cells_key = f"{trajectory_folder.name}|{ref.step}"
+                    if cells_key not in cells_by_key:
+                        payload = _grid_cell_payload(
+                            trajectory_data,
+                            trajectory_name=trajectory_folder.name,
+                            step_idx=ref.step,
+                            pad_to_size=pad_to_size,
+                            max_positions=max_positions_per_trajectory,
+                            balance_classes=balance_classes_per_trajectory,
+                            seed=selection.seed,
+                        )
+                        if payload is None:
+                            unlabeled += 1
+                            continue
+                        cells, num_cells_this = payload
+                        # Every entry has to describe the same number of cells: the loader
+                        # packs them into one (T, C) tensor.
+                        if num_cells_first is None:
+                            num_cells_first = num_cells_this
+                        elif num_cells_this != num_cells_first:
+                            unlabeled += 1
+                            if verbose:
+                                print(
+                                    f"  Dropped step {ref.step}: inconsistent sample count "
+                                    f"({num_cells_this} cells, expected {num_cells_first})"
+                                )
+                            continue
+                        cells_by_key[cells_key] = cells
+                    label_fields = {"cells_key": cells_key}
+
                 if activation_dim is None:
                     activation_dim = int(load_activation(ref.path).shape[0])
-                entry = {
-                    "name": trajectory_folder.name,
-                    "act_path": ref.path.relative_to(activations_root).as_posix(),
-                    "label": action_id,
-                    "layer": ref.layer,
-                    "step": ref.step,
-                    "token_id": ref.token_idx,
-                    "category": "output",
-                }
-                if ref.direction_count is not None:
-                    entry["token"] = ref.token
-                    entry["direction_count"] = ref.direction_count
-                    entry["layer_direction_count"] = ref.layer_direction_count
-                if size_name is not None:
-                    entry["size"] = int(size_name.replace("size", ""))
+                entry = _token_entry(
+                    ref,
+                    name=trajectory_folder.name,
+                    activations_root=activations_root,
+                    size_name=size_name,
+                )
+                entry.update(label_fields)
                 manifest_entries.append(entry)
             if unlabeled:
                 if verbose:
-                    print(f"  Warning: {unlabeled} token(s) dropped (missing/unknown agent_action)")
+                    print(f"  Warning: {unlabeled} token(s) dropped (no usable label)")
                 if unlabeled == len(selected):
                     skipped += 1
             continue
@@ -377,45 +547,29 @@ def _process_single_folder(
         num_cells_this: int | None = None
 
         if probe_type == "grid_tile":
-            try:
-                grid_triples = parse_grid_state_from_trajectory(
-                    trajectory_data,
-                    step_idx=grid_step_idx,
-                    pad_to_size=pad_to_size,
-                )
-            except (ValueError, KeyError) as e:
-                skipped += 1
-                if verbose:
-                    print(f"  Skipped: failed to parse grid state: {e}")
-                continue
-
-            selected_triples = _sample_triples(
-                grid_triples,
-                balance_classes=balance_classes_per_trajectory,
+            payload = _grid_cell_payload(
+                trajectory_data,
+                trajectory_name=trajectory_folder.name,
+                step_idx=grid_step_idx,
+                pad_to_size=pad_to_size,
                 max_positions=max_positions_per_trajectory,
+                balance_classes=balance_classes_per_trajectory,
+                seed=selection.seed,
             )
-            num_cells_this = len(selected_triples)
-
-            if num_cells_this == 0:
+            if payload is None:
                 skipped += 1
                 if verbose:
-                    print("  Skipped: no triples after sampling")
+                    print(f"  Skipped: no usable grid state at step {grid_step_idx}")
                 continue
+            per_type_fields, num_cells_this = payload
 
             if num_cells_first is None:
                 num_cells_first = num_cells_this
             elif num_cells_this != num_cells_first:
                 skipped += 1
                 if verbose:
-                    print(
-                        f"  Skipped: inconsistent sample count "
-                        f"({num_cells_this} cells, expected {num_cells_first})"
-                    )
+                    print(f"  Skipped: inconsistent sample count ({num_cells_this} cells, expected {num_cells_first})")
                 continue
-
-            positions = [[int(t[0]), int(t[1])] for t in selected_triples]
-            labels = [int(t[2]) for t in selected_triples]
-            per_type_fields = {"positions": positions, "labels": labels}
 
         elif probe_type == "distance":
             grid_params = trajectory_data.get("grid_params", {})
@@ -482,10 +636,7 @@ def _process_single_folder(
         elif activation.shape[0] != activation_dim:
             skipped += 1
             if verbose:
-                print(
-                    f"  Skipped: activation dim mismatch "
-                    f"(got {activation.shape[0]}, expected {activation_dim})"
-                )
+                print(f"  Skipped: activation dim mismatch (got {activation.shape[0]}, expected {activation_dim})")
             continue
 
         # 5. Save per-trajectory activation file.
@@ -513,6 +664,7 @@ def _process_single_folder(
         activation_dim,
         num_cells_first if probe_type == "grid_tile" else None,
         max_seq_len_seen if probe_type == "action_sequence" else None,
+        cells_by_key,
     )
 
 
@@ -614,6 +766,7 @@ def prepare_activations_for_probing(
     direction_tokens_path: str | None = None,
     direction_classes: str = "all",
     jlens_top_k: int = 20,
+    token_major: bool = False,
 ) -> None:
     """Extract activations and build a v3 prepared-data manifest directory.
 
@@ -664,7 +817,9 @@ def prepare_activations_for_probing(
             with a warning (v3 outputs a directory).
         verbose: Print per-trajectory progress.
         seed: Random seed for sampling determinism.
-        token_selection: Which reasoning tokens become samples (`next_action` only). The
+        token_selection: Which reasoning tokens become samples (`next_action` and
+            `grid_tile` only; on `grid_tile` it makes the manifest token-major, one entry
+            per selected (token, layer), each labeled with the grid of its own step). The
             lens-specific modes are generated from `telos_interp.jlens_utils.METHODS`, so
             every registered lens has both of its modes.
             "all" (default) keeps today's behaviour — every token matching output_indices.
@@ -683,11 +838,19 @@ def prepare_activations_for_probing(
             (e.g. "recorded_logitlens" on a tree pruned before that arm existed) yields
             nothing — add it with `jlens_reasoning_tokens.py --extend`.
         layer_selection: Which layers of each selected token become samples (`next_action`
-            only). "spec" (default) uses every layer in `layers`; "<lens>_direction" takes
-            that token's top `num_layers` layers by direction count; "random" draws
+            and `grid_tile` only). "spec" (default) uses every layer in `layers`;
+            "<lens>_direction" takes that token's top `num_layers` layers by direction
+            count; "random" draws
             `num_layers` layers uniformly. `layers` always defines the candidate pool, so
             a fixed middle layer is just `layers="15"` with layer_selection="spec". When
             both axes name a lens they must name the same one — a selection reads one CSV.
+        token_major: `grid_tile` only. Emit one sample per gathered token rather than one
+            per trajectory, each labeled with the grid of its own step. A token_selection
+            implies this -- a selection picks tokens, so its entries can only be tokens --
+            and the flag is for the case with no selection to read: a tree gathered by a
+            rule of its own (the reasoning-EOS control), where "every token on disk" is
+            the arm. Without either, grid_tile keeps one entry per trajectory holding the
+            pooled activation the loading spec asks for.
         num_tokens: N for the non-"all" token_selection modes.
         num_layers: M for the non-"spec" layer_selection modes.
         direction_tokens_path: JSON mapping UP/DOWN/LEFT/RIGHT to token strings. Required
@@ -733,10 +896,24 @@ def prepare_activations_for_probing(
                 "WARNING: probe_type='next_action' only uses output_indices; "
                 "prompt_prefix/prompt_suffix/grid_state indices are ignored."
             )
+    elif probe_type == "grid_tile":
+        # grid_tile takes the same selection modes: the same reasoning tokens at the same
+        # layers, carrying the grid instead of the action. With one, its manifest turns
+        # token-major and copies nothing; without one it keeps its original shape.
+        if token_major and output_indices is None:
+            raise ValueError(
+                "probe_type='grid_tile' with token_major=True reads the reasoning tokens in "
+                "the 'output' category, so output_indices must be set (e.g. 'all')."
+            )
+    elif token_major:
+        raise ValueError(
+            f"token_major applies to probe_type='grid_tile' only "
+            f"(next_action always is), but probe_type='{probe_type}' was given."
+        )
     elif token_selection != "all" or layer_selection != "spec":
         raise ValueError(
-            f"token_selection/layer_selection apply to probe_type='next_action' only, "
-            f"but probe_type='{probe_type}' was given."
+            f"token_selection/layer_selection apply to probe_type='next_action' and "
+            f"probe_type='grid_tile' only, but probe_type='{probe_type}' was given."
         )
 
     if token_selection not in TOKEN_SELECTIONS:
@@ -803,8 +980,10 @@ def prepare_activations_for_probing(
     print(f"  probe_type: {probe_type}")
     print(f"  layers: {layers}")
     print(f"  steps: {steps}")
-    if probe_type == "next_action":
+    if probe_type in ("next_action", "grid_tile"):
         print(f"  token_selection: {token_selection}" + (f" (N={num_tokens})" if num_tokens else ""))
+        if probe_type == "grid_tile":
+            print(f"  token_major: {_is_token_major(probe_type, selection, token_major)}")
         print(f"  layer_selection: {layer_selection}" + (f" (M={num_layers})" if num_layers else ""))
         if direction_tokens is not None:
             print(f"  direction tokens: {len(direction_tokens)} ({direction_classes}) from {direction_tokens_path}")
@@ -846,6 +1025,7 @@ def prepare_activations_for_probing(
             verbose=verbose,
             seed=seed,
             selection=selection,
+            token_major_flag=token_major,
         )
     else:
         _process_single_size_mode(
@@ -866,6 +1046,7 @@ def prepare_activations_for_probing(
             verbose=verbose,
             seed=seed,
             selection=selection,
+            token_major_flag=token_major,
         )
 
 
@@ -943,6 +1124,7 @@ def _process_single_size_mode(
     verbose: bool,
     seed: int | None,
     selection: SelectionConfig,
+    token_major_flag: bool = False,
 ) -> None:
     """Process a single folder; emit manifest.json + per-trajectory .pt files."""
     trajectory_folders = discover_trajectory_folders(activations_dir_path)
@@ -970,7 +1152,15 @@ def _process_single_size_mode(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_acts_dir = output_dir / "activations"
 
-    manifest_entries, skipped, activation_dim, num_cells_per_trajectory, max_seq_len = _process_single_folder(
+    token_major = _is_token_major(probe_type, selection, token_major_flag)
+    (
+        manifest_entries,
+        skipped,
+        activation_dim,
+        num_cells_per_trajectory,
+        max_seq_len,
+        cells_by_key,
+    ) = _process_single_folder(
         activations_dir_path=activations_dir_path,
         trajectories_dir_path=trajectories_dir_path,
         output_acts_dir=output_acts_dir,
@@ -990,6 +1180,7 @@ def _process_single_size_mode(
         activations_root=activations_dir_path,
         verbose=verbose,
         selection=selection,
+        token_major_flag=token_major_flag,
     )
 
     if not manifest_entries:
@@ -1018,16 +1209,19 @@ def _process_single_size_mode(
             output_indices=output_indices,
         ),
     }
-    if probe_type == "next_action":
+    if token_major:
         # Token-level samples referencing existing files; nothing is copied.
         manifest["activations_root"] = str(activations_dir_path.resolve())
-        manifest["action_to_id"] = NEXT_ACTION_TO_ID
         manifest["selection"] = selection.to_manifest()
+    if probe_type == "next_action":
+        manifest["action_to_id"] = NEXT_ACTION_TO_ID
         manifest["samples"] = manifest_entries
     else:
         manifest["trajectories"] = manifest_entries
         if probe_type == "grid_tile":
             manifest["num_cells_per_trajectory"] = num_cells_per_trajectory
+            if cells_by_key:
+                manifest["cells"] = cells_by_key
         elif probe_type == "action_sequence":
             manifest["max_seq_len"] = max_seq_len
             manifest["action_to_id"] = ACTION_TO_ID
@@ -1037,8 +1231,9 @@ def _process_single_size_mode(
     _write_manifest(manifest, manifest_path)
 
     # Print summary.
-    if probe_type == "next_action":
-        print(f"\nCollected {len(manifest_entries)} token samples")
+    if token_major:
+        num_named = len({entry["name"] for entry in manifest_entries})
+        print(f"\nCollected {len(manifest_entries)} token samples across {num_named} trajectories")
     else:
         print(f"\nProcessed {len(manifest_entries)} trajectories")
     print(f"Activation dimension: {activation_dim}")
@@ -1048,7 +1243,7 @@ def _process_single_size_mode(
         print(f"Max sequence length: {max_seq_len}")
     print(f"\nSaved to {output_dir}")
     print(f"  manifest: {manifest_path}")
-    if probe_type != "next_action":
+    if not token_major:
         print(f"  per-trajectory activations: {output_acts_dir}")
     print(f"Successfully processed: {len(manifest_entries)}, skipped: {skipped}")
 
@@ -1071,6 +1266,7 @@ def _process_multi_size_mode(
     verbose: bool,
     seed: int | None,
     selection: SelectionConfig,
+    token_major_flag: bool = False,
 ) -> None:
     """Process multiple size folders and merge results into one manifest."""
     act_sizes = _discover_size_subfolders(activations_dir_path)
@@ -1090,27 +1286,32 @@ def _process_multi_size_mode(
         print(f"\nAuto-setting pad_to_size={pad_to_size} (max size across folders) for consistent merging")
 
     print(f"Found {len(common_sizes)} matching size folders: {common_sizes}")
+    token_major = _is_token_major(probe_type, selection, token_major_flag)
 
     # Determine output directory (merged).
-    default_name = _generate_dirname(
-        probe_type=probe_type,
-        layers=layers,
-        steps=steps,
-        pad_to_size=pad_to_size,
-        num_cells=None,
-        balance_classes_per_trajectory=balance_classes_per_trajectory,
-        max_positions_per_trajectory=max_positions_per_trajectory,
-        prompt_prefix_indices=prompt_prefix_indices,
-        prompt_suffix_indices=prompt_suffix_indices,
-        grid_state_indices=grid_state_indices,
-        output_indices=output_indices,
-        selection=selection,
-    ) + "_merged"
+    default_name = (
+        _generate_dirname(
+            probe_type=probe_type,
+            layers=layers,
+            steps=steps,
+            pad_to_size=pad_to_size,
+            num_cells=None,
+            balance_classes_per_trajectory=balance_classes_per_trajectory,
+            max_positions_per_trajectory=max_positions_per_trajectory,
+            prompt_prefix_indices=prompt_prefix_indices,
+            prompt_suffix_indices=prompt_suffix_indices,
+            grid_state_indices=grid_state_indices,
+            output_indices=output_indices,
+            selection=selection,
+        )
+        + "_merged"
+    )
     output_dir = _resolve_output_dir(output_path, activations_dir_path, default_name)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     all_size_results: dict[str, dict] = {}
     merged_entries: list[dict] = []
+    merged_cells: dict[str, dict] = {}
     total_skipped = 0
     activation_dim: int | None = None
     num_cells_per_trajectory: int | None = None
@@ -1125,7 +1326,14 @@ def _process_multi_size_mode(
         traj_path = traj_names[size_name]
         output_acts_dir = output_dir / "activations" / size_name
 
-        size_entries, skipped, size_act_dim, size_num_cells, size_max_seq_len = _process_single_folder(
+        (
+            size_entries,
+            skipped,
+            size_act_dim,
+            size_num_cells,
+            size_max_seq_len,
+            size_cells,
+        ) = _process_single_folder(
             activations_dir_path=act_path,
             trajectories_dir_path=traj_path,
             output_acts_dir=output_acts_dir,
@@ -1145,6 +1353,7 @@ def _process_multi_size_mode(
             activations_root=activations_dir_path,
             verbose=verbose,
             selection=selection,
+            token_major_flag=token_major_flag,
         )
 
         if not size_entries:
@@ -1157,15 +1366,17 @@ def _process_multi_size_mode(
             activation_dim = size_act_dim
         elif size_act_dim != activation_dim:
             print(
-                f"  Warning: Activation dimension mismatch ({size_act_dim} vs {activation_dim}); "
-                f"dropping {size_name}"
+                f"  Warning: Activation dimension mismatch ({size_act_dim} vs {activation_dim}); dropping {size_name}"
             )
             total_skipped += skipped + len(size_entries)
-            # Best-effort cleanup: drop the per-trajectory files we already wrote.
-            for entry in size_entries:
-                act_file = output_dir / entry["act_path"]
-                if act_file.exists():
-                    act_file.unlink()
+            # Best-effort cleanup: drop the per-trajectory files we already wrote. Skipped
+            # in token-major mode, which wrote none -- `act_path` names a file in the
+            # gathered tree there, and this must never reach into it.
+            if not token_major:
+                for entry in size_entries:
+                    act_file = output_dir / entry["act_path"]
+                    if act_file.exists():
+                        act_file.unlink()
             continue
 
         # Cells-per-trajectory consistency (grid_tile only).
@@ -1178,10 +1389,11 @@ def _process_multi_size_mode(
                     f"({size_num_cells} vs {num_cells_per_trajectory}); dropping {size_name}"
                 )
                 total_skipped += skipped + len(size_entries)
-                for entry in size_entries:
-                    act_file = output_dir / entry["act_path"]
-                    if act_file.exists():
-                        act_file.unlink()
+                if not token_major:
+                    for entry in size_entries:
+                        act_file = output_dir / entry["act_path"]
+                        if act_file.exists():
+                            act_file.unlink()
                 continue
 
         if probe_type == "action_sequence" and size_max_seq_len is not None:
@@ -1193,10 +1405,11 @@ def _process_multi_size_mode(
         all_size_results[size_name] = size_summary
 
         merged_entries.extend(size_entries)
+        merged_cells.update(size_cells)
         total_skipped += skipped
 
-        # next_action entries are one-per-token, not one-per-trajectory.
-        unit = "token samples" if probe_type == "next_action" else "trajectories"
+        # Token-major entries are one-per-token, not one-per-trajectory.
+        unit = "token samples" if token_major else "trajectories"
         print(f"  Processed {len(size_entries)} {unit}")
         if probe_type == "grid_tile":
             print(f"  Cells per trajectory: {size_num_cells}")
@@ -1230,15 +1443,18 @@ def _process_multi_size_mode(
             output_indices=output_indices,
         ),
     }
-    if probe_type == "next_action":
+    if token_major:
         manifest["activations_root"] = str(activations_dir_path.resolve())
-        manifest["action_to_id"] = NEXT_ACTION_TO_ID
         manifest["selection"] = selection.to_manifest()
+    if probe_type == "next_action":
+        manifest["action_to_id"] = NEXT_ACTION_TO_ID
         manifest["samples"] = merged_entries
     else:
         manifest["trajectories"] = merged_entries
         if probe_type == "grid_tile":
             manifest["num_cells_per_trajectory"] = num_cells_per_trajectory
+            if merged_cells:
+                manifest["cells"] = merged_cells
         elif probe_type == "action_sequence":
             manifest["max_seq_len"] = max_seq_len_seen
             manifest["action_to_id"] = ACTION_TO_ID
@@ -1249,7 +1465,7 @@ def _process_multi_size_mode(
     print(f"\n{'=' * 60}")
     print("MERGED RESULTS")
     print(f"{'=' * 60}")
-    print(f"Total {'token samples' if probe_type == 'next_action' else 'trajectories'}: {len(merged_entries)}")
+    print(f"Total {'token samples' if token_major else 'trajectories'}: {len(merged_entries)}")
     print(f"Activation dimension: {activation_dim}")
     if probe_type == "grid_tile":
         print(f"Cells per trajectory: {num_cells_per_trajectory}")

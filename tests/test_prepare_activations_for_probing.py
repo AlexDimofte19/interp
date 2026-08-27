@@ -492,7 +492,7 @@ class TestBuildFlatGridTile:
 
 class TestIndexedDataset:
     def test_only_yields_selected_pairs(self):
-        T, C, D = 2, 3, 4
+        T, _C, D = 2, 3, 4
         base_act = torch.randn(T, D)
         positions = torch.tensor([[[0, 0], [0, 1], [0, 2]], [[1, 0], [1, 1], [1, 2]]], dtype=torch.int16)
         labels = torch.tensor([[3, 1, -1], [3, -1, 7]], dtype=torch.int64)
@@ -532,6 +532,7 @@ def _make_jlens_fixture(
     activation_dim: int = 4,
     write_csv: bool = True,
     lens: str = "jlens",
+    step_grids: dict[int, list[str]] | None = None,
 ) -> tuple[Path, Path, Path]:
     """Activations + trajectory JSONs + per-trajectory jlens CSVs + a direction-token JSON.
 
@@ -550,9 +551,7 @@ def _make_jlens_fixture(
     trajectories_dir.mkdir()
 
     direction_path = tmp_path / "direction_tokens.json"
-    direction_path.write_text(
-        json.dumps({"UP": [" up"], "DOWN": [" down"], "LEFT": [" left"], "RIGHT": [" right"]})
-    )
+    direction_path.write_text(json.dumps({"UP": [" up"], "DOWN": [" down"], "LEFT": [" left"], "RIGHT": [" right"]}))
     direction_words = [" up", " down", " left", " right"]
     filler = [f"w{i}" for i in range(20)]
 
@@ -588,12 +587,10 @@ def _make_jlens_fixture(
             "steps": [
                 {
                     "step_id": step,
-                    "grid_state": _grid_3x3(),
+                    "grid_state": (step_grids or {}).get(step, _grid_3x3()),
                     "grid_state_tokens": [_token(i, ["grid_state"]) for i in range(_JLENS_N_GRID)],
                     "agent_action": _JLENS_ACTIONS[step],
-                    "output_tokens": [
-                        _token(i, ["output", "analysis"]) for i in range(_JLENS_N_ANALYSIS)
-                    ]
+                    "output_tokens": [_token(i, ["output", "analysis"]) for i in range(_JLENS_N_ANALYSIS)]
                     + [_token(_JLENS_N_ANALYSIS, ["output", "final", "action"])],
                 }
                 for step in _JLENS_STEPS
@@ -605,6 +602,7 @@ def _make_jlens_fixture(
             continue
 
         from telos_interp.jlens_utils import METHODS
+
         csv_path = activations_dir / traj_name / f"{traj_name}{METHODS[lens].csv_suffix}"
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = _csv.writer(f)
@@ -616,8 +614,17 @@ def _make_jlens_fixture(
                         top = [direction_words[i % len(direction_words)] for i in range(hits)]
                         top += filler[: 20 - hits]
                         writer.writerow(
-                            ["3", "0.0", str(traj_i), step, token_idx, _JLENS_OUTPUT_START + token_idx,
-                             f"t{token_idx}", layer, _JLENS_ACTIONS[step]]
+                            [
+                                "3",
+                                "0.0",
+                                str(traj_i),
+                                step,
+                                token_idx,
+                                _JLENS_OUTPUT_START + token_idx,
+                                f"t{token_idx}",
+                                layer,
+                                _JLENS_ACTIONS[step],
+                            ]
                             + [0] * 8
                             + top
                         )
@@ -649,7 +656,9 @@ class TestJlensTokenSelection:
     def test_top_tokens_and_layers(self, tmp_path):
         acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=2)
         manifest = _prepare_next_action(
-            acts, trajs, tmp_path / "out",
+            acts,
+            trajs,
+            tmp_path / "out",
             token_selection="jlens_direction",
             layer_selection="jlens_direction",
             num_tokens=3,
@@ -677,7 +686,9 @@ class TestJlensTokenSelection:
     def test_act_paths_resolve_to_the_selected_token(self, tmp_path):
         acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
         manifest = _prepare_next_action(
-            acts, trajs, tmp_path / "out",
+            acts,
+            trajs,
+            tmp_path / "out",
             token_selection="jlens_direction",
             layer_selection="jlens_direction",
             num_tokens=2,
@@ -696,7 +707,9 @@ class TestJlensTokenSelection:
     def test_labels_follow_the_token_own_step(self, tmp_path):
         acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
         manifest = _prepare_next_action(
-            acts, trajs, tmp_path / "out",
+            acts,
+            trajs,
+            tmp_path / "out",
             layers="15",
             token_selection="jlens_direction",
             num_tokens=8,  # every analysis token of both steps
@@ -710,7 +723,9 @@ class TestJlensTokenSelection:
     def test_manual_layer_with_jlens_tokens(self, tmp_path):
         acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
         manifest = _prepare_next_action(
-            acts, trajs, tmp_path / "out",
+            acts,
+            trajs,
+            tmp_path / "out",
             layers="15",
             token_selection="jlens_direction",
             num_tokens=2,
@@ -722,7 +737,9 @@ class TestJlensTokenSelection:
     def test_layers_spec_bounds_the_candidate_pool(self, tmp_path):
         acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
         manifest = _prepare_next_action(
-            acts, trajs, tmp_path / "out",
+            acts,
+            trajs,
+            tmp_path / "out",
             layers="10,20",
             token_selection="jlens_direction",
             layer_selection="jlens_direction",
@@ -737,12 +754,12 @@ class TestJlensTokenSelection:
 class TestRandomSelection:
     def test_sizes_and_reproducibility(self, tmp_path):
         acts, trajs, _ = _make_jlens_fixture(tmp_path, num_trajectories=2)
-        kwargs = dict(
-            token_selection="random",
-            layer_selection="random",
-            num_tokens=3,
-            num_layers=2,
-        )
+        kwargs = {
+            "token_selection": "random",
+            "layer_selection": "random",
+            "num_tokens": 3,
+            "num_layers": 2,
+        }
         first = _prepare_next_action(acts, trajs, tmp_path / "out_a", seed=1, **kwargs)
         again = _prepare_next_action(acts, trajs, tmp_path / "out_b", seed=1, **kwargs)
         other = _prepare_next_action(acts, trajs, tmp_path / "out_c", seed=7, **kwargs)
@@ -759,7 +776,9 @@ class TestRandomSelection:
     def test_random_tokens_with_jlens_layers(self, tmp_path):
         acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
         manifest = _prepare_next_action(
-            acts, trajs, tmp_path / "out",
+            acts,
+            trajs,
+            tmp_path / "out",
             token_selection="random",
             layer_selection="jlens_direction",
             num_tokens=4,
@@ -773,7 +792,9 @@ class TestRandomSelection:
     def test_more_requested_than_available(self, tmp_path):
         acts, trajs, _ = _make_jlens_fixture(tmp_path, num_trajectories=1)
         manifest = _prepare_next_action(
-            acts, trajs, tmp_path / "out",
+            acts,
+            trajs,
+            tmp_path / "out",
             token_selection="random",
             layer_selection="random",
             num_tokens=99,
@@ -795,7 +816,9 @@ class TestSelectionValidation:
         acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1, write_csv=False)
         with pytest.raises(ValueError, match="No activations were extracted"):
             _prepare_next_action(
-                acts, trajs, tmp_path / "out",
+                acts,
+                trajs,
+                tmp_path / "out",
                 token_selection="jlens_direction",
                 num_tokens=2,
                 direction_tokens_path=str(directions),
@@ -805,7 +828,9 @@ class TestSelectionValidation:
         acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
         with pytest.raises(ValueError, match="requires num_tokens"):
             _prepare_next_action(
-                acts, trajs, tmp_path / "out",
+                acts,
+                trajs,
+                tmp_path / "out",
                 token_selection="jlens_direction",
                 direction_tokens_path=str(directions),
             )
@@ -814,7 +839,9 @@ class TestSelectionValidation:
         acts, trajs, _ = _make_jlens_fixture(tmp_path, num_trajectories=1)
         with pytest.raises(ValueError, match="requires direction_tokens_path"):
             _prepare_next_action(
-                acts, trajs, tmp_path / "out",
+                acts,
+                trajs,
+                tmp_path / "out",
                 token_selection="jlens_direction",
                 num_tokens=2,
             )
@@ -875,9 +902,12 @@ def _prune_fixture(activations_dir, trajectories_dir, direction_path, **override
     opts.update(overrides)
     argv = [
         "delete_non_jlens_selected.py",
-        "--activations-dir", str(activations_dir),
-        "--trajectories-dir", str(trajectories_dir),
-        "--signal-json", str(direction_path),
+        "--activations-dir",
+        str(activations_dir),
+        "--trajectories-dir",
+        str(trajectories_dir),
+        "--signal-json",
+        str(direction_path),
         "--apply",
         *[part for pair in opts.items() for part in pair],
     ]
@@ -897,19 +927,34 @@ class TestRecordedSelection:
         acts, trajs, _ = _make_jlens_fixture(tmp_path / "pruned")
 
         reference = _prepare_next_action(
-            full_acts, full_trajs, tmp_path / "ref",
-            token_selection="jlens_direction", layer_selection="jlens_direction",
-            num_tokens=3, num_layers=2, direction_tokens_path=str(directions),
+            full_acts,
+            full_trajs,
+            tmp_path / "ref",
+            token_selection="jlens_direction",
+            layer_selection="jlens_direction",
+            num_tokens=3,
+            num_layers=2,
+            direction_tokens_path=str(directions),
         )
         _prune_fixture(acts, trajs, directions)
         recorded = _prepare_next_action(
-            acts, trajs, tmp_path / "rec", token_selection="recorded_jlens",
+            acts,
+            trajs,
+            tmp_path / "rec",
+            token_selection="recorded_jlens",
         )
 
         def identity(manifest):
             return sorted(
-                (s["name"], s["step"], s["token_id"], s["layer"], s["label"],
-                 s["direction_count"], s["layer_direction_count"])
+                (
+                    s["name"],
+                    s["step"],
+                    s["token_id"],
+                    s["layer"],
+                    s["label"],
+                    s["direction_count"],
+                    s["layer_direction_count"],
+                )
                 for s in manifest["samples"]
             )
 
@@ -919,9 +964,7 @@ class TestRecordedSelection:
         """No counts means split_next_action_manifest samples the control instead of ranking it."""
         acts, trajs, directions = _make_jlens_fixture(tmp_path)
         _prune_fixture(acts, trajs, directions)
-        manifest = _prepare_next_action(
-            acts, trajs, tmp_path / "out", token_selection="recorded_random"
-        )
+        manifest = _prepare_next_action(acts, trajs, tmp_path / "out", token_selection="recorded_random")
         assert manifest["samples"]
         for sample in manifest["samples"]:
             assert "direction_count" not in sample
@@ -930,9 +973,7 @@ class TestRecordedSelection:
     def test_recorded_jlens_keeps_counts(self, tmp_path):
         acts, trajs, directions = _make_jlens_fixture(tmp_path)
         _prune_fixture(acts, trajs, directions)
-        manifest = _prepare_next_action(
-            acts, trajs, tmp_path / "out", token_selection="recorded_jlens"
-        )
+        manifest = _prepare_next_action(acts, trajs, tmp_path / "out", token_selection="recorded_jlens")
         assert all("direction_count" in s for s in manifest["samples"])
         assert all("layer_direction_count" in s for s in manifest["samples"])
 
@@ -940,9 +981,7 @@ class TestRecordedSelection:
         acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
         _prune_fixture(acts, trajs, directions)
         full = _prepare_next_action(acts, trajs, tmp_path / "a", token_selection="recorded_jlens")
-        capped = _prepare_next_action(
-            acts, trajs, tmp_path / "b", token_selection="recorded_jlens", num_tokens=1
-        )
+        capped = _prepare_next_action(acts, trajs, tmp_path / "b", token_selection="recorded_jlens", num_tokens=1)
         assert len({(s["step"], s["token_id"]) for s in full["samples"]}) == 3
         assert len({(s["step"], s["token_id"]) for s in capped["samples"]}) == 1
         # and it caps by rank, not arbitrarily
@@ -952,9 +991,7 @@ class TestRecordedSelection:
         """A single-layer dataset out of the same record, with no re-gather."""
         acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
         _prune_fixture(acts, trajs, directions)
-        manifest = _prepare_next_action(
-            acts, trajs, tmp_path / "out", token_selection="recorded_jlens", layers="15"
-        )
+        manifest = _prepare_next_action(acts, trajs, tmp_path / "out", token_selection="recorded_jlens", layers="15")
         assert manifest["samples"]
         assert {s["layer"] for s in manifest["samples"]} == {15}
 
@@ -968,8 +1005,12 @@ class TestRecordedSelection:
         _prune_fixture(acts, trajs, directions)
         with pytest.raises(ValueError, match="must stay 'spec'"):
             _prepare_next_action(
-                acts, trajs, tmp_path / "out",
-                token_selection="recorded_jlens", layer_selection="random", num_layers=1,
+                acts,
+                trajs,
+                tmp_path / "out",
+                token_selection="recorded_jlens",
+                layer_selection="random",
+                num_layers=1,
             )
 
     def test_recorded_modes_need_no_direction_tokens_path(self, tmp_path):
@@ -1004,21 +1045,30 @@ class TestLogitLensSelection:
         l_acts, l_trajs, _ = _make_jlens_fixture(tmp_path / "l", lens="logitlens")
 
         common = {
-            "num_tokens": 3, "num_layers": 2, "direction_tokens_path": str(directions),
+            "num_tokens": 3,
+            "num_layers": 2,
+            "direction_tokens_path": str(directions),
         }
         by_jlens = _prepare_next_action(
-            j_acts, j_trajs, tmp_path / "out_j",
-            token_selection="jlens_direction", layer_selection="jlens_direction", **common,
+            j_acts,
+            j_trajs,
+            tmp_path / "out_j",
+            token_selection="jlens_direction",
+            layer_selection="jlens_direction",
+            **common,
         )
         by_logit = _prepare_next_action(
-            l_acts, l_trajs, tmp_path / "out_l",
-            token_selection="logitlens_direction", layer_selection="logitlens_direction", **common,
+            l_acts,
+            l_trajs,
+            tmp_path / "out_l",
+            token_selection="logitlens_direction",
+            layer_selection="logitlens_direction",
+            **common,
         )
 
         def identity(manifest):
             return sorted(
-                (s["name"], s["step"], s["token_id"], s["layer"], s["direction_count"])
-                for s in manifest["samples"]
+                (s["name"], s["step"], s["token_id"], s["layer"], s["direction_count"]) for s in manifest["samples"]
             )
 
         assert identity(by_jlens) == identity(by_logit)
@@ -1034,8 +1084,12 @@ class TestLogitLensSelection:
         acts, trajs, directions = _make_jlens_fixture(tmp_path, lens="jlens")
         with pytest.raises(ValueError, match="No activations were extracted"):
             _prepare_next_action(
-                acts, trajs, tmp_path / "out", token_selection="logitlens_direction",
-                num_tokens=3, direction_tokens_path=str(directions),
+                acts,
+                trajs,
+                tmp_path / "out",
+                token_selection="logitlens_direction",
+                num_tokens=3,
+                direction_tokens_path=str(directions),
             )
 
     def test_recorded_logitlens_reads_that_arm(self, tmp_path):
@@ -1055,9 +1109,16 @@ class TestLogitLensSelection:
         # Add a logitlens arm the way jlens_reasoning_tokens.py --extend would.
         existing, _ = read_selection_record(record_path(folder))
         step, token_idx = 0, 1
-        arm = {(step, token_idx): TokenPick(step, token_idx, (_JLENS_LAYERS[0],),
-                                            token="t1", direction_count=9,
-                                            layer_direction_counts={_JLENS_LAYERS[0]: 9})}
+        arm = {
+            (step, token_idx): TokenPick(
+                step,
+                token_idx,
+                (_JLENS_LAYERS[0],),
+                token="t1",
+                direction_count=9,
+                layer_direction_counts={_JLENS_LAYERS[0]: 9},
+            )
+        }
         merged = KeptTokens({**existing.arms, "logitlens": arm})
         write_selection_record(
             record_path(folder),
@@ -1065,7 +1126,10 @@ class TestLogitLensSelection:
         )
 
         manifest = _prepare_next_action(
-            acts, trajs, tmp_path / "out", token_selection="recorded_logitlens",
+            acts,
+            trajs,
+            tmp_path / "out",
+            token_selection="recorded_logitlens",
         )
         assert [(s["step"], s["token_id"], s["layer"]) for s in manifest["samples"]] == [
             (step, token_idx, _JLENS_LAYERS[0])
@@ -1083,7 +1147,11 @@ class TestLogitLensSelection:
 
         with pytest.raises(ValueError, match="No activations were extracted"):
             _prepare_next_action(
-                acts, trajs, tmp_path / "out", token_selection="recorded_logitlens", verbose=True,
+                acts,
+                trajs,
+                tmp_path / "out",
+                token_selection="recorded_logitlens",
+                verbose=True,
             )
         assert "has no 'logitlens' arm" in capsys.readouterr().out
 
@@ -1091,16 +1159,25 @@ class TestLogitLensSelection:
         acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
         with pytest.raises(ValueError, match="name different lenses"):
             _prepare_next_action(
-                acts, trajs, tmp_path / "out",
-                token_selection="jlens_direction", layer_selection="logitlens_direction",
-                num_tokens=2, num_layers=1, direction_tokens_path=str(directions),
+                acts,
+                trajs,
+                tmp_path / "out",
+                token_selection="jlens_direction",
+                layer_selection="logitlens_direction",
+                num_tokens=2,
+                num_layers=1,
+                direction_tokens_path=str(directions),
             )
 
     def test_unknown_mode_lists_the_registered_ones(self, tmp_path):
         acts, trajs, _ = _make_jlens_fixture(tmp_path, num_trajectories=1)
         with pytest.raises(ValueError, match="recorded_logitlens"):
             _prepare_next_action(
-                acts, trajs, tmp_path / "out", token_selection="lensy_direction", num_tokens=2,
+                acts,
+                trajs,
+                tmp_path / "out",
+                token_selection="lensy_direction",
+                num_tokens=2,
             )
 
     def test_each_mode_gets_its_own_auto_named_directory(self, tmp_path):
@@ -1111,10 +1188,229 @@ class TestLogitLensSelection:
         """
         acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1, lens="logitlens")
         prepare_activations_for_probing(
-            activations_dir=str(acts), trajectories_dir=str(trajs), output_path=None,
-            probe_type="next_action", layers="all", steps="all", output_indices="all",
-            verbose=False, token_selection="logitlens_direction", num_tokens=2,
+            activations_dir=str(acts),
+            trajectories_dir=str(trajs),
+            output_path=None,
+            probe_type="next_action",
+            layers="all",
+            steps="all",
+            output_indices="all",
+            verbose=False,
+            token_selection="logitlens_direction",
+            num_tokens=2,
             direction_tokens_path=str(directions),
         )
         # "ll" is METHODS["logitlens"].abbrev; "2" is num_tokens
         assert [d.name for d in acts.glob("*next_action_tokll2")], sorted(p.name for p in acts.iterdir())
+
+
+# --- grid_tile on lens-selected tokens ---------------------------------------------------
+#
+# The grid arms exist to answer the same question as the next_action arms about a different
+# label: does the lens pick tokens that carry more of the model's world model, not just more
+# of the decision it already verbalized? That only works if the two probe types read exactly
+# the same tokens at exactly the same layers, and are scored on exactly the same cells. Both
+# of those are properties of prepare, so both are pinned here.
+
+
+def _prepare_grid_tokens(activations_dir, trajectories_dir, out_dir, **kwargs):
+    """Run prepare with the token-major grid_tile defaults, returning the parsed manifest."""
+    params = {
+        "probe_type": "grid_tile",
+        "layers": "all",
+        "steps": "all",
+        "output_indices": "all",
+        "verbose": False,
+    }
+    params.update(kwargs)
+    prepare_activations_for_probing(
+        activations_dir=str(activations_dir),
+        trajectories_dir=str(trajectories_dir),
+        output_path=str(out_dir),
+        **params,
+    )
+    return json.loads((Path(out_dir) / "manifest.json").read_text())
+
+
+_GRID_ARM = {
+    "token_selection": "jlens_direction",
+    "layer_selection": "jlens_direction",
+    "num_tokens": 3,
+    "num_layers": 2,
+}
+
+
+class TestGridTileTokenSelection:
+    def test_selects_the_same_tokens_as_the_action_arm(self, tmp_path):
+        """The whole comparison rests on this: same files, different label."""
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=2)
+        arm = dict(_GRID_ARM, direction_tokens_path=str(directions))
+        action = _prepare_next_action(acts, trajs, tmp_path / "action", **arm)
+        grid = _prepare_grid_tokens(acts, trajs, tmp_path / "grid", **arm)
+
+        def refs(entries):
+            return sorted((e["name"], e["step"], e["token_id"], e["layer"], e["act_path"]) for e in entries)
+
+        assert refs(grid["trajectories"]) == refs(action["samples"])
+
+    def test_is_token_major_and_copies_nothing(self, tmp_path):
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=2)
+        out = tmp_path / "grid"
+        manifest = _prepare_grid_tokens(acts, trajs, out, direction_tokens_path=str(directions), **_GRID_ARM)
+
+        entries = manifest["trajectories"]
+        assert len(entries) == 2 * 3 * 2, "trajectories x tokens x layers"
+        assert len({e["name"] for e in entries}) == 2
+        assert manifest["activations_root"] == str(acts.resolve())
+        assert not (out / "activations").exists(), "token-major mode copies nothing"
+        assert manifest["num_cells_per_trajectory"] == 9
+        assert manifest["selection"]["token_selection"] == "jlens_direction"
+
+    def test_cells_are_stored_once_per_trajectory_step(self, tmp_path):
+        """Repeating 225 positions on each of a trajectory's ~20 entries is a 20x manifest."""
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=2)
+        manifest = _prepare_grid_tokens(
+            acts, trajs, tmp_path / "grid", direction_tokens_path=str(directions), **_GRID_ARM
+        )
+        entries = manifest["trajectories"]
+
+        assert set(manifest["cells"]) == {f"{e['name']}|{e['step']}" for e in entries}
+        assert len(manifest["cells"]) < len(entries)
+        assert all(e["cells_key"] in manifest["cells"] for e in entries)
+
+    def test_the_grid_follows_the_token_own_step(self, tmp_path):
+        """A step-1 token labeled with step 0's grid would be silent and wrong."""
+        moved = [
+            "  0 1 2 ",
+            "0 _ _ _ ",
+            "1 _ A G ",
+            "2 # # # ",
+        ]
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1, step_grids={1: moved})
+        manifest = _prepare_grid_tokens(
+            acts,
+            trajs,
+            tmp_path / "grid",
+            layers="15",
+            token_selection="jlens_direction",
+            num_tokens=8,  # every analysis token of both steps
+            direction_tokens_path=str(directions),
+        )
+        labels_by_step = {e["step"]: manifest["cells"][e["cells_key"]]["labels"] for e in manifest["trajectories"]}
+        assert set(labels_by_step) == {0, 1}
+        assert labels_by_step[0] != labels_by_step[1]
+
+    def test_cell_draw_does_not_depend_on_the_arm(self, tmp_path):
+        """Arms must differ in tokens only. Cells drawn from a shared global RNG would not:
+        each arm consumes a different number of draws, so the same seed hands them different
+        cells and the arms stop being comparable."""
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=2)
+        common = {
+            "direction_tokens_path": str(directions),
+            "max_positions_per_trajectory": 4,
+        }
+        ranked = _prepare_grid_tokens(
+            acts, trajs, tmp_path / "a", token_selection="jlens_direction", num_tokens=1, **common
+        )
+        control = _prepare_grid_tokens(acts, trajs, tmp_path / "b", token_selection="random", num_tokens=3, **common)
+
+        shared = set(ranked["cells"]) & set(control["cells"])
+        assert shared, "the two arms cover some of the same trajectories"
+        for key in shared:
+            assert ranked["cells"][key] == control["cells"][key]
+
+    def test_loader_reads_it_back(self, tmp_path):
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=2)
+        out = tmp_path / "grid"
+        manifest = _prepare_grid_tokens(acts, trajs, out, direction_tokens_path=str(directions), **_GRID_ARM)
+        compact = load_grid_tile_compact(manifest, out / "manifest.json")
+        entries = manifest["trajectories"]
+
+        assert compact["base_act"].shape == (len(entries), 4)
+        assert compact["C"] == 9
+        assert compact["trajectory_names"] == [e["name"] for e in entries]
+        for i, entry in enumerate(entries):
+            # the fixture encodes (layer, step, token) in the value, so a mis-resolved
+            # act_path shows up as the wrong number rather than as a missing file
+            expected = float(entry["layer"] * 1000 + entry["step"] * 100 + entry["token_id"])
+            assert compact["base_act"][i][0].item() == expected
+        first = {e["name"]: i for i, e in reversed(list(enumerate(entries)))}
+        for i, entry in enumerate(entries):
+            assert torch.equal(compact["labels"][i], compact["labels"][first[entry["name"]]])
+
+    def test_without_a_selection_it_stays_trajectory_major(self, tmp_path):
+        """Every dataset prepared before selection existed must read back unchanged."""
+        acts, trajs = _make_fixture(tmp_path, num_trajectories=3)
+        out = tmp_path / "classic"
+        prepare_activations_for_probing(
+            activations_dir=str(acts),
+            trajectories_dir=str(trajs),
+            probe_type="grid_tile",
+            layers="all",
+            output_indices="all",
+            output_path=str(out),
+            verbose=False,
+        )
+        manifest = json.loads((out / "manifest.json").read_text())
+        assert len(manifest["trajectories"]) == 3
+        assert "cells" not in manifest
+        assert "activations_root" not in manifest
+        assert (out / "activations").is_dir(), "the classic path still copies"
+
+    def test_still_rejected_for_probe_types_that_have_no_tokens(self, tmp_path):
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
+        with pytest.raises(ValueError, match="next_action"):
+            prepare_activations_for_probing(
+                activations_dir=str(acts),
+                trajectories_dir=str(trajs),
+                probe_type="action_sequence",
+                output_indices="all",
+                token_selection="random",
+                num_tokens=2,
+                output_path=str(tmp_path / "out"),
+            )
+
+
+class TestGridTileTokenMajorFlag:
+    """The EOS control has no selection record to read: its arm is 'every gathered token'."""
+
+    def test_flag_makes_it_token_major_without_a_selection(self, tmp_path):
+        acts, trajs, _ = _make_jlens_fixture(tmp_path, num_trajectories=2, write_csv=False)
+        manifest = _prepare_grid_tokens(acts, trajs, tmp_path / "eos", layers="15", token_major=True)
+
+        entries = manifest["trajectories"]
+        # 2 trajectories x 2 steps x 4 analysis tokens, all at layer 15
+        assert len(entries) == 2 * 2 * 4
+        assert {e["layer"] for e in entries} == {15}
+        assert manifest["activations_root"] == str(acts.resolve())
+        assert all("cells_key" in e for e in entries)
+
+    def test_off_by_default(self, tmp_path):
+        acts, trajs, _ = _make_jlens_fixture(tmp_path, num_trajectories=2, write_csv=False)
+        manifest = _prepare_grid_tokens(acts, trajs, tmp_path / "classic", layers="15")
+        assert len(manifest["trajectories"]) == 2
+        assert "cells" not in manifest
+
+    def test_rejected_for_other_probe_types(self, tmp_path):
+        acts, trajs, _ = _make_jlens_fixture(tmp_path, num_trajectories=1, write_csv=False)
+        with pytest.raises(ValueError, match="token_major applies to"):
+            prepare_activations_for_probing(
+                activations_dir=str(acts),
+                trajectories_dir=str(trajs),
+                probe_type="distance",
+                output_indices="all",
+                token_major=True,
+                output_path=str(tmp_path / "out"),
+            )
+
+    def test_needs_output_indices(self, tmp_path):
+        acts, trajs, _ = _make_jlens_fixture(tmp_path, num_trajectories=1, write_csv=False)
+        with pytest.raises(ValueError, match="output_indices"):
+            prepare_activations_for_probing(
+                activations_dir=str(acts),
+                trajectories_dir=str(trajs),
+                probe_type="grid_tile",
+                layers="15",
+                token_major=True,
+                output_path=str(tmp_path / "out"),
+            )
