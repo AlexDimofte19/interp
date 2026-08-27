@@ -97,9 +97,13 @@ relative*, which matters when mapping a jlens CSV's absolute `abs_pos` back to a
 `claude_session_readme.md` for the exact formula).
 
 **Prepared dataset** is a directory with `manifest.json` (`format_version: 3`) plus `activations/*.pt`,
-with `act_path` relative to the manifest so the directory is movable. `next_action` is the exception: it
-copies nothing and its manifest's `samples` point into the original activations tree via
-`activations_root`. Loaders live in `prepare_activations_for_probing/manifest_loader.py`.
+with `act_path` relative to the manifest so the directory is movable. **Token-major** manifests are the
+exception: they copy nothing and their entries point into the original activations tree via an absolute
+`activations_root`. That is always `next_action` (key `samples`), and `grid_tile` (key `trajectories`)
+whenever it is given a `--token-selection` or `--token-major` — there one entry is one (token, layer),
+a trajectory name repeats across entries, and the per-cell payload lives once per (trajectory, step)
+under `cells`, keyed by each entry's `cells_key`. Loaders live in
+`prepare_activations_for_probing/manifest_loader.py`.
 
 ### The lens line (jlens and logitlens)
 
@@ -153,6 +157,19 @@ Narrow at training time, not prepare time: `split_next_action_manifest.py --toke
 --layers-per-token M` takes top-K off one prepared dataset (identical to a `--num-tokens K` prepare),
 which is why the top-1/2/3 sweep costs three splits rather than three multi-hour prepares. It computes
 the train/eval strata from the unthinned samples so every K shares one split and the results compare.
+It takes either token-major manifest despite the name; a `grid_tile` one has no scalar label, so it
+strata by grid size instead. `--eval-names FILE` pins the eval set to a name list, which is how arms
+prepared from different trees end up scored on the same test trajectories.
+
+**The same arms with the grid label.** `scripts/prepare_grid_arms.sh` and `scripts/train_grid_arms.sh`
+are the `grid_tile` twins of the `*_next_action_arms.sh` pair: same tree, same records, same tokens,
+same layers, `train_cognitive_map_probe` instead of `train_next_action_probe`. Any difference between a
+grid arm and an action arm is therefore the label and nothing else. Two knobs matter there. `MAX_CELLS`
+decides affordability — padded to the widest grid every trajectory has 225 cells, and ~72k entries x 225
+is 16.2M rows per epoch, so the default caps each (trajectory, step) at 25 class-balanced cells. And the
+cell draw is seeded per (trajectory, step), never from the global RNG: arms consume different numbers of
+draws, so a shared stream would hand them different cells and the arms would stop differing only in
+their tokens.
 
 Those vocabularies are built by `notebooks/direction_tokens.ipynb` and `notebooks/grid_tokens.ipynb`
 **from the model vocabulary alone** — never from what is frequent in the j-space, since the j-space is
@@ -174,9 +191,11 @@ strings, embedded commas and newlines, which pandas' NA handling silently corrup
 - `ICLR log.txt` is the running research log (findings, planned phases, known landmines) and
   `claude_session_readme.md` is the handoff note for the current `reasoning_theatre` branch. Read them
   before touching the jlens → probe path; append to the log rather than rewriting it.
-- Known landmine recorded there: `train_cognitive_map_probe_fn.py::_prepare_train_eval_v3` splits
-  train/eval with `torch.randperm` over **rows**. Once a trajectory contributes many rows (multi-token
-  datasets), that leaks trajectories across the split. Split over unique trajectory names.
+- Landmine, now guarded: `train_cognitive_map_probe_fn.py::_prepare_train_eval_v3` splits train/eval
+  with `torch.randperm` over **entries**. That is a split by trajectory only while one entry is one
+  trajectory; a token-major manifest leaks. It now refuses both an internal `--eval-split` and
+  `--subset < 1.0` on such a manifest and points at `split_next_action_manifest.py`. Do not replace that
+  guard with a row-level split — split over unique trajectory names.
 - `parse_grid_state` has no symbol for fog (`*`), so fogged cells are silently dropped and padded. Fine
   while every trajectory is `fully_observable: true`.
 - `spaces/trace-viewer` is a git submodule (a HuggingFace Space).

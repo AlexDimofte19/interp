@@ -185,10 +185,61 @@ and shift a logit in its last bits, which could flip a rank between two near-tie
 Use `--forward-batch-size 1` for bit-exact agreement with an unbatched run; that setting
 disables only the packing, and every other optimisation above still applies.
 
+## Current state on the GPU host (2026-08-24)
+
+**Gather is done, for all three arms.** `/workspace/activations/jlens_reasoning_tokens/`
+holds 3604 trajectory folders (size5/7/9/11/13/15, ~600 each). 3600 carry a **v2 selection
+record with all three arms** — `jlens`, `logitlens`, `random` — and a
+`*_logitlens_analysis.csv`, 600 per size with no gaps. The remaining 4 have no record at all
+and are simply not in any arm.
+
+The logitlens arm came from `scripts/jlens_extend_logitlens.sh` (`--select-num-layers 3`),
+which finished cleanly: log `/workspace/logs/jlens_extend_logitlens_run_16_00.txt`, last
+write 17:56 UTC, ending `done: 2994 trajectory folder(s)`. The only repeated message in it is
+the harmless `--extend but no selection record ... skipping`. Note the "2994" is what that
+run walked, not the tree size — arm coverage is the number that matters, and it is complete.
+
+Per trajectory each arm records **at most 20** tokens (`rank_tokens(...)[:num_tokens]` and
+`min(num_tokens, len(universe))` both truncate on a short reasoning chain): the lenses' top-20
+by `direction_count`, the control's 20 uniform draws carrying no counts at all.
+
+**Prepare has not been run for these arms.** The only thing in `/workspace/prepared/` is
+`next_action_comp0.0-0.2-0.4_jlens`, an older run on the 3-complexity view using
+`jlens_direction` (CSV re-scoring), not `recorded_*`.
+
+### Running it: all selected tokens, one layer each
+
+```bash
+# lens arms: keep every recorded layer so the split can pick the top-scoring one
+ARMS="jlens logitlens" LAYERS=7:23 OUT=/workspace/prepared/next_action \
+    ./scripts/prepare_next_action_arms.sh
+
+# control: pin to layer 15 HERE, not at split time (see below)
+ARMS="random" LAYERS=15 OUT=/workspace/prepared/next_action \
+    ./scripts/prepare_next_action_arms.sh
+
+# train: every selected token, one layer per token
+ARMS="jlens logitlens random" TOKENS_PER_TRAJ=all LAYERS_PER_TOKEN=1 \
+    PREPARED=/workspace/prepared/next_action ./scripts/train_next_action_arms.sh
+```
+
+`TOKENS_PER_TRAJ=all` omits `--tokens-per-trajectory` entirely rather than passing a large K,
+so `thin_tokens` is skipped and every token in the arm's record is trained on. It means *that
+arm's* tokens, not the union across arms — the three overlap only partially, which is the
+point: equal N, different chooser.
+
+**Why the control is pinned at prepare time.** `thin_layers` ranks by `layer_direction_count`
+when counts are present and *samples uniformly* when they are not, so `--layers-per-token 1`
+gives the top-scoring layer for jlens/logitlens but a **random** one of the control's ~6
+recorded layers. Layer 15 is only guaranteed to be among the candidates, never to be the one
+drawn. Preparing that arm with `--layers 15` leaves one row per token, after which
+`--layers-per-token 1` is a no-op that picks it.
+
+The two prepares share one `OUT` prefix and write different arms of it — deliberate; train
+reads `${PREPARED}_${arm}`. Expect ~3600 × ≤20 × 1 = ≤72k rows per arm, matched across arms.
+
 ## Open threads
 
-- Run `scripts/jlens_reasoning_tokens.sh` on the GPU host to produce a real
-  `{activations_dir}` tree; nothing local has jlens CSVs yet.
 - On the GPU host, run one comp-0.8 trajectory with `--profile` and record the split, then
   tune `--io-workers` against it. If file creation still dominates after threading, the next
   lever is a sharded `.pt` container (one file per (layer, step) instead of per token,
@@ -198,8 +249,14 @@ disables only the packing, and every other optimisation above still applies.
 - Cross-check one saved tensor against an existing `gather_activations` run for the same
   trajectory/layer/step/token (`torch.allclose`) — both capture decoder-block outputs from
   the same truncated prefix, so they must match.
-- Train and compare: `jlens_direction`/`jlens_direction` vs the `random`/`random` control
-  built with the same N, M and seed.
+- Train and compare the three arms, using the commands above. The tree is pruned, so read
+  every arm back with `recorded_<arm>` — re-scoring a CSV would still find the right tokens
+  for a lens, but a uniform draw over the survivors is no longer a uniform draw over the
+  reasoning chain, and the control would stop being one.
+- Watch out for a stopped (state `Tl`) leftover `jlens_reasoning_tokens.py` from the original
+  gather, still parked in the process table days later alongside `watch`/`tail` watchdogs.
+  Not writing, but a `pgrep` for a live run will match it — check the argv (`--extend`,
+  `--select-num-layers`) and the state flag, not just the name.
 
 ## Methodological caveat
 
@@ -207,3 +264,68 @@ The highest-scoring tokens are literally the direction words (`Ġleft`, `Ġright
 A probe trained on them is partly reading a decision the model has already verbalized, so
 accuracy on that dataset alone says little. The random control is what makes the comparison
 meaningful — build both.
+
+## Resuming — start here (2026-08-26)
+
+Two rounds exist. **Round 1, "direction probing", is finished** (log entries 1-31): tokens
+selected by how many of their top-k lens predictions are *direction* words, probing the next
+action. Result: jlens > logitlens > random > eos, stable across three seeds (max sd 0.26 pp).
+Nothing about round 1 is being re-run.
+
+**Round 2, "grid probing", is in progress** (log entry 34): the same machinery pointed at
+`/workspace/jlens/grid_tokens_full.json`, so tokens are selected by *grid* words, and the
+probe trained on them is the cognitive map (`--probe-type grid_tile`). It writes to its own
+tree, `/workspace/activations/grid_reasoning_tokens`, and does not touch round 1.
+
+### Where round 2 actually stands
+
+| stage | state |
+|---|---|
+| gather | **NOT started.** Smoke-tested on 2 trajectories and passed. |
+| prepare / split / train | not started |
+
+Run `./scripts/grid_round_status.sh` for the live picture — it reads only `/workspace`, so it
+works from any session.
+
+**One thing must be settled before the prepare stage** (entry 34, "OPEN LANDMINE"):
+`--balance-classes-per-trajectory` collapses to the rarest class — a grid has exactly one `A`
+and one `G`, so every trajectory keeps *one cell per class*, 4 out of 225. And the class count
+depends on padding, while prepare **skips** trajectories whose cell count disagrees with the
+first, so mixing sizes under balancing can drop whole sizes silently. Proposed fix: drop
+per-trajectory balancing, keep a plain `--max-positions-per-trajectory` cap, and let the
+trainer's `--class-weight balanced` handle imbalance. The A/B that would confirm it was
+interrupted before producing numbers; it needs no GPU.
+
+### The three round-2 scripts
+
+```bash
+./scripts/gather_grid_arms.sh          # build the tree (~3-4h on one GPU; resumable)
+ARMS="jlens logitlens random" LAYERS=15 OUT=/workspace/prepared/grid_l15 \
+    ACT=/workspace/activations/grid_reasoning_tokens ./scripts/prepare_grid_arms.sh
+PREPARED=/workspace/prepared/grid_l15 TAG=l15 \
+    EVAL_NAMES=/workspace/splits/eval_trajectories_720.txt \
+    ARMS="jlens logitlens random" SEEDS="42 43 44" ./scripts/train_grid_arms.sh
+```
+
+`DRY_RUN=1` on the gather prints its invocation and runs nothing. The planned sweep is 22
+runs: 18 at layer 15 (3 arms x 3 seeds x lr/mlp) + 4 at layers 7:23 (jlens/logitlens, seed 42).
+
+`/workspace/splits/` holds `eval_trajectories_720.txt` (md5 `d7af16f3`) and
+`lens_trajectories_3600.txt` — round 1's exact eval trajectories. Pin round 2 to them via
+`EVAL_NAMES` so the two rounds are comparable.
+
+### Round 1 leftovers worth knowing
+
+- The token-major implementation entries 32-33 describe (prepare, loader, both trainers, the
+  split script, `tests/test_train_cognitive_map_probe.py`) is what round 2 runs on.
+- Parked, not forgotten: the eos cap (`--tokens-per-trajectory 20`, entry 30), and an eos arm
+  for round 2 — that one needs no gather, only prepare+train, since it uses no lens selection.
+- PID 1992 is a stopped (`Tl`) leftover from the original round-1 gather, days old and idle. A
+  bare `pgrep jlens_reasoning_tokens.py` matches it; check the argv, as `grid_round_status.sh`
+  does.
+
+Everything above is **uncommitted working-tree state** on `reasoning_theatre`.
+
+Do not run `make fix-style` or a bare `ruff check` on the whole repo: the first reformats
+everything and the second is configured with `fix=true`, so it rewrites files in place. Both
+pulled ~40 untouched files into the diff here.

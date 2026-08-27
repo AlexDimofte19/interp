@@ -409,3 +409,760 @@ csv either, and that is what makes the direction number mean anything.
 	The scripts/*.sh defaults now encode this layout; the repo's own
 	data/jlens/direction_tokens_full.json is the source-controlled copy the
 	notebooks write, deployed to /workspace/jlens/ on the host.
+
+26. The logitlens extend run COMPLETED (2026-08-24)
+	scripts/jlens_extend_logitlens.sh, --select-num-layers 3, log at
+	/workspace/logs/jlens_extend_logitlens_run_16_00.txt (last write 17:56 UTC,
+	ending "done: 2994 trajectory folder(s)"). Clean exit -- the only repeated
+	message in the log is the harmless "--extend but no selection record ...
+	skipping" for folders that never had a jlens prune to extend.
+
+	State of /workspace/activations/jlens_reasoning_tokens after it:
+	  3604 trajectory folders (size5/7/9/11/13/15, ~600 each)
+	  3600 carry a v2 selection record with ALL THREE arms: jlens, logitlens, random
+	     4 carry no record at all -- these are the skips, and they are simply not
+	       in any arm; prepare will pass over them
+	  3600 *_logitlens_analysis.csv, 600 per size, no gaps
+	The "2994 folders" in the done line is what that run walked, not the tree size;
+	the arm coverage above is the number that matters and it is complete.
+
+	Recorded per arm, per trajectory (spot-checked on size5_comp0.0_100):
+	  jlens      num_tokens 20, num_layers 5, always_layers [15], pruned_from 1190
+	  random     same config, drawn uniformly, NO direction counts (by design)
+	  logitlens  num_tokens 20, num_layers 3, always_layers [15], random_tokens 0
+	             -- the control is inherited, never redrawn (entry 24)
+	It is AT MOST 20 tokens, not always 20: rank_tokens(...)[:num_tokens] and
+	min(num_tokens, len(universe)) both truncate on a reasoning chain shorter
+	than 20.
+
+27. TOKENS_PER_TRAJ="all" in train_next_action_arms.sh
+	The sweep knob from entry 23 had no "don't thin" setting -- the script always
+	passed --tokens-per-trajectory. Passing a huge K works (thin_tokens keeps
+	everything under the cap) but tags the probes *_top9999 and prints a
+	per-trajectory budget it never applies, so "all" now OMITS the flag instead:
+
+	    local token_args=()
+	    if [ "$k" != "all" ]; then token_args=(--tokens-per-trajectory "$k"); fi
+
+	split_next_action_manifest.py already treated the flag as optional and skips
+	thin_tokens entirely when absent, so no Python change. Tags become
+	${arm}_topall, splits land at ${prepared}_topall_{train,eval}. "all" means
+	every token the arm's record holds -- the lenses' top-20 by direction_count,
+	the control's 20 uniform draws -- NOT the union across arms. The three arms
+	overlap only partially, which is the point: equal N, different chooser.
+
+	Layer pinning has to happen at PREPARE time for the control, not at split.
+	thin_layers ranks by layer_direction_count when counts are present and
+	SAMPLES uniformly when they are not (entry 22) -- so --layers-per-token 1 gives
+	the top-scoring layer for jlens/logitlens but a RANDOM one of the ~6 recorded
+	layers for the control. Layer 15 is only guaranteed to be among the candidates,
+	never to be the one drawn. Preparing the control with --layers 15 leaves it one
+	row per token, after which --layers-per-token 1 is a no-op that picks it.
+
+	The run this was written for -- all selected tokens, one layer each:
+
+	  # lens arms: keep every recorded layer so the split can pick the top-scoring one
+	  ARMS="jlens logitlens" LAYERS=7:23 OUT=/workspace/prepared/next_action \
+	      ./scripts/prepare_next_action_arms.sh
+
+	  # control: pin to layer 15 here, for the reason above
+	  ARMS="random" LAYERS=15 OUT=/workspace/prepared/next_action \
+	      ./scripts/prepare_next_action_arms.sh
+
+	  # train: every selected token, one layer per token
+	  ARMS="jlens logitlens random" TOKENS_PER_TRAJ=all LAYERS_PER_TOKEN=1 \
+	      PREPARED=/workspace/prepared/next_action ./scripts/train_next_action_arms.sh
+
+	~3600 x <=20 x 1 = <=72k rows per arm, matched across arms. Note the two
+	prepares share one OUT prefix and write different arms of it -- that is
+	deliberate, train reads ${PREPARED}_${arm}.
+
+	Landmine seen while checking the host: a stopped (state Tl) leftover
+	jlens_reasoning_tokens.py from the ORIGINAL gather was still parked in the
+	process table days later, alongside watch/tail watchdogs. Not writing, but
+	pgrep for a live extend will match it -- check the argv (--extend,
+	--select-num-layers) and the state flag, not just the name.
+
+28. Results of the entry-27 run, and the layer-15 follow-up it forced
+	Ran 2026-08-24 18:50 -> 2026-08-25 04:29 UTC (9h39m), all steps rc=0, no
+	errors in any log. Step timings: prepare jlens+logitlens 4h00m (~1.2-2.7
+	s/trajectory, 3603 folders each), prepare random 24m (layer 15 only, ~3
+	trajectories/s), train 5h15m for 6 probes.
+
+	  arm         top-K  model  best balanced accuracy
+	  jlens       all    lr     0.6332
+	  jlens       all    mlp    0.7097
+	  logitlens   all    lr     0.6026
+	  logitlens   all    mlp    0.6668
+	  random      all    lr     0.5675
+	  random      all    mlp    0.6132
+
+	The arms ARE matched in N, despite the script's closing NOTE saying they
+	will not be. That NOTE is written for the general case where
+	--layers-per-token keeps several layers per token; at 1 it collapses. From
+	the split logs:
+
+	  jlens      390362 -> 71857 samples / 3600 trajectories
+	  logitlens  305641 -> 71857 samples / 3600 trajectories
+	  random      71857 -> 71857 samples / 3600 trajectories
+	  all three: train 57495 / 2880 traj, eval 14362 / 720 traj,
+	             LEFT=13329 TOP=18950 RIGHT=11785 DOWN=13431 (train)
+	The pre-thinning pools differ (all recorded layers 7:23), the trained rows do
+	not. Read the NOTE as conditional on LAYERS_PER_TOKEN>1, not as a fact about
+	this run.
+
+	What DOES differ across arms is which layer each row is drawn from:
+	  jlens      L15=12665 L19=10601 L13=9240 L11=7440 L21=6301 L18=5657 ...
+	             L22=58, L23=203  -- mid-stack, mode at the force-kept 15
+	  logitlens  L21=17740 L23=11604 L19=10534 L7=6475 L13=4145 ... L16=346
+	             -- late stack
+	  random     L15=71857        -- pinned at prepare time (entry 27)
+	So jlens > random confounds "better token" with "better layer", and
+	jlens > logitlens is partly mid-stack vs late-stack. Neither gap is
+	attributable to token selection alone from this run.
+
+	Hence the layer-matched arm, which needs no new gather -- layer 15 is
+	force-kept for every selected token of every arm (entry 26):
+
+	  # jlens-selected tokens, layer 15 only
+	  ARMS="jlens" LAYERS=15 OUT=/workspace/prepared/next_action_l15 \
+	      ./scripts/prepare_next_action_arms.sh
+
+	  ARMS="jlens" TOKENS_PER_TRAJ=all LAYERS_PER_TOKEN=1 \
+	      PREPARED=/workspace/prepared/next_action_l15 \
+	      PROBES=/workspace/probes/next_action_l15 \
+	      ./scripts/train_next_action_arms.sh
+
+	Both overrides are load-bearing. OUT must NOT be /workspace/prepared/next_action:
+	that arm slot is already next_action_jlens from the 7:23 prepare and would be
+	overwritten. PROBES must move too -- the training tag is ${arm}_top${K}, i.e.
+	jlens_topall either way, so the default PROBES would clobber the 7:23 probe
+	.pt files AND their logs, including the split logs the table above came from.
+	Anything re-running an arm at a different LAYERS has to move both.
+
+	Against random (0.5675/0.6132) this isolates token choice at a fixed layer;
+	against jlens 7:23 (0.6332/0.7097) the drop is what layer selection was worth.
+
+	RESULT (ran 2026-08-25 06:24 -> 08:26 UTC, 2h02m, rc=0, no errors; prepare
+	19m at ~4 trajectories/s, train 1h43m for 2 probes):
+
+	  arm                  model  best balanced accuracy
+	  jlens @ L15 only     lr     0.6800
+	  jlens @ L15 only     mlp    0.7329
+	  (jlens 7:23          lr     0.6332)
+	  (jlens 7:23          mlp    0.7097)
+	  (random @ L15        lr     0.5675)
+	  (random @ L15        mlp    0.6132)
+
+	Split identical to the other arms -- 71857 -> 71857, L15=71857, train 57495 /
+	2880 traj, eval 14362 / 720 traj, same label counts. Fully matched to the
+	control now: same layer, same N, same split; only the token chooser differs.
+
+	Two things fall out, and the second inverts what entry 27 assumed:
+
+	(a) Token selection is real and it is LARGE. jlens vs random at the same
+	    layer 15: +11.25 lr, +11.97 mlp. None of that is a layer effect any more.
+
+	(b) Layer selection was NEGATIVE. L15-only BEATS the 7:23 sweep by +4.68 lr
+	    and +2.32 mlp, using a strict subset of the same tokens. Picking each
+	    token's top-scoring layer made the probe worse than pinning every token
+	    to 15. The reason is already in train_next_action_arms.sh's own comment:
+	    the trainer pools every row into one (N, D) matrix fit by a single weight
+	    vector, and layers 7 and 22 are not in a shared basis. --layers-per-token 1
+	    guarantees one row per token, NOT one layer per dataset -- the 7:23 jlens
+	    arm mixed 17 layers into one pooled fit (L15=12665 L19=10601 L13=9240 ...)
+	    and the direction subspace is not aligned across them. A per-token layer
+	    ranking cannot pay for that, so the mixing cost swamps whatever the
+	    ranking bought.
+
+	So the 7:23 numbers in the table above understate every lens arm, logitlens
+	worst of all -- its rows are the most spread and the most late-stack
+	(L21=17740 L23=11604 L19=10534 L7=6475), i.e. the arm most penalised by
+	pooling. jlens > logitlens at 7:23 is therefore NOT established as a lens
+	quality result; it is confounded with how concentrated each lens's layer
+	choice happens to be. Re-run logitlens and random at --layers 15 before
+	claiming any lens-vs-lens ordering. Layer 15 is force-kept for every arm, so
+	both are a ~20m prepare plus training, no new gather.
+
+	Rule of thumb going forward: pin LAYERS at prepare time to a single layer
+	unless the trainer is changed to fit per-layer weights. A multi-layer probe
+	dataset is only meaningful if something downstream keeps the layers apart.
+
+29. The reasoning-EOS tree, and what a matched fourth arm costs
+	/workspace/activations/activations_train_single_step_reasoning_eos is the OLD
+	setup: no lens selection, no selection record. Layout is the standard
+	activation tree at one layer and one step,
+	  {size}/{stem}/openai__gpt-oss-20b/layer_15/step_0/output/{token_idx}.pt
+	so prepare's DEFAULT token_selection="all" is the right mode -- per the
+	prepare README, "all" expects exactly this: output tokens gathered with
+	--output-indices eos at a single --layers value. No recorded_* anywhere.
+
+	Coverage is NOT the lens tree's coverage. This is the full grid:
+	  eos tree    6000 trajectories/size x 6 sizes = 36000, 1000 per complexity
+	  jlens tree   600 trajectories/size x 6 sizes =  3600,  100 per complexity
+	The lens work ran on a 100-per-combo sample; the eos tree is the whole thing.
+	Walking it is slow -- ~430k .pt files, and a `find` over it takes many
+	minutes. Count from direct paths, never by globbing the 6000-entry size dirs.
+
+	Tokens per trajectory, 40 sampled per size x complexity (1440 total):
+	  overall mean 20.50, median 10.0, min 2, max 198
+	  comp 0.0 is ~4.5-6.3 everywhere; comp 1.0 is 10.6 (size5) to 50.1 (size11)
+	  size5 0.0   5.97 | size9  0.8  53.45 | size13 1.0  36.02
+	  size15 0.0  4.53 | size11 1.0  50.12 | size13 0.0   4.55
+	Full table in the session log; the shape is what matters: count climbs
+	steeply with BOTH complexity and size, and the spread is enormous.
+
+	The number that decides the design: 20.50 eos tokens/trajectory vs the lens
+	arms' 71857/3600 = 19.96. So restricting eos to the SAME 3600 trajectories
+	and keeping every eos token lands at ~73.8k samples against 71857 -- 2.7%
+	apart, with no thinning. All 3600 lens trajectories exist in the eos tree
+	(verified, 0 missing).
+
+	The alternative -- all 36000 trajectories -- gives ~738k samples, 10x the
+	data, and confounds token selection with data volume. Matching N there needs
+	~2 tokens/trajectory, which discards most of each reasoning chain. Rejected.
+
+	KNOWN AND ACCEPTED SKEW (revisit later): the lens arms cap at 20 tokens per
+	trajectory, so they are near-uniform per trajectory. eos is not -- a
+	comp1.0 size9 trajectory contributes ~50 rows, a comp0.0 size13 one ~4. The
+	totals match but the per-trajectory weighting does not, so the eos arm is
+	reweighted toward long/hard chains in a way the lens arms are not. If action
+	labels correlate with complexity this is a real between-arm difference, not
+	noise. --class-weight balanced corrects label imbalance, NOT this. Capping
+	eos at 20/trajectory would match per-trajectory too; deliberately not doing
+	that yet.
+
+	SHARED TEST SET. split_names() derives the partition from the names PRESENT
+	plus the seed, so two datasets over different trajectory sets get different
+	eval sets at the same seed -- scoring two probes on different test data
+	without saying so. Verified the four existing arms are safe: jlens 7:23,
+	logitlens 7:23, random L15 and jlens L15 all hold the IDENTICAL 720 eval
+	trajectories (md5 5190d21d084d of the sorted names, 14362 rows each), which
+	falls out of all four covering the same 3600. eos would not have, so:
+
+	  scripts/split_next_action_manifest.py --eval-names FILE
+
+	pins the eval set to a name list verbatim, everything else trains, and RAISES
+	if any listed name is absent rather than quietly shrinking the shared test
+	set. Validated round-trip: re-splitting next_action_l15_jlens through it
+	reproduces that arm's split exactly (57495/2880 train, 14362/720 eval, same
+	label histogram). This is the flag to use for ANY future arm built from a
+	different tree.
+
+	CORRECTION to the counts above (exact, full tree -- supersedes the 40/cell
+	sample). Full walk of all 36000 trajectories, 1000 per size x complexity:
+
+	  size   comp0.0 comp0.2 comp0.4 comp0.6 comp0.8 comp1.0   (mean tokens/traj)
+	  size5     5.97    8.76    8.75   10.95   11.52   11.04
+	  size7     5.92   11.73   18.83   21.67   26.44   29.44
+	  size9     6.66   20.34   33.42   37.24   49.78   59.00
+	  size11    4.73   12.01   14.89   25.03   30.35   45.12
+	  size13    4.50   11.53   15.79   22.29   33.64   41.28
+	  size15    4.49   11.39   15.54   22.24   29.51   37.23
+
+	  all 36000: mean 21.08, median 10.0, min 1, max 440, total 759,017 tokens
+	  the 3600 lens subset: mean 21.44, median 10.0, max 269, total 77,196
+	    -> eval (720 traj) 16,896 / train (2880 traj) 60,300
+	    vs the lens arms' 71,857 / 14,362 / 57,495, i.e. +7.4% / +17.6% / +4.9%
+
+	The sampled estimate (20.50) was low by ~4.5%; the long tail is why. The
+	SHAPE claim stands and is stronger in the exact data -- comp0.0 is 4.5-6.7
+	everywhere while comp1.0 runs 11.0 (size5) to 59.0 (size9), and mean is
+	~2x median in every cell. size9 is the peak, not size11/size15: token count
+	is NOT monotone in grid size.
+
+	TOOLING LANDMINE that produced a wrong first table: counting with
+	  find ... -printf '%h\n' | uniq -c
+	gave 44785 "directories" for 36000 trajectories with cells reading 1278-3143
+	trajectories where only 1000 exist. uniq collapses only ADJACENT duplicates
+	and find does not guarantee one contiguous run per directory, so a single
+	output/ dir is split across several counted lines. Verified afterwards that
+	all 36000 stems have exactly one (layer_15, step_0, output) dir -- the
+	structure was never the problem, the counting was. Sum per trajectory STEM,
+	or `sort` before `uniq`; never trust a bare `uniq -c` over find output.
+
+30. The EOS arm result: below the uniform control
+	Ran 2026-08-25 11:26 -> 14:38 UTC (3h12m), rc=0 throughout, no errors.
+	view 8m / prepare 58m / split 2s / train lr 62m / train mlp 64m.
+	Probes in /workspace/probes/next_action_eos, dataset next_action_eos.
+
+	  arm @ layer 15    lr       mlp      tokens per trajectory
+	  jlens           0.6800   0.7329    <=20, ranked by direction count
+	  random          0.5675   0.6132    20, uniform draw
+	  eos             0.4632   0.5143    21.44 mean, ALL eos tokens
+	  (jlens 7:23     0.6332   0.7097    <=20, ranked, 17 layers pooled)
+
+	eos is 10.4 (lr) / 9.9 (mlp) points BELOW the uniform control and ~22 below
+	jlens. Taking every end-of-sentence token is worse than drawing 20 tokens at
+	random from the same reasoning chains, on the same 720 eval trajectories.
+
+	Mechanics all checked out: prepare produced 77196 samples with 0 skipped,
+	--eval-names pinned eval to the 720 exactly (16896 rows / 720 trajectories,
+	train 60300 / 2880), and the hyperparameters match the arms script.
+
+	TWO EXPLANATIONS, NOT YET SEPARATED.
+
+	(a) The accepted skew (entry 29) is doing real work in the EVAL set, not just
+	    in training. Same 720 trajectories, different row-level label balance:
+	      eos eval   LEFT=5193 TOP=4422 RIGHT=4353 DOWN=2928
+	      lens eval  LEFT=3330 TOP=4730 RIGHT=2951 DOWN=3351
+	    DOWN falls from 23% to 17% of eval rows, LEFT rises from 23% to 31%,
+	    because per-trajectory token counts vary up to ~100x and each trajectory
+	    contributes its own single label that many times. --class-weight balanced
+	    corrects the TRAINING imbalance; it does nothing about a reweighted test
+	    set. So this is not yet a like-for-like comparison.
+
+	(b) EOS tokens are simply the wrong tokens. A sentence boundary is where the
+	    model has finished a thought, not necessarily where it encodes the next
+	    direction. If so this is a genuine result about token choice and it
+	    strengthens entry 28(a): WHICH reasoning tokens you probe matters more
+	    than anything else measured so far.
+
+	The controlled test is --tokens-per-trajectory 20 on the EXISTING eos
+	dataset, which makes eos per-trajectory-uniform exactly like the control. No
+	re-prepare needed, just a split plus training. Until that runs, do not claim
+	(b).
+
+	COST NOTE for planning: both eos probes were dominated by LOADING, not
+	compute -- lr's 62m is roughly 55-58m of opening 77196 individual .pt files
+	on this filesystem and only a few minutes of GPU. next_action manifests
+	reference activations in place rather than copying them, which is what makes
+	preparing an arm nearly free, but every training run re-pays that cost. GPU
+	sat at 0% for the first hour of each probe. A sweep over this dataset would
+	pay it per probe; packing activations into a few contiguous tensors would cut
+	hours off any future sweep. Not done here -- it would break byte
+	comparability with the completed arms mid-comparison.
+
+31. Three-seed sweep at layer 15: the ordering is not a one-off
+	Ran 2026-08-25 14:56 -> 19:23 UTC (4h27m), 18 runs, rc=0 throughout, 0 errors.
+	Probes/logs in /workspace/probes/next_action_seeds.
+
+	Only the TRAINING seed varies. split_next_action_manifest.py --seed also
+	drives the train/eval partition, so bumping it would hand each seed a
+	different eval set. Splits stay at seed 42; all three seeds score on the
+	same 720 trajectories. Seed 42 for jlens/random/eos is reused from entries
+	28/30 rather than re-run.
+
+	  arm        model     s42     s43     s44     mean      sd   range
+	  jlens      lr     0.6800  0.6797  0.6807   0.6801  0.0005  0.0010
+	  jlens      mlp    0.7329  0.7316  0.7300   0.7315  0.0015  0.0029
+	  logitlens  lr     0.6527  0.6536  0.6535   0.6533  0.0005  0.0009
+	  logitlens  mlp    0.7103  0.7096  0.7121   0.7107  0.0013  0.0025
+	  random     lr     0.5675  0.5661  0.5668   0.5668  0.0007  0.0014
+	  random     mlp    0.6132  0.6125  0.6111   0.6123  0.0011  0.0021
+	  eos        lr     0.4632  0.4614  0.4624   0.4623  0.0009  0.0018
+	  eos        mlp    0.5143  0.5093  0.5130   0.5122  0.0026  0.0050
+
+	MAX seed sd across all eight cells is 0.26 pp. The effects being read are
+	2-12 pp. Seed noise is ~1-2 orders of magnitude below every gap claimed so
+	far; none of entries 28-30 was a one-off.
+
+	Mean gaps (percentage points), layer 15, same 720 eval trajectories:
+	                        lr       mlp
+	  jlens - logitlens   +2.69    +2.08
+	  jlens - random     +11.33   +11.92
+	  logitlens - random  +8.65    +9.84
+	  eos - random       -10.45   -10.01
+
+	(a) jlens > logitlens SURVIVES layer matching. Entry 28 could not separate
+	    lens quality from layer spread; it can now. The gap shrinks from
+	    +3.06/+4.29 at layers 7:23 to +2.69/+2.08 at layer 15, so part of the
+	    original gap WAS the pooling confound -- but a real jlens advantage
+	    remains, ~20x the seed sd. The jlens picks better tokens than the logit
+	    lens, not merely tokens at friendlier layers.
+
+	(b) The pooling penalty hit logitlens hardest, as entry 28 predicted from its
+	    layer histogram. Moving 7:23 -> L15-only gains logitlens +4.39 pp (mlp,
+	    0.6668 -> 0.7107) against jlens's +2.18 (0.7097 -> 0.7315). The arm whose
+	    rows were most spread across layers was the one most damaged by one
+	    weight vector over non-shared bases. Prediction made, prediction held.
+
+	(c) BOTH lenses beat the uniform control by a wide margin (+8.7 to +11.9),
+	    and eos loses to it by ~10. Token selection dominates everything else
+	    measured. eos remains confounded by the entry-29 skew; entry 30's caveat
+	    stands unchanged -- three seeds say the eos number is stable, NOT that it
+	    is a clean measure of token choice.
+
+	TOOLING: train_next_action_probe gained --cache-activations. next_action
+	manifests reference activations in place, so every run reopened one .pt per
+	sample -- ~55-60 min with the GPU at 0%, per run. The flag packs
+	(activations, labels) beside the manifest on first load and reuses them,
+	invalidated by a fingerprint (manifest size, mtime_ns, sample count,
+	activations_root), written atomically via .tmp+replace, rebuilding rather
+	than failing on an unreadable cache. Verified: uncached vs cache-build vs
+	cache-read are tensor-identical, and touching the manifest forces a rebuild.
+	Measured effect -- the jlens arm's 4 runs took 66 min total: ~55 for the
+	first, ~4 each after. The sweep cost 4h27m instead of ~18h. Use it for any
+	repeated training over one dataset; it changes nothing the model sees.
+
+32. TODO NEXT (2026-08-25, pod stopped): repeat the whole arm program on GRID
+	INFORMATION instead of next_action
+	================================================================
+	Requested: rerun the layer-15 seed sweep and the 7:23 pair, but with the
+	probe that decodes the grid ("cognitive map" / grid_tile), which already
+	exists as train_cognitive_map_probe. Same trees, same selection records,
+	same trajectories -- only the LABEL changes, from the agent's next action to
+	the identity of every cell.
+
+	SCOPE. Nothing exists yet for grid, so this is 28 runs, not 18:
+	  layer 15   arms {jlens, logitlens, random, eos} x seeds {42,43,44}
+	             x models {lr, mlp}                                    = 24
+	  layers 7:23 arms {jlens, logitlens} x seed 42 x models {lr, mlp} =  4
+	(Entry 31 was 18 only because six seed-42 next_action runs already existed.)
+	If the 7:23 pair should also get three seeds, that is +8; decide before
+	launching, it changes the wall clock by ~30%.
+
+	WHAT CARRIES OVER UNCHANGED
+	  * The pruned activation tree and the {stem}_jlens_selection.json records.
+	    Grid probing reads the SAME token .pt files; only the label differs, so
+	    no new gather and no --extend pass is needed.
+	  * The shared 720-trajectory eval list, scratchpad eval_trajectories_720.txt
+	    (md5 5190d21d084d). The standing constraint from entry 29 -- every arm
+	    scored on the same test trajectories -- applies here too, and --eval-names
+	    is the mechanism.
+	  * /workspace is a runpod network mount (mfs#euro-2.runpod.net), so the
+	    prepared datasets, the packed activation caches and every probe under
+	    /workspace/probes survive the pod being stopped. Nothing to re-stage.
+
+	BLOCKERS -- none of this runs today. In dependency order:
+
+	B1. prepare_activations_for_probing_fn.py:736-739 raises on
+	    `token_selection/layer_selection apply to probe_type='next_action' only`.
+	    --probe-type grid_tile --token-selection recorded_jlens is rejected before
+	    anything else happens. This guard is the whole reason the program is not
+	    just a few shell lines.
+
+	B2. grid_tile is trajectory-major, next_action is token-major. The grid_tile
+	    branch (same file, :379-418) emits ONE manifest entry per trajectory
+	    holding that trajectory's per-cell positions/labels, and :268 COPIES the
+	    activation into activations/. What is needed is one entry per
+	    (trajectory, token, layer) -- the same ~20 tokens the lens arms select --
+	    each carrying the same per-cell labels and referencing the existing token
+	    .pt in place through `activations_root`, exactly as next_action does.
+	    Copying instead would write ~72k files (~830 MB) per arm per prepare.
+
+	B3. manifest_loader.py:36-44 resolves act_path against manifest_path.parent
+	    only; it has no activations_root branch (compare load_next_action_compact
+	    :180-181). load_grid_tile_compact:47 additionally assumes
+	    len(manifest["trajectories"]) == number of trajectories and one constant
+	    num_cells_per_trajectory. The count stays constant (pad_to_size makes it
+	    225 for everything); what breaks is the assumption that an entry IS a
+	    trajectory.
+
+	B4. train_cognitive_map_probe_fn.py:891 (subset) and :924 (split) both
+	    randperm over ENTRIES. Today one entry == one trajectory so both are
+	    safe -- this is the landmine CLAUDE.md records, and it FIRES the moment a
+	    trajectory owns ~20 entries: the same trajectory lands in both halves.
+	    Escape hatch, no trainer change needed: always pass --eval-data-path with
+	    a pre-split pair of manifests, which skips :924 entirely, and keep
+	    --subset 1.0 so :891 never bites. Same pattern the next_action arms use.
+
+	B5. split_next_action_manifest.py hardcodes manifest["samples"] and a scalar
+	    sample["label"]; grid manifests use "trajectories" and per-cell label
+	    LISTS. Two small changes: read either key, and skip trajectory_strata
+	    (:279) when --eval-names is given -- strata are only needed for the
+	    seeded split, and --eval-names takes the names verbatim. thin_tokens /
+	    thin_layers work as-is, since the ranking fields ride on the entry.
+
+	B6. IO, the entry-31 lesson repeating. In-place referencing means ~72k .pt
+	    opens per run; without a cache each grid run pays the ~55 min the
+	    next_action runs paid before --cache-activations. Port the same
+	    fingerprint cache to train_cognitive_map_probe, packing base_act +
+	    positions + labels. Do this BEFORE the sweep, not after -- it is the
+	    difference between one overnight and three.
+
+	B7. The per-cell draw must not depend on the arm. _sample_triples
+	    (prepare:129,136) draws from the GLOBAL `random`, seeded once at :698.
+	    Arms emit different numbers of entries and consume different numbers of
+	    RNG calls per trajectory, so the same seed does NOT give the same cells
+	    across arms -- the arms would then differ by which cells they were scored
+	    on as well as by which tokens they selected, and the comparison is dead.
+	    Fix: draw from a per-trajectory RNG, random.Random(f"{name}:{seed}"), so
+	    the cell draw is a function of the trajectory alone.
+
+	DESIGN DECISIONS TO MAKE FIRST
+
+	D1. Per-size or pooled? The recorded configs
+	    (configs/cell_identity_probes/last_prompt_token.conf) train one probe PER
+	    SIZE. Pooling with pad_to_size 15 gives every trajectory 225 cells and
+	    floods size5 with padding. Recommend POOLED anyway for the arm
+	    comparison: the padding confound is identical across all four arms and
+	    cancels out of the lens-vs-lens-vs-control contrast, whereas per-size
+	    turns 28 runs into 168. Keep per-size as the follow-up that reports
+	    absolute cognitive-map accuracy.
+
+	D2. Cells per trajectory. Pooled C=225 x ~71.9k entries = 16.2M rows/epoch,
+	    ~7.9k steps/epoch at batch 2048; the recorded 200 epochs is 1.6M steps
+	    per run and 28 of those is not affordable. Recommend
+	    --max-positions-per-trajectory 25 --balance-classes-per-trajectory
+	    -> ~1.8M rows/epoch, ~880 steps/epoch, and 50 epochs to match the
+	    next_action arm settings. Revisit only if the probe is still climbing at
+	    epoch 50.
+
+	D3. Hyperparameters otherwise from the recorded grid configs -- mlp 1024,
+	    lr 3e-4, wd 0.001, dropout 0.0, --normalize, --class-weight/--balance-
+	    classes -- not from the next_action arms, so the numbers sit next to the
+	    published cognitive-map results.
+
+	ORDER OF WORK
+	  1. B7 then B1+B2+B3 (prepare emits token-major grid_tile manifests).
+	  2. B5, then prepare + split all six datasets (4 arms at L15, 2 at 7:23),
+	     every split pinned with --eval-names eval_trajectories_720.txt.
+	  3. B6, then one smoke run (lr, 2 epochs) to confirm the cache round-trips
+	     tensor-identically, as entry 31's did.
+	  4. The 28-run sweep, arm-major so each dataset packs once. Reuse
+	     run_seed_sweep.sh; only ARMS, the trainer name and the flags change.
+
+	COMMANDS (the shape they will take once B1-B5 land; not runnable yet)
+
+	  # prepare, per arm -- grid label, lens-selected tokens, in-place refs
+	  interp-cli prepare_activations_for_probing \
+	      --activations-dir /workspace/activations/jlens_reasoning_tokens \
+	      --trajectories-dir /workspace/trajectories/reveng/trajectories_train_single_step \
+	      --probe-type grid_tile \
+	      --layers 15 --steps all --output-indices all \
+	      --token-selection recorded_jlens \
+	      --max-positions-per-trajectory 25 --balance-classes-per-trajectory \
+	      --seed 42 \
+	      --output-path /workspace/prepared/grid_l15_jlens --verbose
+
+	  # split onto the SAME 720 eval trajectories as every next_action arm
+	  python scripts/split_next_action_manifest.py /workspace/prepared/grid_l15_jlens \
+	      --layers-per-token 1 --eval-names <scratchpad>/eval_trajectories_720.txt \
+	      --seed 42 \
+	      --train-out /workspace/prepared/grid_l15_jlens_topall_train \
+	      --eval-out  /workspace/prepared/grid_l15_jlens_topall_eval
+
+	  # train, one run per (arm, seed, model)
+	  interp-cli train_cognitive_map_probe \
+	      --train-data-path /workspace/prepared/grid_l15_jlens_topall_train \
+	      --eval-data-path  /workspace/prepared/grid_l15_jlens_topall_eval \
+	      --output-path /workspace/probes/grid_seeds/grid_probe_jlens_l15_seed42_mlp.pt \
+	      --model-type mlp --hidden-dims 1024 --learning-rate 3e-4 \
+	      --weight-decay 0.001 --dropout 0.0 --num-epochs 50 --batch-size 2048 \
+	      --normalize --subset 1.0 --seed 42 --device cuda \
+	      --cache-activations --verbose
+
+	OPEN FROM BEFORE, still parked: the eos cap (--tokens-per-trajectory 20),
+	which would separate entry 29's per-trajectory skew from a genuine
+	token-choice effect. Cheap now that the cache exists. User deferred it; it
+	applies to the grid arms identically.
+
+33. Entry 32's blockers are IMPLEMENTED (2026-08-25, no GPU needed)
+	================================================================
+	All seven, plus an eighth the plan missed. The 28-run grid program is
+	launchable as soon as a pod is up; nothing below has touched real data yet.
+
+	B1. prepare_activations_for_probing accepts --token-selection /
+	    --layer-selection for grid_tile. The guard that rejected everything but
+	    next_action now rejects everything but next_action and grid_tile.
+
+	B2. grid_tile emits token-major manifests. One entry per (token, layer),
+	    referencing the gathered .pt in place through activations_root, copying
+	    nothing. Two calls made inside this that the plan did not specify:
+
+	    * The per-cell payload is stored ONCE per (trajectory, step), under a
+	      top-level `cells` map keyed by each entry's `cells_key`, rather than
+	      repeated on all ~20 of a trajectory's entries. At 225 cells that is an
+	      8 MB manifest instead of ~165 MB, which is what keeps the uncapped
+	      pooled variant (D2) available at all.
+	    * Each token is labeled with the grid of ITS OWN step, exactly as
+	      next_action labels each token with its own step's action. Irrelevant
+	      while every trajectory is single-step, but labeling a step-3 token with
+	      the step-0 grid is the kind of thing that would never announce itself.
+
+	    next_action and grid_tile now share _selected_refs and _token_entry, so
+	    the two probe types cannot drift apart about which files an arm selects.
+	    A test asserts the two arms land on an identical (name, step, token,
+	    layer, act_path) set -- that identity is the entire basis of the
+	    comparison and it is now pinned rather than assumed.
+
+	B3. manifest_loader resolves act_path against activations_root when present
+	    (manifest-relative otherwise) and reads the `cells` indirection.
+	    load_grid_tile_compact returns T = entries, with trajectory_names
+	    repeating -- which is what B4 keys off.
+
+	B4. train_cognitive_map_probe REFUSES an internal --eval-split on a
+	    token-major manifest, and refuses --subset < 1.0 there too, naming
+	    split_next_action_manifest.py in the message. The randperm at
+	    _prepare_train_eval_v3 is over entries; that was a trajectory-level split
+	    only while one entry was one trajectory. Rather than rewrite the split,
+	    the leak is made unreachable and the pre-split path is the only one. The
+	    classic one-entry-per-trajectory flow is untouched and still tested.
+
+	B5. split_next_action_manifest.py takes either token-major manifest. It reads
+	    `samples` or `trajectories`, writes back under the same key, prunes the
+	    `cells` map to what each half references, and -- since a grid entry has no
+	    scalar label -- strata by grid size instead of by dominant action. Size is
+	    the right fallback: a 5x5 and a 15x15 padded to the same width have very
+	    different label distributions, so that mix is what has to match across the
+	    halves. The name is now wrong but every recorded invocation uses it.
+
+	B6. train_cognitive_map_probe gained --cache-activations, the same
+	    fingerprinted pack that saved entry 31's sweep (~18h -> 4h27m), extended
+	    to carry positions and labels alongside the activations. Same
+	    invalidation, same atomic write, same rebuild-don't-fail on a corrupt
+	    cache. Verified in the smoke run: written once per dataset, read back on
+	    every later run of that arm.
+
+	B7. The cell draw no longer comes from the global RNG. _sample_triples takes
+	    an explicit stream and grid_tile seeds it per (trajectory, step). This was
+	    the one that would have invalidated the whole comparison silently: arms
+	    emit different numbers of entries, consume different numbers of draws, and
+	    would therefore have been scored on DIFFERENT CELLS at the same --seed --
+	    differing by cells as well as by tokens. A test prepares two arms with
+	    --max-positions-per-trajectory and asserts the shared trajectories get
+	    identical cells.
+
+	B8 (not in entry 32). The eos arm was unreachable. It has no selection record,
+	    and with no selection grid_tile stayed trajectory-major with a POOLED
+	    activation -- not one sample per eos token, which is what the arm is. Added
+	    --token-major: emit one sample per gathered token without a selection to
+	    read. Implied by any --token-selection, an error for any probe type other
+	    than grid_tile.
+
+	SCRIPTS. scripts/prepare_grid_arms.sh and scripts/train_grid_arms.sh, twins of
+	the next_action pair. prepare handles the eos arm's different tree and
+	--token-major branch; train is arm-major so each dataset packs once, is
+	resumable (a finished run is skipped), and REFUSES to be useful without
+	EVAL_NAMES quietly -- it warns loudly, because without a pinned name list the
+	arms are scored on different trajectories and the numbers do not compare.
+
+	    # layer 15, all four arms, three seeds, two models = 24 runs
+	    ARMS="jlens logitlens random" LAYERS=15 OUT=/workspace/prepared/grid_l15 \
+	        ./scripts/prepare_grid_arms.sh
+	    EOS_ACT=<the 3600-trajectory eos view> ARMS="eos" LAYERS=15 \
+	        OUT=/workspace/prepared/grid_l15 ./scripts/prepare_grid_arms.sh
+	    PREPARED=/workspace/prepared/grid_l15 TAG=l15 \
+	        EVAL_NAMES=<eval_trajectories_720.txt> \
+	        ARMS="jlens logitlens random eos" SEEDS="42 43 44" \
+	        ./scripts/train_grid_arms.sh
+
+	    # layers 7:23, jlens and logitlens, seed 42 only = 4 runs
+	    ARMS="jlens logitlens" LAYERS=7:23 OUT=/workspace/prepared/grid_723 \
+	        ./scripts/prepare_grid_arms.sh
+	    PREPARED=/workspace/prepared/grid_723 TAG=723 \
+	        EVAL_NAMES=<eval_trajectories_720.txt> \
+	        ARMS="jlens logitlens" SEEDS=42 ./scripts/train_grid_arms.sh
+
+	TESTED. 205 pre-existing tests still pass, plus 25 new ones
+	(tests/test_train_cognitive_map_probe.py is new). Full pipeline smoke-run end
+	to end on a synthetic 10-trajectory tree: prune -> prepare two arms -> split on
+	a pinned eval list -> train 2 seeds x lr, rc=0, cache written then reused. The
+	accuracies there are noise (4-dim random activations, 2 epochs); what the run
+	proves is the plumbing and the CLI flag names.
+
+	STILL OPEN -- entry 32's D1/D2, which are calls to make with real data in
+	front of you, not code:
+	  * pooled-across-sizes (recommended, 28 runs) vs per-size (168 runs);
+	  * MAX_CELLS, defaulted to 25 balanced cells per (trajectory, step) at
+	    ~1.8M rows/epoch. Revisit if the probe is still climbing at epoch 50.
+	  * whether the 7:23 pair also gets three seeds (+8 runs).
+	And the eos cap (--tokens-per-trajectory 20) from entry 30, still parked, now
+	applying to the grid arms identically.
+
+	NOTE for whoever runs style tooling next: `make fix-style` reformats the whole
+	repo, and `ruff check` is configured with fix=true, so a bare `ruff check`
+	REWRITES FILES. Both dragged ~40 untouched files (notebooks included) into the
+	diff here and had to be reverted. Format only what you touched.
+
+34. ROUND 2 opens: grid probing (2026-08-25, gather NOT yet started)
+	================================================================
+	A NEW round, not a replacement. Everything in entries 1-33 is round 1,
+	"direction probing": tokens selected by how many of their top-k lens
+	predictions are DIRECTION words. Round 2 selects by GRID words
+	(/workspace/jlens/grid_tokens_full.json, 18 KB, deployed 2026-08-25 22:10)
+	and trains the cognitive-map probe on what that picks. Round 1 stands
+	untouched and is not re-run.
+
+	WHY A NEW TREE rather than --extend on the existing one. Two independent
+	reasons, either sufficient:
+	  (a) The direction tree is pruned to the direction-scored selection. A
+	      grid-scored arm ranks the same CSVs differently and therefore picks
+	      DIFFERENT tokens -- whose .pt files were deleted. The CSVs survive
+	      (3600 jlens + 3600 logitlens, no gaps), so scoring works; the
+	      activations do not exist.
+	  (b) An arm's name IS its method name -- `METHODS` keys on jlens /
+	      logitlens / random, and the signal JSON is a caller argument, not part
+	      of a method's identity. A grid-scored arm written into the old records
+	      would be called "jlens" and collide with the direction-scored one, and
+	      --extend leaves recorded arms alone, so it would silently no-op.
+	A separate tree sidesteps both: every arm in it is grid-scored by
+	construction, so the names carry no ambiguity and the registry needs no new
+	entries.
+
+	CONFIG (scripts/jlens_reasoning_tokens.py, driver in scratchpad
+	run_grid_gather.sh) -> /workspace/activations/grid_reasoning_tokens:
+	  --lens both            one forward pass, both CSVs; the second lens costs
+	                         an extra unembed per chunk, not a second pass
+	  --select-methods jlens,logitlens,random
+	  --select-num-tokens 20     same token budget as round 1
+	  --select-num-layers 3      SET BY THE USER (I had proposed 5)
+	  --select-always-layers 15  --select-random-tokens 20  --select-seed 42
+	  --layers 7:23  --steps all
+	  --per-combo 100 --seed 0   reproduces round 1's SAME 3600 trajectories
+	The control arm is included because it is not optional: top_filter refuses an
+	unscored arm with no scored arm to enumerate the chain, and a lens number
+	without a matched control means nothing.
+
+	num_layers 3 makes round 2 match round 1's LOGITLENS arm (3) but not its
+	jlens arm (5). Round 1's within-tree mismatch is what entry 28 identified as
+	the layer-distribution confound that forced the L15-only comparison; round 2
+	has one value for all three arms, so that confound is gone here regardless of
+	which value it is.
+
+	SMOKE TEST PASSED (2 trajectories, at num_layers 5):
+	  * the grid vocabulary loads and scores -- 20 jlens, 20 logitlens, 20 random
+	    tokens selected per trajectory, exactly as the direction vocabulary did
+	  * both analysis CSVs written per trajectory, plus a v2 selection record
+	  * 264 and 318 activations for the two trajectories
+	  * prepare --probe-type grid_tile --token-selection recorded_jlens reads a
+	    GATHER-written record (not just a pruner-written one) and emits a
+	    token-major manifest: 40 token samples from 2 trajectories at layer 15
+	Timing basis: the two trajectory folders are 4 s apart, after a ~30 s model
+	load. 3600 x 4 s is ~4h, not the ~2h I estimated from the extend run -- that
+	one was mostly CSV-only. num_layers 3 will cut the writes ~40%, so call it
+	3-4h and measure the first 100.
+
+	OPEN LANDMINE, found in the smoke and NOT yet resolved -- do not launch the
+	sweep's prepare stage before settling it. "Cells per trajectory: 4".
+	--balance-classes-per-trajectory takes samples_per_class = min(..., min_count),
+	and a grid holds exactly one A and one G, so min_count is 1 and every
+	trajectory keeps ONE CELL PER CLASS -- 4 cells out of 49, and out of 225 once
+	padded. Worse, the number of classes present depends on padding: a size15
+	trajectory has no padding cells, a size5 padded to 15 does, so the two would
+	produce different cell counts -- and prepare SKIPS any trajectory whose count
+	disagrees with the first one it saw. Mixing sizes under per-trajectory
+	balancing could therefore drop whole sizes silently.
+	  Proposed fix: drop --balance-classes-per-trajectory, keep a plain
+	  --max-positions-per-trajectory cap (uniform draw, constant count, natural
+	  class mix), and let --class-weight balanced handle imbalance at train time,
+	  which the trainer already does. The A/B run that would confirm this was
+	  interrupted before it produced numbers -- it is the first thing to redo.
+
+	HOUSEKEEPING. /workspace/splits/ now holds eval_trajectories_720.txt
+	(md5 d7af16f3) and lens_trajectories_3600.txt, copied out of the
+	session-scoped scratchpad so round 2 can be pinned to round 1's exact eval
+	trajectories and the two rounds stay comparable. PID 1992 is still the known
+	`Tl` zombie from the original gather (5 days, 10 MB RSS, nothing on the GPU) --
+	it matches a pgrep for a live run and is not one.
+
+	PLANNED once the landmine is settled: 22 runs -- 18 at layer 15 (3 arms x
+	seeds 42/43/44 x lr/mlp) + 4 at layers 7:23 (jlens/logitlens, seed 42,
+	lr/mlp), via scripts/prepare_grid_arms.sh and scripts/train_grid_arms.sh.
+	No eos arm this round: it uses no lens selection, so the vocabulary does not
+	apply to it. It would need no gather if wanted later, only prepare+train.
+
+	ADDENDUM to 34 (2026-08-26): the gather driver was a scratchpad script in a
+	session-scoped /tmp path that also hardcoded that session's UUID -- unreachable
+	and unrunnable from any other session, which made this round un-resumable in
+	practice even though the reasoning above was durable. Promoted into the repo as
+	scripts/gather_grid_arms.sh (env-parameterized, DRY_RUN=1 to print its
+	invocation, logs to /workspace/logs/), joined by
+	scripts/grid_round_status.sh, which reports gather -> prepare -> train in one
+	snapshot and reads only /workspace so any session can run it. It checks the
+	gather's argv rather than the process name, so the PID-1992 zombie cannot be
+	mistaken for a live run. gather_grid_arms.sh also refuses to start with more
+	than one GPU visible and CUDA_VISIBLE_DEVICES unset -- device_map=auto sharded
+	across GPUs gives NaNs for this MoE model, silently. claude_session_readme.md
+	now leads with round 2's state and the open landmine instead of round 1's.
