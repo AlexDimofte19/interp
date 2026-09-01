@@ -782,3 +782,39 @@ through this control first. P1 is immune (`r = −0.07`).
 - The random control is read off its own training distribution (entry 37(d)) — a floor, not
   a matched arm. Its `.695` vs final here against `.625` on its own tokens *is* that shift.
 - Layer 15 only; `convinced` still defined by correctness against ground truth.
+
+---
+
+## Which dataset produced which artifact (audit, 2026-09-01)
+
+Three canonical trajectory sets, verified mutually disjoint (`train ∩ eval = 0`,
+`(train ∪ eval) ∩ heldout360 = 0`). Re-run the audit with
+`python scripts/audit_trajectory_sets.py`.
+
+| artifact | dataset |
+| --- | --- |
+| `loudness/` — *Where the Lens Is Loud* (entry 42), 22 figures | **training 2,880** |
+| `probe_vs_rollout/` — *The Commitment Boundary* (39/40/41), 15 figures | **heldout 360** |
+| `probe_loudness/` — *What Loudness Buys the Probe* (entry 46), 20 figures | **eval 720** |
+| ↳ its grey "every reasoning token" reference series only | training 2,880 |
+| `probes/next_action_mass_l15/heldout360_per_token.csv` (entry 37) | **heldout 360** |
+| `probes/heldout360_all_probes.csv` (entry 38) | **heldout 360** |
+| entry 45 local-belief probe results (the `.862` headline) | **eval 720** |
+| `rollout_strategies/comparison/` (entry 44d), 2 figures | **all 3,600** ⚠️ |
+
+**The convention**, so this stops drifting:
+
+- **eval 720** (`next_action_mass_l15_eval_names.txt`) — anything scored against the
+  mass-tree probes. Every arm shares this exact partition, which is what makes
+  same-token comparisons against the baseline legitimate.
+- **heldout 360** — the stronger claim: a disjoint *tree*, no shared draw at all.
+  Use it when the point is generalisation rather than a matched comparison.
+- **training 2,880** — distribution references only, never an accuracy number.
+
+**⚠️ Entry 44(d) is the exception and should be read with it in mind.** Its two
+`loud_vs_sentence_end_*` figures cover all 3,600 trajectories, train and eval mixed
+(both arms have exactly 3,600 result JSONs). That is *not* leakage as it stands — the
+analysis is rollout-vs-rollout and fits no model — but it is a different population from
+everything else, so its numbers do not sit beside the others, and using those figures to
+select or tune a probe *would* make it leakage. Re-cut to eval 720 before comparing it to
+any probe result.
