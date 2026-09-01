@@ -818,3 +818,64 @@ analysis is rollout-vs-rollout and fits no model — but it is a different popul
 everything else, so its numbers do not sit beside the others, and using those figures to
 select or tune a probe *would* make it leakage. Re-cut to eval 720 before comparing it to
 any probe result.
+
+---
+
+## The commitment boundary, re-read by the belief-trained probes (log entry 47)
+
+**One line:** a **clone** of *The Commitment Boundary* with the two local-belief MLP probes of
+entry 45 added to every probe figure, on the same 87,221 **heldout-360** tokens. It confirms
+the original and revises one part of it.
+
+Report: <https://claude.ai/code/artifact/95a74d99-bb0a-440f-839c-e6e4dbac8c65>
+(source `probe_vs_rollout_lb/report.html`). The original is **untouched** — md5 verified.
+
+```bash
+# 1. score the 2 new probes on the same held-out tokens (GPU, ~2 h; the cost is 87k .pt reads)
+python scripts/eval_probe_per_token.py \
+    --probe /workspace/probes/local_belief/next_action_probe_p1_mlp.pt \
+    --probe /workspace/probes/local_belief/next_action_probe_p2_mlp.pt \
+    --activations-dir /workspace/activations/heldout360_l15 \
+    --lens-dir /workspace/activations/heldout360_lens \
+    --trajectories-dir /workspace/trajectories/reveng/trajectories_train_single_step \
+    --signal-json /workspace/jlens/direction_tokens_full.json --layer 15 --full-probs --out <csv>
+# 2. clone the join with the new arms merged on (name, step, abs_pos)
+python scripts/merge_probe_rollout_arms.py --extra <csv> \
+    --out /workspace/reasoning_theatre/probe_vs_rollout_lb/per_token.csv
+# 3. the tables, with the new arms in the headline
+python scripts/analyze_probe_rollout.py --per-token .../probe_vs_rollout_lb/per_token.csv \
+    --out-dir .../probe_vs_rollout_lb --headline-extra local_belief.p1_mlp,local_belief.p2_mlp
+```
+
+### What it found
+
+- **The new arms lead the dumbbell and pass the chance floor.** P1 `.550 / .174` (lift
+  **+.377**) and P2 `.513 / .190` (+.322), against +.217 for the best of the original 26.
+  28/28 arms lean the same way. Their agreement with the *final* action is **below** the .250
+  chance floor — pointed away from the ending, not merely indifferent to it.
+- **The revision: a sentence does not open holding its own conclusion.** Entry 39 read the
+  within-sentence panel as "the change is already there at the first token" (baseline enters a
+  switch sentence at .365 this / .304 prev). Both belief-trained probes instead **open holding
+  the previous answer** (.481 / .484) and cross over around the fifth decile. This is entry
+  41(i) — which found the same thing in the *probabilities* and said the argmax could not show
+  it — now visible in the argmax directly.
+- **The baseline inverts at rel −1** (.353 belief vs .375 final), the one point where entry
+  39's own claim runs backwards. The new probes hold the split open across the whole approach.
+- **They don't pay for it after the boundary**: at rel +2/+3/+4, P2 scores .665/.688/.632
+  against the baseline's .618/.650/.591.
+
+### How to read it, and two landmines
+
+- **Ceiling, not competitor.** A probe trained on a belief label will agree with belief more.
+  Not circular though: they were trained on the rollout answer at their own *loud cutoff*
+  token, while every figure scores agreement at the *sentence end* — related labels, different
+  cut points — and they're scored on all 87k tokens having trained only on loud ones.
+- **The 26 published arms reproduce their report values exactly** under the re-run (4 dp).
+  That is the check that the added arms sit on the same measurement; do it again if this is
+  ever rebuilt.
+- **⚠️ `analyze_probe_rollout.py` had no `if __name__ == "__main__"` block** — running it
+  defined `main()` and exited 0 silently, writing nothing. Uncommitted WIP; anyone re-running
+  the entry-39 tables before this fix got an empty success. Fixed.
+- **⚠️ `HEADLINE` is not to be edited.** Its own comment records that it drifted from
+  `plot_probe_rollout.py` once and the report mixed two arms. Use `--headline-extra`, which
+  defaults to empty so existing outputs stay byte-identical, and clone rather than edit.

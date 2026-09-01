@@ -2753,3 +2753,123 @@ csv either, and that is what makes the direction number mean anything.
 	    python scripts/build_probe_loudness.py      # ~15 min, the cost is the .pt reads
 	    python scripts/analyze_probe_loudness.py
 	    python scripts/plot_probe_loudness.py
+
+
+47. THE COMMITMENT BOUNDARY, RE-READ BY THE BELIEF-TRAINED PROBES (2026-09-01)
+
+	Entry 39's report ("The Commitment Boundary") showed that probes trained on a
+	trajectory's FINAL action are in fact decoding the model's CURRENT belief. This
+	clones that page with the two local-belief MLP probes of entry 45 added -- probes
+	trained on that belief directly -- on the SAME 87,221 held-out tokens. It
+	confirms the finding, and revises one part of it.
+
+	  scripts/merge_probe_rollout_arms.py    <- new: clone the join with extra arms
+	  scripts/analyze_probe_rollout.py       <- --headline-extra, and the missing
+	                                            `if __name__ == "__main__"` (see (f))
+
+	*** THE SET IS heldout 360 ***, the same as entry 39, and disjoint from all 3,600
+	trajectories the local-belief probes were trained and evaluated on (0 overlap,
+	checked). So this is a genuinely held-out reading for the new probes too. See the
+	dataset audit in claude_session_readme.md; do not mix the three sets.
+
+	THE CHECK THAT MAKES IT READABLE: the 26 published arms reproduce their report
+	values EXACTLY under the re-run -- commit roll/fin and the q3 all/this series are
+	equal to 4 dp -- so the added arms sit on the same measurement, not a redone one.
+	The original directory is byte-identical afterwards (md5 verified).
+
+	READ THE NEW ARMS AS A CEILING, NOT A COMPETITOR. A probe trained on a belief
+	label is expected to agree with belief more. Two things keep it from being
+	circular: they were trained on the rollout answer at their own LOUD CUTOFF token
+	while every figure here scores agreement at the SENTENCE END (related labels,
+	different cut points), and they are scored on all 87k tokens having been trained
+	only on loud ones, which is a distribution shift against them.
+
+	(a) THEY LEAD THE DUMBBELL BY A DISTANCE, and past the chance floor. On the 2,074
+	sentence ends where the rollout and the final action differ:
+
+	    arm                                  belief here   final action   lift
+	    local_belief.p1_mlp                     .5501         .1736      +.377
+	    local_belief.p2_mlp                     .5125         .1900      +.322
+	    next_action_mass_l15.jlens_topall_mlp   .4436         .2266      +.217  (best of 26)
+	    ...
+	    next_action.random_topall_lr            .3770         .2965      +.081  (smallest)
+
+	28/28 arms lean the same way, mean lift +.153 (the 26 alone: +.137). The new
+	arms' agreement with the FINAL action is .174/.190, i.e. BELOW the .250 chance
+	floor -- they are not indifferent to the ending, they are pointed away from it.
+
+	(b) *** THE REVISION: A SENTENCE DOES NOT OPEN HOLDING ITS OWN CONCLUSION. ***
+	Entry 39 read the within-sentence panel as "the commitment is already there at
+	the first token" -- the baseline enters a switch sentence at .365 for THIS
+	sentence's answer against .304 for the previous one's. The belief-trained probes,
+	which are the better instrument for exactly this question, say otherwise. Deciles
+	of position through a switch sentence (10,866 tokens):
+
+	    arm            decile:   1     2     3     4     5     6     7     8     9    10
+	    baseline    this       .365  .429  .481  .490  .488  .476  .479  .458  .465  .490
+	                prev       .304  .267  .263  .253  .246  .235  .261  .264  .261  .245
+	    P1          this       .271  .298  .365  .336  .394  .396  .393  .377  .490  .514
+	                prev       .481  .456  .386  .417  .350  .337  .379  .366  .279  .256
+	    P2          this       .276  .295  .352  .361  .417  .413  .427  .407  .482  .512
+	                prev       .484  .482  .413  .426  .337  .344  .339  .328  .269  .250
+
+	Both new arms OPEN the sentence holding the PREVIOUS answer (.481/.484, where the
+	baseline is already down at .304) and cross over around the fifth decile. The
+	switch is not instantaneous at the sentence break; it completes across the
+	sentence.
+
+	This does not contradict entry 41(i) -- it is that result in the argmax. 41(i)
+	found "a sentence opens holding the previous sentence's belief" in the
+	PROBABILITIES of a final-action probe and noted the argmax could not show it.
+	With a probe trained on the belief it is visible in the argmax directly, and
+	41(c)'s "step at token 0" should be read as the blunter instrument's version of
+	41(i)'s gradual reallocation.
+
+	(c) AROUND THE BOUNDARY THE SPLIT STAYS OPEN. Agreement with belief-here /
+	final-action by (sentence_idx - convinced_idx):
+
+	    rel          -4          -3          -2          -1           0
+	    baseline  .402/.305   .447/.359   .431/.259   .353/.375   .557/.557
+	    P1        .500/.274   .484/.336   .479/.237   .466/.243   .425/.425
+	    P2        .475/.293   .482/.308   .464/.222   .480/.251   .453/.453
+
+	Past zero the two readings are the same label by construction, so only the left
+	half is informative. *** THE BASELINE INVERTS AT -1 *** (.353 belief against .375
+	final) -- the one point where entry 39's own claim runs backwards. The
+	belief-trained probes hold the split open across the whole approach and are flat
+	and high from -4, which is what "the probe reads the current belief" looks like
+	when the probe is actually trained to.
+
+	(d) AND AFTER THE BOUNDARY THEY DO NOT PAY FOR IT. At rel +2/+3/+4 P2 scores
+	.665/.688/.632 against the baseline's .618/.650/.591, on what is there simply
+	accuracy against the final action. Consistent with entry 45's finding that the
+	relabelled probe is a strict improvement.
+
+	(e) THE ARTIFACT is a CLONE, not an edit: the original page is published and its
+	numbers must not move under it. probe_vs_rollout_lb/ holds the cloned join (28
+	arms), 12 tables and the report; probe_vs_rollout/ is untouched.
+	`analyze_probe_rollout.py --headline-extra` defaults to empty so every existing
+	output stays byte-identical -- HEADLINE itself is NOT edited, because the note on
+	it records that it drifted from plot_probe_rollout.py once and the report mixed
+	two arms.
+
+	(f) LANDMINE FOUND AND FIXED: analyze_probe_rollout.py had NO
+	`if __name__ == "__main__"` block, so running it defined main() and exited 0
+	silently, writing nothing. It was uncommitted WIP; anyone re-running the entry-39
+	tables before this fix got an empty success. Added, with `import sys`.
+
+	CAVEATS: layer 15 only. The new arms are MLP only (no lr twin was scored here).
+	"Local belief" inherits run_inference.py's definition. The ceiling framing in the
+	preamble applies to every number in (a).
+
+	ARTIFACTS: /workspace/reasoning_theatre/probe_vs_rollout_lb/ (per_token.csv
+	87,221 x 119, tables/, report.html). Written up at
+	https://claude.ai/code/artifact/95a74d99-bb0a-440f-839c-e6e4dbac8c65
+
+	    python scripts/eval_probe_per_token.py --probe .../next_action_probe_p1_mlp.pt \
+	        --probe .../next_action_probe_p2_mlp.pt \
+	        --activations-dir /workspace/activations/heldout360_l15 \
+	        --lens-dir /workspace/activations/heldout360_lens --full-probs ...   # ~2h
+	    python scripts/merge_probe_rollout_arms.py --extra <that csv> --out <clone>/per_token.csv
+	    python scripts/analyze_probe_rollout.py --per-token <clone>/per_token.csv \
+	        --out-dir <clone> --headline-extra local_belief.p1_mlp,local_belief.p2_mlp

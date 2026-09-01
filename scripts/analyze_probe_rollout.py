@@ -15,6 +15,7 @@ Every table is a group-by over the join; nothing here re-reads an activation.
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -435,3 +436,7 @@ def write_q4_centered(df: pd.DataFrame, ends: pd.DataFrame, disagree: pd.DataFra
         x = df[c].to_numpy()
         summary[f"{c}_mean"] = float(x.mean())
         summary[f"{c}_t"] = float(x.mean() / (x.std(ddof=1) / np.sqrt(len(x))))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
