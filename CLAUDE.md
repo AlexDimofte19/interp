@@ -17,7 +17,7 @@ extra, which is *not* installed into `.venv`, so `make test` (and `.venv/bin/pyt
 "No module named pytest". Run tests through uv instead:
 
 ```bash
-uv run --extra lint pytest -c pyproject.toml -q --ignore=tests/test_trajectory_activations.py   # 101 pass
+uv run --extra lint pytest -c pyproject.toml -q --ignore=tests/test_trajectory_activations.py   # 301 pass
 uv run --extra lint pytest -c pyproject.toml tests/test_grid_utils.py::test_name -vv             # single test
 make fix-style     # ruff format + ruff check --fix (line length 119, notebooks included)
 make check-style
@@ -31,9 +31,16 @@ unrelated; always ignore it. Note `--doctest-modules` is on, so docstring exampl
 Linux GPU hosts; on this Mac there is no conda.
 
 **GPU-only work.** Anything that loads gpt-oss-20b — `gather_activations`, `scripts/jlens_*.py`,
-`jlens/jlens_fit_gpt_oss.py` — cannot run on the laptop. Locally you can only work on the code paths that
-consume already-extracted artifacts (CSVs, `.pt` files, manifests, notebooks). Extract activations on a
-**single** GPU: `device_map="auto"` across multiple GPUs produces NaNs for this MoE model.
+`jlens/jlens_fit_gpt_oss.py`, `scripts/inference_oss/run_inference.py` — cannot run on the laptop. Locally
+you can only work on the code paths that consume already-extracted artifacts (CSVs, `.pt` files, manifests,
+notebooks). Extract activations on a **single** GPU: `device_map="auto"` across multiple GPUs produces NaNs
+for this MoE model.
+
+Loading the model also needs the **`gpu` extra** (`accelerate`, and the pinned `kernels==0.12.0`), which
+is *not* in the default dependencies: a long-lived `.venv` usually has `accelerate` already and never
+notices, but a fresh worktree venv dies at `from_pretrained` with "requires `accelerate`".
+`run_inference_strategies.sh` passes `--extra gpu` by default (`UV_EXTRAS` overrides); anything else
+needs it spelled out.
 
 **GPU-host paths.** `--jlens_dir` is **`/workspace/jlens/gridenv`**, not `/workspace/jlens`. It holds
 `gpt-oss-20b_jacobian_lens.pt` *and* the cached `gpt-oss-20b_unembed.pt` (lm_head + final norm), so it is
@@ -108,10 +115,42 @@ under `cells`, keyed by each entry's `cells_key`. Loaders live in
 ### The lens line (jlens and logitlens)
 
 `scripts/jlens_reasoning_tokens.py` does one forward pass per trajectory and emits both the activations
-and a per-trajectory `{stem}_{lens}_analysis.csv` of top-20 lens predictions per (reasoning token, layer).
-Tokens are scored by how many of their top-k lens predictions are direction words, using a vocabulary
-JSON (`data/jlens/direction_tokens_full.json`, `data/jlens/grid_tokens_full.json` in the repo; deployed to
-`/workspace/jlens/` on the GPU host — see **GPU-host paths** above).
+and a per-trajectory `{stem}_{lens}_analysis.csv` of top-20 lens predictions per (reasoning token, layer),
+each with its `top_{i}_logprob`. Tokens are scored by how direction-loaded those predictions are, against a
+vocabulary JSON (`data/jlens/direction_tokens_full.json`, `data/jlens/grid_tokens_full.json` in the repo;
+deployed to `/workspace/jlens/` on the GPU host — see **GPU-host paths** above).
+
+**How a token scores is a second registry**, `jlens_utils/scoring.py`, dispatched by name exactly as the
+methods are: `--direction-score count|logprob_mass|logprob_sum|logprob_mass_full`. `count` is the original
+(how many top-k predictions are direction words) and is the default so nothing already on disk changes
+meaning. A mass score is the count weighted by belief — logsumexp of the matched logprobs, i.e. log of the
+total probability the lens puts on direction words — and is the one to reach for. `logprob_sum` adds the
+logprobs literally, which *multiplies* the probabilities and so scores a token **worse** for emitting
+several direction words; it exists because it is the literal reading, not because it is right. Every mode is
+"higher is better", so every ranker sorts by `-score` without knowing which ran. A row with no hit floors at
+`NO_MATCH_LOGPROB` (-40), never 0 — 0 is `log(p=1)`, the best score there is. A per-layer cell is a real
+log-probability (≤ 0); a token's cross-layer *total* adds probabilities across layers and can exceed 0 — it
+orders tokens, it is not `log P(anything)`.
+
+**Two artifacts, and `source` picks between them.** `logprob_mass` scores the analysis CSV's `top_i_logprob`
+columns, so it only sees direction words that reached the top 20. `logprob_mass_full` reads the
+**direction-mass table**, a wide `(token x layer)` CSV the gather writes beside the analysis CSV whose cells
+are `log P(any direction word)` over the *whole* vocabulary — computed while the `[b, vocab]` logits are
+still on the device, so it costs one gather plus one reduction against logits the unembed already paid for.
+The trade is late binding: a top-k score can be recomputed against a different vocabulary from the CSV
+alone, a mass table is baked at gather time. Since this repo points two vocabularies at the same trees,
+every table is written with a `.meta.json` sidecar naming the one that produced it — **never read a mass
+table without it**. `methods.score_artifact_path` is the single place that maps a score to its file.
+`--direction-mass-json` (defaults to `--signal-json`) chooses the vocabulary, `--no-direction-mass` skips
+the table, and `--no-top-logprobs` drops the 20 logprob columns for runs that will only ever score the mass
+table.
+
+The top-k logprob modes need the `top_{i}_logprob` columns, which only runs from this version emit;
+`read_direction_scores` raises on an older CSV rather than scoring every row as a tie. **Every CSV and every
+selection record currently on disk is pre-logprob**, i.e. a count, and no tree has a mass table yet.
+Re-emitting is a CSV-only pass (`--overwrite --no-save-activations`) that writes no `.pt` and so leaves the
+pruned tree alone; it produces the mass table too. The mode a record's numbers are in lives in that arm's
+`config.direction_score`, and its absence means `count`.
 
 `--lens jlens|logitlens|both`. The two lenses are **one code path**: `apply_lens_transport` with an empty
 `J_rows` *is* the logit lens (unembed each layer where it sits), and layer 23 is that case already, which
@@ -153,6 +192,28 @@ inherited, never redrawn, because a fresh draw could only sample the survivors. 
 format v2 (`arms: {name: {config, picks}}`) and still reads v1 — it must, since every pruned trajectory
 has one.
 
+**One layer, not one per token.** `--layers-per-token 1` keeps each token's *own* best layer, so the
+dataset still spans many layers and one probe weight vector is asked to read several representation spaces.
+`split_next_action_manifest.py --single-layer L` pins the whole dataset to one layer instead (`SINGLE_LAYER`
+in the `train_*_arms.sh` pair); `--single-layer best` lets the manifest pick its argmax, but that mean is
+conditional on selection — a layer appears in a manifest only where it won, except layer 15 which is
+force-kept for every token. `scripts/jlens_layer_profile.py` computes the unbiased mean per layer from the
+CSVs (or, with `--direction-score logprob_mass_full`, from the mass tables — unbiased over the vocabulary
+as well as over layers), where every token is scored at every layer, and that is where `L` should come
+from. A control arm
+carries no scores and cannot pick: give it the same explicit `L`.
+
+Or pin the layer at *gather* time, which is stronger: `jlens_reasoning_tokens.py
+--select-candidate-layers 15` narrows the pool the selection ranks and saves from, so tokens are
+ranked by their layer-15 score rather than by a cross-layer total, and only layer 15 lands on disk.
+It does **not** narrow the CSV or the mass table — those still cover `--layers` — so one run can
+select a single layer and still leave the full `(token x layer)` profile behind for
+`jlens_layer_profile.py`. It mirrors `--candidate-layers` on `delete_non_jlens_selected.py`, and the
+two must be given the same pool or a prune keeps different files than the filtered gather wrote; the
+value is recorded in each arm's `config.candidate_layers` (absent/`null` = every layer the artifact
+covers). `scripts/jlens_mass_l15.sh` is the recorded invocation: `logprob_mass_full` ranking at layer
+15 over the same 3600 trajectories the count-era tree drew.
+
 Narrow at training time, not prepare time: `split_next_action_manifest.py --tokens-per-trajectory K
 --layers-per-token M` takes top-K off one prepared dataset (identical to a `--num-tokens K` prepare),
 which is why the top-1/2/3 sweep costs three splits rather than three multi-hour prepares. It computes
@@ -184,13 +245,66 @@ the direction words the model has already verbalized.
 Read lens CSVs with `csv.DictReader`, never `pandas.read_csv` — decoded tokens include `"NA"`, empty
 strings, embedded commas and newlines, which pandas' NA handling silently corrupts.
 
+### The rollout line (truncation strategies)
+
+The lens line asks what a *probe* reads off a token. The rollout line asks what the **model** would answer
+if its reasoning stopped there. `scripts/inference_oss/run_inference.py` keeps `output_tokens[:pos + 1]`,
+appends the fixed final-channel prefix (`<|end|>...{\n  "action": "`), and reads the single action token the
+model then emits. That label is the **local belief** at `pos`, as against the trajectory's `agent_action`,
+which is where it *ends up*; the two coming apart before the model commits is the whole point of entries
+39-41 and 46-48.
+
+**Where to cut is a third registry**, `scripts/inference_oss/truncation_strategies.py`
+(`STRATEGIES` / `build_strategy`), dispatched by name exactly as the methods and scores are. Nothing else
+about the rollout changes between arms, so any difference between two arms is the cut points and nothing
+else. `--strategy`:
+
+- `eos` — every reasoning sentence end. **The grid every rollout on disk was measured on**; its positions
+  are pinned by a test against `reasoning_eos_positions` itself, because entry 42's whole loudness join is
+  indexed by them.
+- `jlens_argmax_per_sentence` — one cutoff per sentence, at its *loudest* token. Same count and same
+  sentence grid as `eos`; only the position inside each sentence moves.
+- `jlens_top_k_global` — the `--top-k` loudest tokens of the whole chain, so the grid follows the lens
+  rather than the punctuation. A quiet sentence contributes nothing, a loud one several.
+- `every_token` — no selection at all: every reasoning token, or every `--stride`-th. The dense grid, and
+  the only one whose cuts do not depend on the lens.
+
+**Two class attributes, not one.** `uses_loudness` decides whether `build_strategy` wires a
+`MassTableLoudness`; `needs_loudness` decides whether a trajectory without a usable mass table is fatal.
+They differ only for `every_token`, which **records** loudness per cutoff but never ranks on it, so a
+missing table costs it the covariate rather than the trajectory. Do not collapse them back into one flag.
+
+**Every strategy writes the `eos` schema**, so `analysis.py` and the join scripts read all four unchanged:
+`sentence_evals` is the ordered cutoff list, `eos_token_pos` the cut position **in `output_tokens`
+coordinates**, and `n_reasoning_sentences` the number of cutoffs (a misnomer under the loud strategies;
+`n_cutoffs` is the same number under an honest name). Each `Cutoff` is also placed on the `eos` grid
+(`cut_sentence_idx`, `pos_in_sentence`, `sentence_len`) whether or not the strategy used it, which is what
+lets two arms be compared in the same sentence coordinates. The endpoint cutoffs (`no_reasoning`,
+`end_of_reasoning`) are added to every arm on purpose so its first and last eval is the same prompt as
+every other arm's — `--no-endpoint-cutoffs` drops them and makes final accuracy and the commitment indices
+incomparable across arms.
+
+**Coordinate traps, both silent.** `abs_pos` in the lens CSVs and the per-token joins is
+**prompt-inclusive**; the `output_tokens` index — what `eos_token_pos` and the probe-loudness `token_id`
+mean — is **`token_idx`**. Joining a rollout on `abs_pos` yields an empty or wrong join, never an error.
+And in `probe_vs_rollout/per_token.csv`, position *within* a sentence is `frac_in_sentence`; that file's
+own `sentence_frac` is `sentence_idx / n_sentences`, a different quantity, and reading the wrong one
+quietly destroys any loudness-vs-position control.
+
+**A rollout label has a noise floor.** The same prompt re-run in a different batch shape agrees 100% at
+`end_of_reasoning` but only ~80% at `no_reasoning` (mean |Δp| .105) — batching and padding move
+low-confidence logits. See `rollout_strategies/RUN_STATE.md`. Do not read a few points of difference
+between arms as signal without checking it against that floor.
+
 ## Conventions and gotchas
 
 - `configs/**/*.conf`, `script.sh`, `general_probe_train.sh`, `*.ps1` are **recorded `interp-cli`
   invocations**, not parsed config files. They are the record of how published results were produced.
 - `ICLR log.txt` is the running research log (findings, planned phases, known landmines) and
-  `claude_session_readme.md` is the handoff note for the current `reasoning_theatre` branch. Read them
-  before touching the jlens → probe path; append to the log rather than rewriting it.
+  `claude_session_readme.md` is the handoff note for the current branch — `worktree-probe-loudness` as of
+  entry 48, forked from `reasoning_theatre`. Read them before touching the jlens → probe or rollout path;
+  **append** to the log rather than rewriting it, and keep the readme's header pointer current, since it is
+  the first thing a fresh session reads.
 - Landmine, now guarded: `train_cognitive_map_probe_fn.py::_prepare_train_eval_v3` splits train/eval
   with `torch.randperm` over **entries**. That is a split by trajectory only while one entry is one
   trajectory; a token-major manifest leaks. It now refuses both an internal `--eval-split` and
