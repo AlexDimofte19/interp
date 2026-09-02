@@ -3028,8 +3028,8 @@ csv either, and that is what makes the direction number mean anything.
 	261,663 rows = 3 x 87,221, plots/ 20 figures, tables/ 18 CSVs, summary.json,
 	heldout360_10probes.csv, report.html) and
 	/workspace/reasoning_theatre/rollout_strategies_heldout360/every_token/ (360 JSONs,
-	87,581 cutoff-evals). Report NOT yet published as an artifact -- the publish was
-	blocked by the session's permission classifier; the page is complete on disk.
+	87,581 cutoff-evals). Written up at
+	https://claude.ai/code/artifact/a62f826d-34bd-44eb-a13f-606fe2d49c6c
 
 	    NAMES_FILE=/workspace/trajectories/heldout360_names.txt \
 	    TRAJECTORIES=/workspace/trajectories/heldout360 \

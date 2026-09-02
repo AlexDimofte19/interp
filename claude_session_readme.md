@@ -891,8 +891,8 @@ python scripts/analyze_probe_rollout.py --per-token .../probe_vs_rollout_lb/per_
 loudness axis is not truncated by a top-*K* selection. `probe_loudness/` is untouched (md5
 verified).
 
-Report: `/workspace/reasoning_theatre/probe_loudness_heldout360/report.html` — **not yet
-published as an artifact**; the publish was blocked by a session permission classifier.
+Report: <https://claude.ai/code/artifact/a62f826d-34bd-44eb-a13f-606fe2d49c6c>
+(source `probe_loudness_heldout360/report.html`).
 
 ```bash
 # 1. the new dense rollout: cut at EVERY token, ask for the action  (6h13m, 87,581 evals)
