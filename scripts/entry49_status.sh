@@ -27,7 +27,9 @@ echo "=== entry 49 @ $now_utc UTC / $now_loc CEST"
 # `pgrep -af` + an argv match, never a bare name, for two reasons: a SIGSTOPped leftover from
 # an older run sits in the process table for days matching a bare pgrep for the script name,
 # and this script's own name must never match itself (it mentions every process it looks for).
-PS_SNAPSHOT=$(ps -eo pid,args --no-headers 2>/dev/null | grep -v entry49_status)
+# -ww: unlimited width. Without it ps truncates argv to the terminal width, and the
+# arm match (which looks for the output root inside --output-dir) silently fails.
+PS_SNAPSHOT=$(ps -ewwo pid,args --no-headers 2>/dev/null | grep -v entry49_status)
 alive() { printf '%s\n' "$PS_SNAPSHOT" | grep -F -- "$1" | grep -qF -- "${2:-}"; }
 state() { alive "$1" "${2:-}" && echo ALIVE || echo "-"; }
 
