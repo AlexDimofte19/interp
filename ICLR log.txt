@@ -3031,6 +3031,12 @@ csv either, and that is what makes the direction number mean anything.
 	87,581 cutoff-evals). Written up at
 	https://claude.ai/code/artifact/a62f826d-34bd-44eb-a13f-606fe2d49c6c
 
+	COMMITTED as b798a27 (the work) and d127355 (the URL above) on branch
+	worktree-probe-loudness, pushed to origin. b798a27 also brings the previously
+	UNTRACKED entry 43/44 truncation-strategy line into the repo -- truncation_strategies.py,
+	run_inference.py, run_inference_strategies.sh, rollout_status.sh -- because every_token
+	is inseparable from it. Entry 45's scripts are still outside the repo.
+
 	    NAMES_FILE=/workspace/trajectories/heldout360_names.txt \
 	    TRAJECTORIES=/workspace/trajectories/heldout360 \
 	    LENS_ROOT=/workspace/activations/heldout360_lens \

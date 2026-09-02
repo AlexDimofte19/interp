@@ -1,13 +1,26 @@
 # Session context: jlens → probe pipeline
 
-Notes for a fresh Claude session picking up this work. Branch: `reasoning_theatre`.
+Notes for a fresh Claude session picking up this work. Branch: **`worktree-probe-loudness`**
+(pushed to `origin`), which forked from `reasoning_theatre` — most of this file was written
+while that was the working branch, so read "on `reasoning_theatre`" below as "before the
+worktree".
 
 **Newest first, if you only read one thing:** the file is append-only and chronological, so
-the last section is the current state. As of 2026-08-31 that is *Truncation strategies —
-cutting where the lens is loud* (log entry 43): three rollout arms built and verified, none
-of them run yet. Before it: *Loudness through a sentence* (entry 42) and *Probe vs. rollout*
-(entries 39-41). The "Resuming — start here" section below is the round-2 grid-probing thread
-and is older than all three.
+the last section is the current state. As of 2026-09-02 that is *What loudness buys the probe,
+with the selection removed* (log entry 48): entry 46 re-run on the **heldout 360** over every
+reasoning token, with a new dense `every_token` rollout arm behind it. Before it: *the
+commitment boundary re-read by the belief-trained probes* (entry 47), *probe loudness*
+(entry 46), *the local-belief probes* (entry 45), *the truncation-strategy arms* (entries
+43-44 — all now built **and run**), *loudness through a sentence* (entry 42) and *probe vs.
+rollout* (entries 39-41). The "Resuming — start here" section below is the round-2
+grid-probing thread and is older than all of them.
+
+**What is committed, as of entry 48.** The truncation-strategy line is now in the repo:
+`scripts/inference_oss/{truncation_strategies.py, run_inference.py, run_inference_strategies.sh,
+rollout_status.sh}`, `tests/test_truncation_strategies.py`, plus
+`scripts/build_probe_loudness_heldout.py`. Entry 45's scripts are still outside the repo
+(see *Where things live / what needs merging*), and the round-2 grid-probing working state
+below is still uncommitted.
 
 Covers two connected changes: `scripts/jlens_reasoning_tokens.py` now persists activations
 alongside its lens analysis (committed as `2296c92`), and
@@ -893,6 +906,10 @@ verified).
 
 Report: <https://claude.ai/code/artifact/a62f826d-34bd-44eb-a13f-606fe2d49c6c>
 (source `probe_loudness_heldout360/report.html`).
+
+Committed as `b798a27` (the work) and `d127355` (this URL) on `worktree-probe-loudness`,
+pushed to `origin`. `b798a27` also brings the previously-untracked entry 43/44
+truncation-strategy line into the repo, since `every_token` is inseparable from it.
 
 ```bash
 # 1. the new dense rollout: cut at EVERY token, ask for the action  (6h13m, 87,581 evals)
