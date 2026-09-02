@@ -225,3 +225,125 @@ def test_every_token_endpoints_can_be_dropped(lens_root):
 def test_unknown_strategy_names_are_rejected():
     with pytest.raises(ValueError, match="unknown strategy"):
         ts.build_strategy("loudest")
+
+
+# --------------------------------------------------------------------------------------
+# recorded_selection: replaying an existing gather's picks.
+# --------------------------------------------------------------------------------------
+
+# output_tokens indices, i.e. reasoning_pos 1, 4 and 7 -- deliberately NOT the loud ones,
+# so a run that quietly ranked instead of replaying would pick different positions.
+RECORDED = [4, 7, 10]
+
+
+def _write_record(lens_root: Path, arms: dict, version: int = 2) -> Path:
+    path = lens_root / "size5" / NAME / f"{NAME}_jlens_selection.json"
+    if version == 2:
+        body = {"format_version": 2, "stem": NAME, "arms": arms}
+    else:
+        body = {"stem": NAME, "picks": next(iter(arms.values()))["picks"]}
+    path.write_text(json.dumps(body))
+    return path
+
+
+@pytest.fixture
+def record(lens_root: Path) -> Path:
+    _write_record(
+        lens_root,
+        {
+            # The control carries no direction counts, exactly as the gather writes it.
+            "random": {"config": {"seed": 42}, "picks": [{"step": 0, "token_idx": i} for i in RECORDED]},
+            "jlens": {"config": {}, "picks": [{"step": 0, "token_idx": 5, "direction_count": -1.0}]},
+        },
+    )
+    return lens_root
+
+
+def _recorded(lens_root: Path, **kw):
+    return ts.RecordedSelectionStrategy(ts.MassTableLoudness(lens_root=lens_root, lens="jlens", layer=15), **kw)
+
+
+def test_recorded_selection_cuts_at_the_recorded_tokens(record):
+    assert _cuts(_recorded(record)) == [
+        (2, ts.KIND_NO_REASONING),
+        (4, ts.KIND_RECORDED),
+        (7, ts.KIND_RECORDED),
+        (10, ts.KIND_RECORDED),
+        (11, ts.KIND_END_OF_REASONING),
+    ]
+
+
+def test_recorded_selection_replays_rather_than_ranks(record):
+    """The random arm's positions must be the recorded ones, not the loudest ones.
+
+    A control's draw is taken before the tree is pruned and can never be re-made, so a
+    rollout that re-ranked here would silently label different tokens than the probe
+    trained on -- which is the whole point of the arm.
+    """
+    recorded = [c.pos for c in _recorded(record).cutoffs(_trajectory(), _step(), NAME) if c.kind == ts.KIND_RECORDED]
+    loudest = [c.pos for c in _recorded(record, arm="jlens").cutoffs(_trajectory(), _step(), NAME)]
+    assert recorded == RECORDED
+    assert 5 in loudest and 5 not in recorded
+
+
+def test_recorded_selection_records_loudness_as_a_covariate(record):
+    """Loudness is measured at the recorded tokens, never used to choose them."""
+    by_pos = {c.pos: c for c in _recorded(record).cutoffs(_trajectory(), _step(), NAME)}
+    # output idx 4 is reasoning_pos 1
+    assert isclose(by_pos[4].logmass, MASS[1])
+    assert isclose(by_pos[4].prob_mass, exp(MASS[1]))
+
+
+def test_recorded_selection_survives_a_missing_mass_table(tmp_path):
+    """needs_loudness is False: no table costs the covariate, not the trajectory."""
+    root = tmp_path / "lens"
+    (root / "size5" / NAME).mkdir(parents=True)
+    _write_record(root, {"random": {"config": {}, "picks": [{"step": 0, "token_idx": i} for i in RECORDED]}})
+    cuts = _recorded(root).cutoffs(_trajectory(), _step(), NAME)
+    assert [c.pos for c in cuts if c.kind == ts.KIND_RECORDED] == RECORDED
+    assert all(c.logmass is None for c in cuts if c.kind == ts.KIND_RECORDED)
+
+
+def test_a_missing_arm_is_reported_not_silently_empty(record):
+    with pytest.raises(ts.SelectionUnavailable, match="has no arm 'logitlens'"):
+        _recorded(record, arm="logitlens").cutoffs(_trajectory(), _step(), NAME)
+
+
+def test_a_missing_record_is_reported(lens_root):
+    with pytest.raises(ts.SelectionUnavailable, match="no selection record"):
+        _recorded(lens_root).cutoffs(_trajectory(), _step(), NAME)
+
+
+def test_a_v1_record_holds_one_unnamed_arm(lens_root):
+    _write_record(lens_root, {"jlens": {"picks": [{"step": 0, "token_idx": 5}]}}, version=1)
+    assert [c.pos for c in _recorded(lens_root, arm="jlens").cutoffs(_trajectory(), _step(), NAME)] == [2, 5, 11]
+    with pytest.raises(ts.SelectionUnavailable, match="v1 record"):
+        _recorded(lens_root, arm="random").cutoffs(_trajectory(), _step(), NAME)
+
+
+def test_a_pick_outside_the_reasoning_region_is_refused(lens_root):
+    """token_idx is an output_tokens index; abs_pos is prompt-inclusive.
+
+    Handing the record's abs_pos here would join to nothing, and CLAUDE.md's coordinate
+    trap is that such a mistake is silent. It must not be.
+    """
+    _write_record(lens_root, {"random": {"picks": [{"step": 0, "token_idx": 705}]}})
+    with pytest.raises(ts.SelectionUnavailable, match="is not an analysis token"):
+        _recorded(lens_root).cutoffs(_trajectory(), _step(), NAME)
+
+
+def test_selection_unavailable_is_caught_as_loudness_unavailable():
+    """run_inference has one except clause; this arm must fall into it."""
+    assert issubclass(ts.SelectionUnavailable, ts.LoudnessUnavailable)
+
+
+def test_build_strategy_wires_the_arm_and_the_record_root(record, tmp_path):
+    s = ts.build_strategy("recorded_selection", lens_root=record, selection_arm="random")
+    assert isinstance(s, ts.RecordedSelectionStrategy)
+    assert s.arm == "random"
+    # defaults to the lens root, since one gather writes both beside each other
+    assert s.selection_root == record
+    assert s.config()["arm"] == "random"
+    assert (
+        ts.build_strategy("recorded_selection", lens_root=record, selection_root=tmp_path).selection_root == tmp_path
+    )

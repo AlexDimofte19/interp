@@ -268,13 +268,25 @@ else. `--strategy`:
   rather than the punctuation. A quiet sentence contributes nothing, a loud one several.
 - `every_token` — no selection at all: every reasoning token, or every `--stride`-th. The dense grid, and
   the only one whose cuts do not depend on the lens.
+- `recorded_selection` — replay an existing gather's picks: the `token_idx` values in
+  `arms[--selection-arm]` of `{stem}_jlens_selection.json`. The other four choose cut points from the
+  trajectory in front of them; this one reads a decision already made. It exists because a control arm's
+  seeded uniform draw is taken **before** the tree is pruned and can never be re-made (same reason
+  `--extend` inherits the control rather than redrawing it), so an arm that must label the *same* tokens an
+  existing probe trained on has to read them. `--selection-root` defaults to `--lens-root`, since one
+  gather writes the record beside the mass table it ranked with. Like `every_token` it records loudness per
+  cutoff without ranking on it.
 
 **Two class attributes, not one.** `uses_loudness` decides whether `build_strategy` wires a
 `MassTableLoudness`; `needs_loudness` decides whether a trajectory without a usable mass table is fatal.
-They differ only for `every_token`, which **records** loudness per cutoff but never ranks on it, so a
-missing table costs it the covariate rather than the trajectory. Do not collapse them back into one flag.
+They differ for `every_token` and `recorded_selection`, which **record** loudness per cutoff but never rank
+on it, so a missing table costs them the covariate rather than the trajectory. Do not collapse them back
+into one flag. `recorded_selection` raises `SelectionUnavailable` (a `LoudnessUnavailable` subclass, so
+`run_inference`'s single `except` still skips the trajectory) when the record or the arm is missing, and
+also when a pick is not an analysis token — that last one catches an `abs_pos` handed in where a
+`token_idx` belongs, which would otherwise join to nothing in silence.
 
-**Every strategy writes the `eos` schema**, so `analysis.py` and the join scripts read all four unchanged:
+**Every strategy writes the `eos` schema**, so `analysis.py` and the join scripts read all five unchanged:
 `sentence_evals` is the ordered cutoff list, `eos_token_pos` the cut position **in `output_tokens`
 coordinates**, and `n_reasoning_sentences` the number of cutoffs (a misnomer under the loud strategies;
 `n_cutoffs` is the same number under an honest name). Each `Cutoff` is also placed on the `eos` grid

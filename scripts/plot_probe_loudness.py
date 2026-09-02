@@ -275,7 +275,31 @@ def main() -> int:
         "--all-token-loudness", type=Path, default=Path("/workspace/reasoning_theatre/loudness/per_token.csv")
     )
     ap.add_argument("--out", type=Path, default=Path("/workspace/reasoning_theatre/probe_loudness/plots"))
+    # Extend by flag, never by editing the registry (entry 47): with no flag every figure is
+    # byte-identical to entry 48's.
+    ap.add_argument(
+        "--extra-probes",
+        default="",
+        help="Comma-separated name=Label[=#rrggbb] entries added to --extra-probes-rowset, e.g. "
+        "'randb_mlp=random selection (belief), mlp=#7a1f5a'. Colours cycle through a spare "
+        "palette when omitted. Use ';' between entries if a label contains a comma.",
+    )
+    ap.add_argument("--extra-probes-rowset", default="p2", help="Rowset the --extra-probes join.")
     args = ap.parse_args()
+    # A spare palette for arms the registry never named: distinct from the blue (belief),
+    # orange (final-label baseline) and grey (control) families already in COLOR.
+    spare = ["#7a1f5a", "#b5568f", "#1f7a5a", "#4aa88a", "#7a5a1f", "#b58f56"]
+    sep = ";" if ";" in args.extra_probes else ","
+    for n, entry in enumerate(t.strip() for t in args.extra_probes.split(sep) if t.strip()):
+        name, eq, rest = entry.partition("=")
+        if not eq:
+            raise SystemExit(f"--extra-probes entry {entry!r} is not name=Label[=#rrggbb]")
+        label, _, colour = rest.partition("=")
+        if args.extra_probes_rowset not in PROBES:
+            raise SystemExit(f"unknown --extra-probes-rowset {args.extra_probes_rowset!r}")
+        PROBES[args.extra_probes_rowset].append(name)
+        LABEL[name] = label
+        COLOR[name] = colour or spare[n % len(spare)]
 
     df = pd.read_csv(args.per_token, keep_default_na=False, na_values=[""], low_memory=False)
     args.out.mkdir(parents=True, exist_ok=True)

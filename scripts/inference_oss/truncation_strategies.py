@@ -7,7 +7,7 @@ positions ``pos`` runs over is the experiment, and this module is the registry o
 those choices. Every strategy returns a list of :class:`Cutoff` in ascending
 position order; nothing else about the rollout changes between them.
 
-Four strategies, selected by name:
+Five strategies, selected by name:
 
 ``eos``
     The original: every reasoning sentence end (``get_indices_for_eos_tokens``
@@ -25,6 +25,14 @@ Four strategies, selected by name:
 ``jlens_top_k_global``
     The K loudest tokens of the whole step's reasoning, wherever they fall, so the
     grid follows the lens rather than the punctuation.
+
+``recorded_selection``
+    Replay an EXISTING gather's picks: the ``token_idx`` values recorded in
+    ``arms[<arm>]`` of ``{stem}_jlens_selection.json``. The other four decide where to
+    cut from the trajectory in front of them; this one reads a decision already made.
+    It exists for the ``random`` control, whose seeded uniform draw was taken before the
+    activation tree was pruned to the selection and therefore cannot be re-made -- so an
+    arm that has to label the *same* tokens an existing probe trained on must read them.
 
 ``every_token``
     No selection at all: cut at EVERY reasoning token (or every ``stride``-th).
@@ -66,10 +74,20 @@ KIND_END_OF_REASONING = "end_of_reasoning"
 KIND_LOUDEST_IN_SENTENCE = "loudest_in_sentence"
 KIND_LOUD_TOP_K = "loud_top_k"
 KIND_EVERY_TOKEN = "every_token"
+KIND_RECORDED = "recorded"
 
 
 class LoudnessUnavailable(Exception):
     """No usable direction-mass table for this trajectory (or step)."""
+
+
+class SelectionUnavailable(LoudnessUnavailable):
+    """No usable selection record (or arm) for this trajectory.
+
+    A subclass so ``run_inference``'s single ``except LoudnessUnavailable`` keeps
+    skipping the trajectory and saying so, while the message still names the real
+    cause -- a missing arm is not a missing mass table.
+    """
 
 
 @dataclass(frozen=True)
@@ -509,6 +527,130 @@ class EveryTokenStrategy(LoudnessStrategy):
         return _dedupe(out)
 
 
+class RecordedSelectionStrategy(LoudnessStrategy):
+    """Cut at the tokens an existing gather already SELECTED and recorded.
+
+    The other strategies decide where to cut from the trajectory in front of them. This
+    one replays a decision made earlier, reading ``{stem}_jlens_selection.json`` (the
+    format-v2 record every gather writes beside its CSVs) and cutting at
+    ``arms[<arm>].picks[].token_idx``.
+
+    It exists for the ``random`` control. A control arm's tokens are a seeded uniform
+    draw over the whole reasoning chain, taken *before* the tree was pruned to the
+    selection -- CLAUDE.md: once the tree holds only the selected tokens, that draw can
+    never be made again, and the record is the only place it survives. So a rollout that
+    is supposed to label the SAME tokens the random probe trained on cannot re-draw them;
+    it has to read them. The same applies to any arm whose probe already exists.
+
+    Loudness is recorded per cutoff when a mass table is there and skipped when it is
+    not (``needs_loudness = False``): as in ``every_token`` it is a measured covariate
+    here, never a selector -- these cutoffs were chosen by the record, and for the random
+    arm they were chosen by nothing at all.
+    """
+
+    name = "recorded_selection"
+    needs_loudness = False
+
+    def __init__(
+        self,
+        loudness: MassTableLoudness | None = None,
+        *,
+        arm: str = "random",
+        selection_root: Path | None = None,
+        include_endpoints: bool = True,
+    ) -> None:
+        super().__init__(loudness or MassTableLoudness(), include_endpoints=include_endpoints)
+        self.arm = arm
+        # Defaults to the lens root: the gather writes the record beside the mass table it
+        # ranked with, so one tree normally holds both.
+        self.selection_root = Path(selection_root) if selection_root is not None else self.loudness.lens_root
+        self._cache_name: str | None = None
+        self._cache: dict[int, list[int]] = {}
+
+    def config(self) -> dict:
+        return {**super().config(), "arm": self.arm, "selection_root": str(self.selection_root)}
+
+    def record_path(self, name: str) -> Path:
+        """Selection-record path for a trajectory stem. Always ``_jlens_selection.json``.
+
+        The filename is the record's, not a lens's: one record holds every arm of that
+        gather, whichever lens produced them.
+        """
+        size = name.split("_size")[1].split("_")[0] if "_size" in name else "*"
+        direct = self.selection_root / f"size{size}" / name / f"{name}_jlens_selection.json"
+        if direct.exists():
+            return direct
+        matches = sorted(self.selection_root.glob(f"*/{name}/{name}_jlens_selection.json"))
+        if not matches:
+            raise SelectionUnavailable(f"no selection record for {name} under {self.selection_root}")
+        return matches[0]
+
+    def picks(self, name: str) -> dict[int, list[int]]:
+        """``{step_id: [token_idx, ...]}`` for this arm, ascending. Cached per trajectory."""
+        if name == self._cache_name:
+            return self._cache
+        record = json.loads(self.record_path(name).read_text())
+        # v1 records are a bare pick list; v2 keys them by arm. Both are on disk.
+        if "arms" in record:
+            if self.arm not in record["arms"]:
+                raise SelectionUnavailable(
+                    f"{self.record_path(name)} has no arm {self.arm!r} (arms: {sorted(record['arms'])})"
+                )
+            raw = record["arms"][self.arm]["picks"]
+        elif self.arm in ("", "jlens"):
+            raw = record.get("picks", [])
+        else:
+            raise SelectionUnavailable(
+                f"{self.record_path(name)} is a v1 record and holds one unnamed arm, not {self.arm!r}"
+            )
+        by_step: dict[int, list[int]] = {}
+        for pick in raw:
+            by_step.setdefault(int(pick["step"]), []).append(int(pick["token_idx"]))
+        self._cache_name, self._cache = name, {k: sorted(set(v)) for k, v in by_step.items()}
+        return self._cache
+
+    def _scores(self, step: dict, traj_name: str) -> tuple[dict[int, float], list[int]]:
+        """As the parent, but a missing mass table costs the covariate, not the run."""
+        try:
+            return super()._scores(step, traj_name)
+        except LoudnessUnavailable:
+            return {}, reasoning_eos_positions(step["output_tokens"])
+
+    def cutoffs(self, trajectory: dict, step: dict, traj_name: str) -> list[Cutoff]:
+        picks = self.picks(traj_name).get(step["step_id"], [])
+        scores, eos = self._scores(step, traj_name)
+        if not eos:
+            return []
+        spans = sentence_spans(eos)
+        ana = set(analysis_positions(step["output_tokens"]))
+        out: list[Cutoff] = []
+        if self.include_endpoints:
+            out.append(Cutoff(pos=eos[0], kind=KIND_NO_REASONING))
+        for pos in picks:
+            # A pick outside the reasoning region would be a coordinate bug upstream
+            # (token_idx is an output_tokens index, abs_pos is prompt-inclusive), and a
+            # silently-empty join is exactly what CLAUDE.md warns about -- so it is loud.
+            if pos not in ana:
+                raise SelectionUnavailable(
+                    f"{traj_name} step {step['step_id']}: recorded token_idx {pos} is not an "
+                    f"analysis token (is the record's token_idx an abs_pos?)"
+                )
+            si, pis, slen = self._place(pos, spans)
+            out.append(
+                Cutoff(
+                    pos=pos,
+                    kind=KIND_RECORDED,
+                    sentence_idx=si,
+                    pos_in_sentence=pis,
+                    sentence_len=slen,
+                    logmass=scores.get(pos),
+                )
+            )
+        if self.include_endpoints:
+            out.append(self._end_of_reasoning(spans, scores))
+        return _dedupe(out)
+
+
 def _dedupe(cutoffs: list[Cutoff]) -> list[Cutoff]:
     """Sort by position and keep one cutoff per position.
 
@@ -527,6 +669,7 @@ STRATEGIES: dict[str, type[TruncationStrategy]] = {
     JlensArgmaxPerSentenceStrategy.name: JlensArgmaxPerSentenceStrategy,
     JlensTopKGlobalStrategy.name: JlensTopKGlobalStrategy,
     EveryTokenStrategy.name: EveryTokenStrategy,
+    RecordedSelectionStrategy.name: RecordedSelectionStrategy,
 }
 
 
@@ -539,13 +682,15 @@ def build_strategy(
     top_k: int = DEFAULT_TOP_K,
     stride: int = 1,
     include_endpoints: bool = True,
+    selection_arm: str = "random",
+    selection_root: Path | None = None,
 ) -> TruncationStrategy:
     """Instantiate a strategy by name, wiring loudness only for the ones that use it.
 
     >>> build_strategy("eos").name
     'eos'
     >>> sorted(STRATEGIES)
-    ['eos', 'every_token', 'jlens_argmax_per_sentence', 'jlens_top_k_global']
+    ['eos', 'every_token', 'jlens_argmax_per_sentence', 'jlens_top_k_global', 'recorded_selection']
     """
     try:
         cls = STRATEGIES[name]
@@ -558,4 +703,8 @@ def build_strategy(
         return JlensTopKGlobalStrategy(loudness, top_k=top_k, include_endpoints=include_endpoints)
     if cls is EveryTokenStrategy:
         return EveryTokenStrategy(loudness, stride=stride, include_endpoints=include_endpoints)
+    if cls is RecordedSelectionStrategy:
+        return RecordedSelectionStrategy(
+            loudness, arm=selection_arm, selection_root=selection_root, include_endpoints=include_endpoints
+        )
     return cls(loudness, include_endpoints=include_endpoints)  # type: ignore[call-arg]

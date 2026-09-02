@@ -18,6 +18,11 @@
 #   jlens_top_k_global         the TOP_K loudest tokens of the whole chain, wherever they
 #                              fall, so the sampling grid follows the lens rather than the
 #                              punctuation.
+#   recorded_selection         replay an EXISTING gather's picks: the token_idx values in
+#                              arms.$SELECTION_ARM of {stem}_jlens_selection.json. The random
+#                              control's draw is taken before the tree is pruned and can never
+#                              be re-made, so an arm that must label the same tokens a probe
+#                              trained on has to read them rather than re-draw them.
 #   every_token                no selection: cut at EVERY reasoning token (or every STRIDE-th).
 #                              The three arms above each sample the chain somewhere, so a
 #                              downstream join only has a measured belief where that arm chose
@@ -56,6 +61,8 @@ LENS=${LENS:-jlens}
 LOUDNESS_LAYER=${LOUDNESS_LAYER:-15}
 TOP_K=${TOP_K:-20}
 STRIDE=${STRIDE:-1}                  # every_token only: 1 = dense grid, 2 = every other token
+SELECTION_ARM=${SELECTION_ARM:-random}   # recorded_selection only: which arm of the record to replay
+SELECTION_ROOT=${SELECTION_ROOT:-}       # recorded_selection only: defaults to LENS_ROOT
 
 # Throughput. gpt-oss has no SDPA kernel and flash-attn is not installed here, so without
 # an explicit backend transformers falls back to eager, whose attention memory grows as
@@ -118,6 +125,8 @@ for STRATEGY in "${STRATEGIES[@]}"; do
         --loudness-layer "$LOUDNESS_LAYER" \
         --top-k "$TOP_K" \
         --stride "$STRIDE" \
+        --selection-arm "$SELECTION_ARM" \
+        ${SELECTION_ROOT:+--selection-root "$SELECTION_ROOT"} \
         --batch-size "$BATCH_SIZE" \
         --max-batch-tokens "$MAX_BATCH_TOKENS" \
         --max-attn-elems "$MAX_ATTN_ELEMS" \

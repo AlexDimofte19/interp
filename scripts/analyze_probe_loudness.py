@@ -122,9 +122,34 @@ def main() -> int:
         "tokens are compared against. Skipped if absent.",
     )
     ap.add_argument("--out", type=Path, default=Path("/workspace/reasoning_theatre/probe_loudness"))
+    # Extend by flag, never by editing the registry (entry 47): with no flag the output of a
+    # re-run against entry 48's per_token.csv is byte-identical.
+    ap.add_argument(
+        "--extra-probes",
+        default="",
+        help="Comma-separated probe names to add to --extra-probes-rowset, e.g. 'randb_lr,randb_mlp'. "
+        "They must already be columns of the per-token CSV.",
+    )
+    ap.add_argument("--extra-probes-rowset", default="p2", help="Rowset the --extra-probes join.")
+    ap.add_argument(
+        "--extra-final-label-probes",
+        default="",
+        help="Which of the --extra-probes were trained on the FINAL action rather than the local "
+        "belief. Gets the trained_on field right; empty means all the new arms are belief-trained.",
+    )
     ap.add_argument("--boot", type=int, default=300)
     ap.add_argument("--deciles", type=int, default=10)
     args = ap.parse_args()
+    extra = [t.strip() for t in args.extra_probes.split(",") if t.strip()]
+    if extra:
+        if args.extra_probes_rowset not in PROBES:
+            raise SystemExit(f"unknown --extra-probes-rowset {args.extra_probes_rowset!r}")
+        dupes = [e for e in extra if e in PROBES[args.extra_probes_rowset]]
+        if dupes:
+            raise SystemExit(f"--extra-probes already in the rowset: {dupes}")
+        PROBES[args.extra_probes_rowset].extend(extra)
+        FINAL_LABEL_PROBES.update(t.strip() for t in args.extra_final_label_probes.split(",") if t.strip())
+        print(f"rowset {args.extra_probes_rowset}: {PROBES[args.extra_probes_rowset]}", flush=True)
     rng = np.random.default_rng(0)
 
     # csv.DictReader elsewhere, but this file is ours and quotes its token column; the

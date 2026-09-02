@@ -625,7 +625,8 @@ def main() -> None:
         help="Where to place the truncation cutoffs (see truncation_strategies.py). "
         "eos: every reasoning sentence end. jlens_argmax_per_sentence: the loudest token of "
         "each sentence. jlens_top_k_global: the --top-k loudest tokens of the whole chain. "
-        "every_token: no selection at all -- every reasoning token, or every --stride-th.",
+        "every_token: no selection at all -- every reasoning token, or every --stride-th. "
+        "recorded_selection: replay the --selection-arm picks of an existing gather's record.",
     )
     parser.add_argument(
         "--stride",
@@ -634,6 +635,18 @@ def main() -> None:
         help="every_token only: keep every STRIDE-th reasoning token, counting from the first. "
         "1 is the dense grid; 2 halves the cost at the price of a label that is one token stale "
         "for the tokens it skips. Endpoints are kept whatever the stride.",
+    )
+    parser.add_argument(
+        "--selection-arm",
+        default="random",
+        help="recorded_selection only: which arm of {stem}_jlens_selection.json to replay. "
+        "'random' is the control whose seeded draw cannot be re-made once a tree is pruned.",
+    )
+    parser.add_argument(
+        "--selection-root",
+        default=None,
+        help="recorded_selection only: tree holding the selection records (default: --lens-root, "
+        "since one gather writes the record beside the mass table it ranked with).",
     )
     parser.add_argument(
         "--names-file",
@@ -684,6 +697,8 @@ def main() -> None:
         top_k=args.top_k,
         include_endpoints=not args.no_endpoint_cutoffs,
         stride=args.stride,
+        selection_arm=args.selection_arm,
+        selection_root=Path(args.selection_root) if args.selection_root else None,
     )
 
     paths = expand_paths(args.trajectory_paths)

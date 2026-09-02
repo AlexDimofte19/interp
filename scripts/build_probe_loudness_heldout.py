@@ -168,7 +168,7 @@ def read_probe_csv(path: Path) -> tuple[dict[str, dict[int, dict[int, dict]]], l
         if missing:
             raise SystemExit(
                 f"{path} is missing {len(missing)} column(s), e.g. {missing[:3]}. "
-                "Was eval_probe_per_token.py run with all ten --probe and --full-probs?"
+                "Was eval_probe_per_token.py run with every --probe and --full-probs?"
             )
         for r in reader:
             cell = {
@@ -237,9 +237,39 @@ def main() -> int:
     )
     ap.add_argument("--out", type=Path, default=out_default / "per_token.csv")
     ap.add_argument("--rowsets", default="all", help="comma-separated subset of ROWSETS, or 'all'.")
+    # Entry 47's convention: extend by flag, never by editing the registry, so re-running
+    # this against entry 48's inputs with no flag still produces byte-identical output.
+    ap.add_argument(
+        "--extra-probes",
+        default="",
+        help="Comma-separated key=probe_key pairs adding arms to PROBE_SOURCE, e.g. "
+        "'randb_lr=local_belief_baselines.random_belief_lr'. key is the short name the "
+        "per_token.csv columns use; probe_key is what eval_probe_per_token.py's probe_key() "
+        "gives that .pt ('<parent dir>.<stem>', with next_action_probe_ stripped). Empty by "
+        "default so existing outputs are unchanged.",
+    )
+    ap.add_argument(
+        "--extra-probes-rowset",
+        default="p2",
+        help="Rowset the --extra-probes are appended to (default p2: every rowset holds "
+        "identical rows here, and p2 is the one whose figures carry the label contrast).",
+    )
     ap.add_argument("--mass-tol", type=float, default=1e-6, help="max |probe CSV mass - commitment CSV mass|.")
     ap.add_argument("--limit", type=int, default=None, help="first N trajectories (smoke test).")
     args = ap.parse_args()
+
+    for pair in (t.strip() for t in args.extra_probes.split(",") if t.strip()):
+        key, sep, src = pair.partition("=")
+        if not sep or not key or not src:
+            raise SystemExit(f"--extra-probes entry {pair!r} is not key=probe_key")
+        if key in PROBE_SOURCE:
+            raise SystemExit(f"--extra-probes key {key!r} already exists; keys must be unique")
+        if args.extra_probes_rowset not in ROWSETS:
+            raise SystemExit(f"unknown --extra-probes-rowset {args.extra_probes_rowset!r}")
+        PROBE_SOURCE[key] = src
+        ROWSETS[args.extra_probes_rowset].append(key)
+    if args.extra_probes:
+        print(f"{len(PROBE_SOURCE)} probe(s) after --extra-probes: {', '.join(PROBE_SOURCE)}", flush=True)
 
     wanted = list(ROWSETS) if args.rowsets == "all" else args.rowsets.split(",")
     unknown = [r for r in wanted if r not in ROWSETS]
