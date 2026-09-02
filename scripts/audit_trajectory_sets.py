@@ -70,10 +70,23 @@ def main() -> int:
         names = set(s["name"].dropna().unique())
         print(f"{tag:<58} n={len(names):<5} {classify(names, ref)}")
 
+    def from_files(tag: str, folder: pathlib.Path, pattern: str = "*.json") -> None:
+        """Trajectory names taken from filenames, for artifacts that are one file per trajectory."""
+        if not folder.exists():
+            print(f"{tag:<58} MISSING {folder}")
+            return
+        names = {f.stem for f in folder.glob(pattern)}
+        print(f"{tag:<58} n={len(names):<5} {classify(names, ref)}")
+
     from_csv("loudness/  (entry 42, 22 figures)", RT / "loudness/per_token.csv")
     from_csv("probe_vs_rollout/  (entries 39/40/41, 15 figures)", RT / "probe_vs_rollout/per_token.csv")
     from_csv("probe_vs_rollout/per_token_probs.csv  (entry 41)", RT / "probe_vs_rollout/per_token_probs.csv")
     from_csv("probe_loudness/  (entry 46, 20 figures)", RT / "probe_loudness/per_token.csv")
+    from_csv("probe_loudness_heldout360/  (entry 48, 20 figures)", RT / "probe_loudness_heldout360/per_token.csv")
+    from_files(
+        "rollout_strategies_heldout360/every_token  (entry 48)",
+        RT / "rollout_strategies_heldout360/every_token",
+    )
     from_csv("probes/heldout360_all_probes.csv  (entry 38)", PROBES / "heldout360_all_probes.csv")
     from_csv(
         "probes/.../heldout360_per_token.csv  (entry 37)", PROBES / "next_action_mass_l15/heldout360_per_token.csv"

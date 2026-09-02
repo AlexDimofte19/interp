@@ -2873,3 +2873,172 @@ csv either, and that is what makes the direction number mean anything.
 	    python scripts/merge_probe_rollout_arms.py --extra <that csv> --out <clone>/per_token.csv
 	    python scripts/analyze_probe_rollout.py --per-token <clone>/per_token.csv \
 	        --out-dir <clone> --headline-extra local_belief.p1_mlp,local_belief.p2_mlp
+
+48. WHAT LOUDNESS BUYS THE PROBE, WITH THE SELECTION REMOVED (2026-09-02)
+
+	Entry 46 asked whether a LOUDER token decodes better. It answered on the eval-720
+	split and -- the limitation this entry removes -- it read each probe only on the
+	tokens that probe's own jlens selection had picked (37,218 rows, three DISJOINT
+	rowsets). Inside a fixed top-K arm the loudness axis is truncated by construction,
+	which is exactly why 46(b) needed a chain-length control. This re-runs the whole
+	page on the HELD-OUT 360 and on EVERY reasoning token of it -- 87,221 rows, all ten
+	probes read on the IDENTICAL rows. Entry 46's directory is untouched (md5 verified).
+
+	  scripts/inference_oss/truncation_strategies.py   <- 4th strategy: every_token
+	  scripts/inference_oss/run_inference.py           <- --stride
+	  scripts/inference_oss/run_inference_strategies.sh<- STRIDE, UV_EXTRAS
+	  scripts/build_probe_loudness_heldout.py          <- new: the held-out builder
+	  tests/test_truncation_strategies.py              <- 6 new cases (17 total)
+
+	*** THE SET IS heldout 360 ***, disjoint from train 2880 and eval 720
+	(audit_trajectory_sets.py: (train u eval) n heldout360 = 0). See the dataset audit
+	in claude_session_readme.md; do not mix the three sets.
+
+	THE NEW MEASUREMENT. A per-token belief label needs the chain cut at EVERY token,
+	and only the selected cutoffs had ever been run. Entry 43 named a dense strategy and
+	never built it; this is it. `every_token` subclasses LoudnessStrategy for the
+	sentence-placement plumbing but sets needs_loudness=False -- loudness is RECORDED per
+	cutoff, never used to select -- so the class attribute was split in two:
+	`uses_loudness` decides whether build_strategy wires a mass table, `needs_loudness`
+	whether a missing one is fatal. 360 trajectories, 87,581 cutoff-evals, 6h13m on one
+	Blackwell, exit 0, zero OOMs. So label_local here is a MEASURED belief at the token
+	itself, not a sentence-end answer standing in for one.
+
+	THE CHECKS THAT MAKE IT READABLE:
+	  - the strategy's cutoff positions == the 87,221 token_idx of
+	    probe_vs_rollout/per_token.csv EXACTLY, per (name, step), 0 mismatches. The
+	    join is therefore 1:1 by construction, not by luck.
+	  - the 4 final-action columns reproduce probe_vs_rollout's and both local-belief
+	    MLPs reproduce probe_vs_rollout_lb's, ROW FOR ROW: 0 mismatches in 87,221, and
+	    the probe .pt files are md5-identical to the ones entry 47 scored.
+	  - loudness agrees between the two artifacts to 1e-6, 0 mismatches; 0 rows dropped.
+	  - per_token.csv header BYTE-IDENTICAL to entry 46's, and the 20 plot / 18 table
+	    filenames identical, so analyze_ and plot_probe_loudness.py ran UNEDITED.
+
+	LEVELS ARE NOT COMPARABLE WITH ENTRY 46 and must not be quoted against it. P2-mlp
+	scored .860 on its own 14,391 selected tokens and scores .524 here on all 87,221;
+	the difference is the selection, since ~9 tokens in 10 of a chain are quiet ones the
+	lens would never have picked. What carries across is the SHAPE.
+
+	(a) LOUDER DECODES BETTER, AND NOW PERFECTLY, FOR ALL TEN PROBES. Zero reversals and
+	Spearman 1.00 in every row, deltas +.199 to +.358 from quietest to loudest decile
+	(deciles are 8,722 rows each, mean log-mass -5.31 to -1.12):
+
+	    probe                 trained   d1     d10    delta
+	    P1 all        mlp     local    .425   .725   +.300
+	    P1 top-20     mlp     local    .393   .712   +.319
+	    P2 global     mlp     local    .399   .757   +.358
+	    baseline      mlp     final    .343   .633   +.290
+	    random ctrl   mlp     final    .388   .622   +.233
+
+	Entry 46 had P2-mlp at +.116 (Spearman -.03) and the BASELINE at +.005 with Spearman
+	-.56 -- a curve that looked flat-to-falling. That was an artifact of reading each
+	probe on a top-K selection. Given the full axis the same weights give a clean
+	gradient. It is not confined to the belief label either: against the FINAL action
+	P1-mlp moves .300 -> .574 across the same deciles.
+
+	(b) THE CHAIN-LENGTH CONFOUND WAS THE SELECTION. corr(dir_logmass,
+	n_reasoning_tokens) = -0.010 here against +0.42 for P2 in entry 46. Nothing left to
+	control for. The control is still worth running as the sharper test, and it passes
+	for every probe in every quartile (quartile means 123/368/738/1536 tokens):
+
+	    P2       mlp  +.283 +.264 +.220 +.075
+	    baseline mlp  +.254 +.203 +.182 +.064
+	    random   mlp  +.189 +.174 +.145 +.081
+	    P1       mlp  +.237 +.209 +.182 +.093
+
+	*** A RESULT FROM ENTRY 46 THAT DOES NOT SURVIVE. *** 46(b) reported that with chain
+	length fixed, loudness bought the belief probe +.151/+.022/+.076/+.111 but bought the
+	final-action baseline +.121/-.014/-.003/-.015 -- "nothing at all outside the shortest
+	chains" -- and concluded loudness is state information an ending-trained probe cannot
+	cash in. On all tokens that differential is NOT there: the baseline gains in all four
+	quartiles and the belief probe's margin over it is .029/.061/.038/.011. Loudness
+	still buys the belief probe most, but the strong form of the claim was a reading of
+	four numbers inside a truncated axis. What loudness marks is a residual that is more
+	decodable FOR EITHER QUESTION, somewhat more so for the belief.
+
+	(c) IT IS THE LOUDNESS, NOT THE POSITION -- and by more than before. Both axes are
+	now complete (mean sentence_frac is exactly .500, not the .42 band a selection sits
+	in). Range across loudness at fixed position vs across position at fixed loudness:
+	P1-mlp .189/.016 = 11.5x, P2-mlp .221/.027 = 8.3x, baseline-mlp .184/.011 = 17.1x,
+	random-mlp .158/.015 = 10.3x -- 7-17x against entry 46's 2.5-3x. The position axis is
+	FLAT: P1-mlp over ten within-sentence deciles reads .535 .545 .549 .516 .541 .513
+	.527 .515 .472 .549, no ordering at all, while the same probe over loudness deciles
+	runs .425 -> .725 monotonically.
+
+	(d) VERBALIZATION IS NOT THE MECHANISM, now for the controls too. Direction words are
+	5,401 of 87,221 (6.19%), mean log-mass -1.33 scoring .738 (P1-mlp) against -3.51 and
+	.514 for the other 81,820; they are 44.3% of the loudest decile and 0.0% of the two
+	quietest. Drop them and re-cut: P1 .422->.656 (+.233), P1t20 .391->.638 (+.246),
+	P2 .397->.704 (+.307), BASELINE .341->.591 (+.249), RANDOM .388->.575 (+.187). All
+	ten keep at least three quarters of their gradient.
+
+	(e) ACROSS THE COMMITMENT BOUNDARY THE TWO LABELS STILL COME APART -- the finding that
+	survives most intact. Before the boundary the belief probes read the belief at
+	.52-.56 and the ending at .22-.32 (at or below chance); after it the labels converge
+	to within a point or two, as the agreement share goes .18 (rel -1), .53 (convinced),
+	.93, .98, .99. The baseline still flips: .413 local / .355 final at rel -1, then
+	.491 / .537 AT the convinced sentence -- one sentence later than on the selected set,
+	same behaviour. convinced_idx is inherited from the sentence-level eos rollout, not
+	recomputed on the dense grid.
+
+	(f) THE CROSSOVER IS REAL BUT WEAKER, AND ONLY ONE CONTROL CROSSES. On the 26,975
+	disagreement rows (30.9% of the set, against 19% in entry 46 -- the unselected set is
+	full of pre-commitment tokens), quietest -> loudest decile:
+
+	    probe                 -> local        -> final
+	    P2 belief    mlp    .438 -> .701    .193 -> .158
+	    P1 belief    mlp    .458 -> .667    .172 -> .165
+	    baseline     mlp    .308 -> .487    .246 -> .297
+	    random ctrl  mlp    .289 -> .499    .322 -> .260
+
+	The RANDOM control reverses: it prefers the ending at the quietest tokens
+	(.322 vs .289) and the belief at the loudest (.499 vs .260). The BASELINE does not --
+	it prefers the belief at both ends, so on this set it never was an ending-reader.
+	Entry 46 had it crossing .308/.574 -> .453/.368 on 2,730 selected rows; that does not
+	reproduce on the full 26,975. THE CLAIM THAT SURVIVES is the trend, and it holds for
+	every probe: louder tokens pull every prediction toward the current belief and away
+	from the eventual answer, whatever it was trained on. The stronger reading -- a
+	complete inversion in an ending-trained probe -- now rests on the random control alone.
+
+	(g) THE THREE ROWSETS NOW HOLD IDENTICAL ROWS and differ only in which probes are
+	scored. They are kept as a presentational device so every entry-46 figure has a direct
+	counterpart, which is why loudness_distribution.png shows three coincident curves. It
+	doubles as a check on the held-out split: its mean log-mass -3.373 / median -3.482 /
+	6.19% direction words against entry 42's all-token reference -3.368 / -3.469 / 6.32%,
+	mean percentile .497.
+
+	LANDMINE. The commitment-boundary CSV's `sentence_frac` is sentence_idx/n_sentences;
+	entry 46's `sentence_frac` (WITHIN-sentence position) is that file's
+	`frac_in_sentence`. Confusing them does not fail, it silently destroys result (c).
+	Verified: frac_in_sentence == pos_in_sentence/(sentence_len-1) on all 87,221 rows.
+	Also: `abs_pos` in these CSVs is PROMPT-INCLUSIVE; the output_tokens index -- the one
+	the rollout's eos_token_pos and entry 46's token_id use -- is `token_idx`.
+
+	CAVEATS: layer 15 only. The +-k proximity window of 42(e) is now the ONLY one of the
+	three confounds still open. Every probe is read off its own selection distribution, so
+	entry 37(d)'s shift applies to all ten now, not just the random control. "Local
+	belief" still inherits run_inference.py's definition; 1 eval in 87,581 returned no
+	valid action ("NO") and its row is kept with a blank label and excluded from every
+	recall. Rollout labels carry RUN_STATE.md's noise floor (no_reasoning 80% same action,
+	mean |dp| .105). n_switches is now counted per TOKEN, so it is not comparable with
+	entry 46's per-sentence count.
+
+	ARTIFACTS: /workspace/reasoning_theatre/probe_loudness_heldout360/ (per_token.csv
+	261,663 rows = 3 x 87,221, plots/ 20 figures, tables/ 18 CSVs, summary.json,
+	heldout360_10probes.csv, report.html) and
+	/workspace/reasoning_theatre/rollout_strategies_heldout360/every_token/ (360 JSONs,
+	87,581 cutoff-evals). Report NOT yet published as an artifact -- the publish was
+	blocked by the session's permission classifier; the page is complete on disk.
+
+	    NAMES_FILE=/workspace/trajectories/heldout360_names.txt \
+	    TRAJECTORIES=/workspace/trajectories/heldout360 \
+	    LENS_ROOT=/workspace/activations/heldout360_lens \
+	    OUT_ROOT=/workspace/reasoning_theatre/rollout_strategies_heldout360 \
+	      bash scripts/inference_oss/run_inference_strategies.sh every_token   # 6h13m
+	    python scripts/eval_probe_per_token.py --probe ...x10 \
+	        --activations-dir /workspace/activations/heldout360_l15 \
+	        --lens-dir /workspace/activations/heldout360_lens --layer 15 --full-probs  # 1h40m
+	    python scripts/build_probe_loudness_heldout.py
+	    python scripts/analyze_probe_loudness.py --per-token <out>/per_token.csv --out <out>
+	    python scripts/plot_probe_loudness.py    --per-token <out>/per_token.csv --out <out>/plots

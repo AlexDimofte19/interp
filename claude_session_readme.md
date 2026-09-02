@@ -796,7 +796,9 @@ Three canonical trajectory sets, verified mutually disjoint (`train ∩ eval = 0
 | `loudness/` — *Where the Lens Is Loud* (entry 42), 22 figures | **training 2,880** |
 | `probe_vs_rollout/` — *The Commitment Boundary* (39/40/41), 15 figures | **heldout 360** |
 | `probe_loudness/` — *What Loudness Buys the Probe* (entry 46), 20 figures | **eval 720** |
-| ↳ its grey "every reasoning token" reference series only | training 2,880 |
+| `probe_loudness_heldout360/` — the same page, all tokens (entry 48), 20 figures | **heldout 360** |
+| `rollout_strategies_heldout360/every_token/` — the dense rollout (entry 48) | **heldout 360** |
+| ↳ the grey "every reasoning token" reference series in both, only | training 2,880 |
 | `probes/next_action_mass_l15/heldout360_per_token.csv` (entry 37) | **heldout 360** |
 | `probes/heldout360_all_probes.csv` (entry 38) | **heldout 360** |
 | entry 45 local-belief probe results (the `.862` headline) | **eval 720** |
@@ -879,3 +881,58 @@ python scripts/analyze_probe_rollout.py --per-token .../probe_vs_rollout_lb/per_
 - **⚠️ `HEADLINE` is not to be edited.** Its own comment records that it drifted from
   `plot_probe_rollout.py` once and the report mixed two arms. Use `--headline-extra`, which
   defaults to empty so existing outputs stay byte-identical, and clone rather than edit.
+
+---
+
+## What loudness buys the probe, with the selection removed (log entry 48)
+
+**One line:** entry 46 re-run on the **heldout 360** and on **every** reasoning token of it
+(87,221, not 37,218 selected), so all ten probes are read on the identical rows and the
+loudness axis is not truncated by a top-*K* selection. `probe_loudness/` is untouched (md5
+verified).
+
+Report: `/workspace/reasoning_theatre/probe_loudness_heldout360/report.html` — **not yet
+published as an artifact**; the publish was blocked by a session permission classifier.
+
+```bash
+# 1. the new dense rollout: cut at EVERY token, ask for the action  (6h13m, 87,581 evals)
+NAMES_FILE=/workspace/trajectories/heldout360_names.txt \
+TRAJECTORIES=/workspace/trajectories/heldout360 \
+LENS_ROOT=/workspace/activations/heldout360_lens \
+OUT_ROOT=/workspace/reasoning_theatre/rollout_strategies_heldout360 \
+  bash scripts/inference_oss/run_inference_strategies.sh every_token
+# 2. all ten probes in one pass                                      (1h40m)
+python scripts/eval_probe_per_token.py --probe ...x10 --full-probs ...
+# 3. join -> entry 46's exact schema, then analyze/plot UNEDITED
+python scripts/build_probe_loudness_heldout.py
+python scripts/analyze_probe_loudness.py --per-token <out>/per_token.csv --out <out>
+python scripts/plot_probe_loudness.py    --per-token <out>/per_token.csv --out <out>/plots
+```
+
+**`every_token` is the 4th truncation strategy**, the dense grid entry 43 named and never
+built. It subclasses `LoudnessStrategy` for the sentence-placement plumbing but sets
+`needs_loudness = False`: loudness is *recorded* per cutoff, never used to select. That
+forced the class attribute apart — `uses_loudness` decides whether `build_strategy` wires a
+mass table, `needs_loudness` whether a missing one is fatal. `--stride` thins the grid for a
+run that cannot afford the dense one.
+
+**Two coordinate traps, both now guarded and both silent if you get them wrong:**
+
+- `abs_pos` in these CSVs is **prompt-inclusive**. The `output_tokens` index — what the
+  rollout's `eos_token_pos` and entry 46's `token_id` mean — is **`token_idx`**. Joining on
+  `abs_pos` against a rollout gives an empty or wrong join, not an error.
+- entry 46's `sentence_frac` (position *within* a sentence) is the commitment-boundary CSV's
+  **`frac_in_sentence`**. That file's own `sentence_frac` is `sentence_idx / n_sentences`, a
+  different quantity. Reading the wrong one silently destroys the loudness-vs-position
+  control, which is the entry's result (c).
+
+**What changed in the findings.** Loudness monotonicity is now *perfect* for all ten probes
+(0 reversals, Spearman 1.00, +.199 to +.358) where entry 46 had the baseline at +.005 with
+Spearman −.56. The chain-length confound is gone (`r = −0.010`, was `+0.42`) — it was a
+property of top-*K* selection. Two of entry 46's stronger claims do **not** reproduce: the
+belief/ending differential under the chain-length control, and the baseline's crossover.
+Levels are not comparable between the two pages; only shapes are.
+
+**A fresh worktree venv needs the `gpu` extra** to run anything that loads gpt-oss-20b —
+`accelerate` is not in the default dependencies. `run_inference_strategies.sh` now passes
+`--extra gpu` by default (`UV_EXTRAS` overrides).
