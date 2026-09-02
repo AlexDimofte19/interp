@@ -65,10 +65,16 @@ fi
 
 # ---- 2. the three rollout arms ---------------------------------------------------------
 printf "2. rollout arms       %-6s\n" "$(state run_inference.py "$ARMS_ROOT")"
+# The two logitlens arms REUSE the jlens strategy names -- the strategy is "cut at each
+# sentence's loudest token", the lens that defines loudness is a separate flag -- so the
+# arm's directory says jlens while holding logitlens results. Print the lens each arm was
+# actually run with, read from its own log header, so the name cannot mislead.
 for a in recorded_selection jlens_argmax_per_sentence jlens_top_k_global; do
     n=$(count_json "$ARMS_ROOT/$a")
     al=$(ls -1t "$ARMS_ROOT/$a"/logs/run_*.txt 2>/dev/null | head -1)
-    printf "  ..%-26s %5s/%s  errors=%s\n" "$a" "$n" "$EXPECTED" "$(errs "$al")"
+    lens=$(sed -n 's/.*[[:space:]]lens=\([a-z]*\).*/\1/p' "$al" 2>/dev/null | head -1)
+    printf "  ..%-26s %5s/%s  lens=%-9s errors=%s\n" \
+        "$a" "$n" "$EXPECTED" "${lens:-?}" "$(errs "$al")"
 done
 
 # ---- 3. the logitlens-P1 activation gather ---------------------------------------------
