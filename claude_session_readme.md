@@ -6,8 +6,10 @@ while that was the working branch, so read "on `reasoning_theatre`" below as "be
 worktree".
 
 **Newest first, if you only read one thing:** the file is append-only and chronological, so
-the last section is the current state. As of 2026-09-02 that is *What loudness buys the probe,
-with the selection removed* (log entry 48): entry 46 re-run on the **heldout 360** over every
+the last section is the current state. As of 2026-09-02 that is *Three more baselines for the
+heldout-360 loudness page* (log entry 49) -- **in flight**, three rollout arms running, with
+the commands, the artifact paths and the open items in that section. Before it: *What loudness
+buys the probe, with the selection removed* (log entry 48): entry 46 re-run on the **heldout 360** over every
 reasoning token, with a new dense `every_token` rollout arm behind it. Before it: *the
 commitment boundary re-read by the belief-trained probes* (entry 47), *probe loudness*
 (entry 46), *the local-belief probes* (entry 45), *the truncation-strategy arms* (entries
