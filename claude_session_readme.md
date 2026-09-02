@@ -953,3 +953,90 @@ Levels are not comparable between the two pages; only shapes are.
 **A fresh worktree venv needs the `gpu` extra** to run anything that loads gpt-oss-20b —
 `accelerate` is not in the default dependencies. `run_inference_strategies.sh` now passes
 `--extra gpu` by default (`UV_EXTRAS` overrides).
+
+---
+
+## Three more baselines for the heldout-360 loudness page (in flight, log entry 49)
+
+**One line:** entry 48's ten probes confound the LABEL axis with the SELECTION axis — every
+local-belief probe was selected by the jlens, and the only non-jlens selection (`random`)
+exists only with the final-action label. Three new arms cross the two, so the rebuilt page
+reads **sixteen** probes on the identical 87,221 heldout-360 tokens.
+
+| new arm | tokens | label |
+| --- | --- | --- |
+| `random_belief` | the existing `random` control's recorded picks | local belief |
+| `logitlens_p1` | each sentence's loudest token **by logit lens** | local belief |
+| `logitlens_p2` | the 20 globally loudest **by logit lens** | local belief |
+
+### Run it (three recorded invocations, in order)
+
+```bash
+# step 1 (DONE): the logitlens mass tree, pinned by name to the jlens tree's 3600
+LENS=logitlens SELECT_METHODS=logitlens \
+ACTIVATIONS_DIR=/workspace/activations/logitlens_mass_l15 \
+NAMES_FILE=/workspace/reasoning_theatre/rollout_strategies/mass_l15_names.txt \
+  bash scripts/jlens_mass_l15.sh                  # 1h55m, 3600/3600, exit 0
+
+bash scripts/entry49_baseline_arms.sh             # step 2, the three rollout arms
+bash scripts/entry49_baseline_probes.sh           # steps 3-4, gather/relabel/split/train
+bash scripts/entry49_baseline_report.sh           # steps 5-6, score 16 + rebuild the page
+
+watch -n 1 ./scripts/entry49_status.sh            # one line per stage, counts against 3600
+```
+
+`entry49_baseline_report.sh` is deliberately **not** chained: read each arm's eval-720
+balanced accuracy beside entry 45's table first, because scoring 16 probes over the heldout
+360 costs ~2 h of GPU and the fix for a bad number is upstream.
+
+### Two things that are easy to get wrong here
+
+- **`recorded_selection` replays, it never re-draws.** The random arm has to cut at the tokens
+  the *existing* random probe trained on, or the pair stops isolating the label. That seeded
+  draw was taken before the tree was pruned and cannot be made again, so the strategy reads
+  `arms.random.picks` out of `{stem}_jlens_selection.json`. Checked over 600 trajectories /
+  11,979 picks: every recorded position is cut, 0 missed. 1.38% of picks land on the
+  `end_of_reasoning` endpoint and keep *that* `cutoff_kind` (`_dedupe`, so the same prompt is
+  never run twice) — no label is lost, since `relabel_manifest_from_rollout.py` joins on
+  `(name, step, eos_token_pos)` and only records the kind.
+- **The two logitlens arms reuse the jlens STRATEGY NAMES.** The strategy is "cut at each
+  sentence's loudest token"; the lens is a separate flag. So they run as
+  `jlens_argmax_per_sentence` / `jlens_top_k_global` with `LENS=logitlens` and land in
+  directories with those names under `rollout_strategies_baselines/`. Every result file records
+  `strategy.lens`, and `entry49_status.sh` prints it per arm. Nothing overwrites entry 43/44's
+  jlens arms: those are under `rollout_strategies/` and still carry their September-1 mtimes.
+
+### Where the artifacts go
+
+```
+/workspace/activations/logitlens_mass_l15                 step 1 (3600, verified)
+/workspace/activations/logitlens_argmax_per_sentence_l15  step 3
+/workspace/reasoning_theatre/rollout_strategies_baselines step 2, three arms
+/workspace/prepared/entry49_*                             step 4
+/workspace/probes/local_belief_baselines/                 six probes
+/workspace/reasoning_theatre/probe_loudness_heldout360_16probes/   the clone
+/workspace/logs/entry49/                                  logs + the chain scripts
+```
+
+Entry 48's `probe_loudness_heldout360/` is **untouched**: the report scripts gained an
+`--extra-probes` flag defaulting to empty (entry 47's convention), so re-running any of them
+against entry 48's inputs is byte-identical.
+
+### Verified so far
+
+- step 1: 3600 folders covering the names file exactly (0 missing, 0 extra); over 300 sampled
+  records every mass table has a `.meta.json` (logitlens, 446 tokens), one `logitlens` arm at
+  layer 15 only, `logprob_mass_full`.
+- arm 1, first 24 trajectories / 517 cutoffs, 0 null labels — `model_action` == the step's
+  action at `end_of_reasoning` **1.000**, at the recorded tokens .842, at `no_reasoning` .375.
+  The 1.000 is the anchor; .375 sits just above the .25 chance floor with the reasoning gone.
+
+### Still open
+
+- **`--names-file` on `jlens_reasoning_tokens.py` is UNCOMMITTED**, together with the
+  `has_work()` guard that turns an empty trajectory list into an error instead of an
+  `IndexError`, and its three tests. Both files also carry ~959 and ~220 lines of *older*
+  uncommitted working state, so committing them lands that too — left for a human to decide.
+  Everything else of entry 49 is committed and pushed on `worktree-probe-loudness`.
+- The two logitlens arm directories are named `jlens_*`. A rename is a `mv` plus one path in
+  `entry49_baseline_probes.sh`; not done, to avoid touching a running arm.
