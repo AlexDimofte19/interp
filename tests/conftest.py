@@ -85,8 +85,22 @@ class _StubModel(torch.nn.Module):
 
 
 class _StubTokenizer:
+    """Decodes id N to "<N>" and encodes that back, so the round trip is exact.
+
+    `resolve_direction_ids` keeps a direction string only when it encodes to one token that
+    decodes back to it -- the direction-mass table gathers logit *columns*, so a string
+    without a single unambiguous id has no column to gather. Anything not of the form "<N>"
+    encodes to two tokens here and is therefore dropped, which is the case worth having a
+    stub for.
+    """
+
     def decode(self, ids):
         return f"<{ids[0]}>"
+
+    def encode(self, text, add_special_tokens=False):
+        if text.startswith("<") and text.endswith(">") and text[1:-1].isdigit():
+            return [int(text[1:-1])]
+        return [0, 0]
 
 
 def _token(token_id: int, groups=()):
@@ -103,13 +117,15 @@ def _trajectory(step_output_lengths):
     for step_id, n_out in enumerate(step_output_lengths):
         output = [_token(20 + i, ["analysis"]) for i in range(n_out)]
         output.append(_token(40, ["final", "action"]))  # not a reasoning token
-        steps.append({
-            "step_id": step_id,
-            "agent_action": ["UP", "DOWN", "LEFT"][step_id % 3],
-            # grid width varies with the step so output_start differs too
-            "grid_state_tokens": [_token(50 + j) for j in range(2 + step_id)],
-            "output_tokens": output,
-        })
+        steps.append(
+            {
+                "step_id": step_id,
+                "agent_action": ["UP", "DOWN", "LEFT"][step_id % 3],
+                # grid width varies with the step so output_start differs too
+                "grid_state_tokens": [_token(50 + j) for j in range(2 + step_id)],
+                "output_tokens": output,
+            }
+        )
     return {
         "model_params": {"model_id": "stub/model"},
         "grid_params": {},
@@ -141,7 +157,8 @@ def env(tmp_path, monkeypatch):
     import transformers
 
     monkeypatch.setattr(
-        transformers.AutoModelForCausalLM, "from_pretrained",
+        transformers.AutoModelForCausalLM,
+        "from_pretrained",
         classmethod(lambda cls, *a, **k: _StubModel()),
     )
     sampled = importlib.import_module("scripts.jlens_action_ranks_sampled")
@@ -161,13 +178,20 @@ def _run(env, out_name, *extra):
     out = env["tmp"] / out_name
     argv = [
         "jlens_reasoning_tokens.py",
-        "--trajectory-paths", str(env["traj_path"]),
-        "--jlens_dir", str(env["jlens_dir"]),
-        "--activations-dir", str(out),
-        "--layers", "19:23",
-        "--steps", "all",
-        "--device", "cpu",
-        "--torch-dtype", "float32",
+        "--trajectory-paths",
+        str(env["traj_path"]),
+        "--jlens_dir",
+        str(env["jlens_dir"]),
+        "--activations-dir",
+        str(out),
+        "--layers",
+        "19:23",
+        "--steps",
+        "all",
+        "--device",
+        "cpu",
+        "--torch-dtype",
+        "float32",
         *extra,
     ]
     old = sys.argv
@@ -187,12 +211,16 @@ def signal_json(env):
     deterministic, which is all the filter needs to be tested against.
     """
     path = env["tmp"] / "signal.json"
-    path.write_text(json.dumps({
-        "UP": [f"<{i}>" for i in range(0, 8)],
-        "DOWN": [f"<{i}>" for i in range(8, 16)],
-        "LEFT": [f"<{i}>" for i in range(16, 24)],
-        "RIGHT": [f"<{i}>" for i in range(24, 32)],
-    }))
+    path.write_text(
+        json.dumps(
+            {
+                "UP": [f"<{i}>" for i in range(0, 8)],
+                "DOWN": [f"<{i}>" for i in range(8, 16)],
+                "LEFT": [f"<{i}>" for i in range(16, 24)],
+                "RIGHT": [f"<{i}>" for i in range(24, 32)],
+            }
+        )
+    )
     return path
 
 

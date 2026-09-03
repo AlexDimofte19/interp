@@ -25,18 +25,22 @@ from pathlib import Path
 
 from telos_interp.jlens_utils import (
     DEFAULT_JLENS_CSV_SUFFIX,
+    DEFAULT_SCORE,
     DIRECTION_CLASSES,
     METHODS,
     TokenScore,
-    analysis_csv_path,
+    get_score,
     jlens_csv_path,
     load_direction_tokens,
     output_start,
     rank_layers_by_direction,
     rank_tokens,
     read_direction_counts,
+    read_direction_scores,
     read_selection_record,
     record_path,
+    score_artifact_path,
+    score_names,
     scored_methods,
     step_folder_index,
 )
@@ -45,6 +49,7 @@ from telos_interp.jlens_utils import (
 # these from here.
 __all__ = [
     "DEFAULT_JLENS_CSV_SUFFIX",
+    "DEFAULT_SCORE",
     "DIRECTION_CLASSES",
     "RECORDED_SELECTIONS",
     "SCORED_SELECTIONS",
@@ -56,6 +61,7 @@ __all__ = [
     "load_direction_tokens",
     "output_start",
     "read_direction_counts",
+    "score_names",
     "select_token_layer_pairs",
     "step_folder_index",
 ]
@@ -95,6 +101,10 @@ class SelectionConfig:
     # Kept for the manifest's provenance record; `direction_tokens` is what is used.
     direction_tokens_path: str | None = None
     direction_classes: str = "all"
+    # Which `jlens_utils.scoring` mode turns a row's direction hits into a number. Only
+    # consulted by the modes that re-score a CSV: a `recorded_*` selection takes the score
+    # the pruning run computed, which is fixed on disk and recorded in the arm's config.
+    direction_score: str = DEFAULT_SCORE
 
     @property
     def is_default(self) -> bool:
@@ -124,6 +134,7 @@ class SelectionConfig:
             "num_layers": self.num_layers,
             "direction_tokens_path": self.direction_tokens_path,
             "direction_classes": self.direction_classes,
+            "direction_score": self.direction_score,
             "num_direction_tokens": len(self.direction_tokens) if self.direction_tokens else None,
             "jlens_top_k": self.jlens_top_k,
             "seed": self.seed,
@@ -139,16 +150,20 @@ class SampleRef:
     token_idx: int  # output-relative index, i.e. the .pt filename
     path: Path
     token: str = ""
-    direction_count: int | None = None  # token score summed over candidate layers
-    layer_direction_count: int | None = None  # score at this layer alone
+    # The token's direction score, under the manifest's `direction_score` mode -- a count,
+    # or a (negative) logprob. Higher is better in every mode, which is what lets every
+    # ranker downstream sort by `-score` without knowing which mode produced it.
+    direction_count: float | None = None  # token score aggregated over candidate layers
+    layer_direction_count: float | None = None  # score at this layer alone
 
 
 def _pick_layers(
-    token_layers: dict[int, int],
+    token_layers: dict[int, float],
     candidate_layers: list[int],
     layer_selection: LayerSelection,
     num_layers: int | None,
     rng: random.Random,
+    score_mode: str = DEFAULT_SCORE,
 ) -> list[int]:
     """Choose which layers of one token become samples."""
     if layer_selection == "spec" or num_layers is None:
@@ -158,7 +173,7 @@ def _pick_layers(
             return list(candidate_layers)
         return sorted(rng.sample(candidate_layers, num_layers))
     if layer_selection in SCORED_SELECTIONS:
-        return sorted(rank_layers_by_direction(token_layers, candidate_layers)[:num_layers])
+        return sorted(rank_layers_by_direction(token_layers, candidate_layers, score_mode)[:num_layers])
     raise ValueError(f"Unknown layer_selection: {layer_selection}")
 
 
@@ -199,7 +214,16 @@ def _select_from_record(
 
     # An explicit num_tokens caps the arm to its top-K. The record is written in rank order
     # for the jlens arm, but sort defensively rather than trusting the file's order.
-    picks = sorted(arm.values(), key=lambda p: (-(p.direction_count or 0), p.step, p.pos))
+    # A pick with no score is a control arm's; it sorts to the bottom rather than to the top,
+    # which `-(x or 0)` would do under a logprob score where 0 is the maximum.
+    picks = sorted(
+        arm.values(),
+        key=lambda p: (
+            -(p.direction_count if p.direction_count is not None else get_score(p.score_mode).empty),
+            p.step,
+            p.pos,
+        ),
+    )
     if selection.num_tokens is not None:
         picks = picks[: selection.num_tokens]
 
@@ -281,12 +305,19 @@ def select_token_layer_pairs(
     if scoring_method is not None:
         if selection.direction_tokens is None:
             raise ValueError(f"direction_tokens is required when a '{scoring_method}' mode is used")
-        csv_path = analysis_csv_path(trajectory_folder, scoring_method)
+        # Which artifact -- the analysis CSV, or the direction-mass table -- is the score's
+        # to decide, not this function's.
+        csv_path = score_artifact_path(trajectory_folder, scoring_method, selection.direction_score)
         if csv_path is None or not csv_path.exists():
             if verbose:
-                print(f"  Skipped: no {scoring_method} CSV at {csv_path}")
+                print(f"  Skipped: no {scoring_method} {selection.direction_score} artifact at {csv_path}")
             return [], 0
-        scores = read_direction_counts(csv_path, selection.direction_tokens, top_k=selection.jlens_top_k)
+        scores = read_direction_scores(
+            csv_path,
+            selection.direction_tokens,
+            top_k=selection.jlens_top_k,
+            score_mode=selection.direction_score,
+        )
 
     # The CSV is keyed by (csv step, abs_pos); re-key it onto the on-disk
     # (step folder, output-relative index) coordinates the .pt files use.
@@ -303,8 +334,9 @@ def select_token_layer_pairs(
     if selection.token_selection in SCORED_SELECTIONS:
         # rank_tokens is the same ordering jlens_utils.top_filter selects with, shared so a
         # prepared dataset and a pruned tree cannot disagree about which tokens rank highest.
-        candidates = rank_tokens({key: score for key, score in by_disk.items() if key[0] in step_set},
-                                 candidate_layers)
+        candidates = rank_tokens(
+            {key: score for key, score in by_disk.items() if key[0] in step_set}, candidate_layers
+        )
         if num_tokens is not None:
             if verbose and num_tokens > len(candidates):
                 print(f"  Only {len(candidates)} scored tokens available (asked for {num_tokens})")
@@ -328,7 +360,14 @@ def select_token_layer_pairs(
         token = score.token if score else ""
         total = score.total(candidate_layers) if score else None
         token_layers = score.per_layer if score else {}
-        for layer in _pick_layers(token_layers, candidate_layers, selection.layer_selection, num_layers, rng):
+        for layer in _pick_layers(
+            token_layers,
+            candidate_layers,
+            selection.layer_selection,
+            num_layers,
+            rng,
+            selection.direction_score,
+        ):
             path = model_folder / f"layer_{layer}" / f"step_{step_idx}" / "output" / f"{token_idx}.pt"
             if not path.exists():
                 missing += 1

@@ -126,7 +126,10 @@ has a fitted matrix for.
 
 Samples chosen through a `<lens>_direction` mode carry `token`, `direction_count` and
 `layer_direction_count` in the manifest for later analysis; the manifest also records the
-full selection under a `selection` key. Random draws are seeded per trajectory from `--seed`,
+full selection under a `selection` key. Those two numbers hold the score under the
+manifest's `direction_score` mode — a count, or a (negative) logprob — and higher is better
+in either, which is what lets `split_next_action_manifest.py` rank by them without knowing
+which mode ran. Random draws are seeded per trajectory from `--seed`,
 so a dataset is reproducible regardless of trajectory ordering. Each combination is a
 separate prepared dataset — the auto-generated directory name encodes it
 (e.g. `..._next_action_tokjl20_layjl3`, or `tokll20` for the logit lens — the abbreviation
@@ -196,6 +199,7 @@ In multi-size mode:
 | `num_layers` | int \| None | None | M for the non-"spec" `layer_selection` modes |
 | `direction_tokens_path` | str \| None | None | JSON of direction tokens; required by any `<lens>_direction` mode |
 | `direction_classes` | str | "all" | Which direction lists to count (e.g. "UP,DOWN") |
+| `direction_score` | str | "count" | How a token's direction evidence scores: "count", "logprob_mass", "logprob_sum" (all from the analysis CSV's top-k columns) or "logprob_mass_full" (from the wide direction-mass table, i.e. over the whole vocabulary rather than a top-20 window) — from `jlens_utils.SCORES`. Only the `<lens>_direction` modes use it; a `recorded_*` selection takes the score the pruning run computed and rejects the flag |
 | `jlens_top_k` | int | 20 | How many `top_i` columns of the jlens CSV to scan |
 
 ## Examples
@@ -467,7 +471,8 @@ references existing gathered files rather than copied ones:
     "token_selection": "jlens_direction", "layer_selection": "jlens_direction",
     "num_tokens": 20, "num_layers": 3,
     "direction_tokens_path": "/workspace/jlens/direction_tokens_full.json",
-    "direction_classes": "all", "num_direction_tokens": 539,
+    "direction_classes": "all", "direction_score": "logprob_mass",
+    "num_direction_tokens": 539,
     "jlens_top_k": 20, "seed": 42
   },
   "loading_spec": { /* ... */ },
@@ -479,8 +484,9 @@ references existing gathered files rather than copied ones:
       "label": 1,                               // action id (e.g. UP)
       "layer": 15, "step": 0, "token_id": 532, "category": "output",
       "token": "Ġleft",                         // jlens_direction modes only
-      "direction_count": 214,                   // token score summed over candidate layers
+      "direction_count": 214,                   // token score over the candidate layers
       "layer_direction_count": 12,              // score at this layer alone
+                                                // (units are selection.direction_score)
       "size": 11                                // multi-size only
     },
     ...

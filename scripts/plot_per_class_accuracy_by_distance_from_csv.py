@@ -164,17 +164,21 @@ def make_figure(df: pd.DataFrame, axis_name: str, by: str, out_path: Path, metri
         ax.set_facecolor(SURFACE)
         for cls in classes:
             dist_map = m.get(cls, {})
-            pts = sorted(
-                (dk, cm[metric]) for dk, cm in dist_map.items() if cm["gt_support"] > 0
-            )
+            pts = sorted((dk, cm[metric]) for dk, cm in dist_map.items() if cm["gt_support"] > 0)
             if not pts:
                 continue
             xs = [p[0] for p in pts]
             ys = [p[1] for p in pts]
             ax.plot(
-                xs, ys,
-                color=color_of[cls], marker=marker_of[cls], markersize=6, linewidth=2,
-                markeredgecolor=SURFACE, markeredgewidth=0.6, label=idx_to_symbol.get(cls, str(cls)),
+                xs,
+                ys,
+                color=color_of[cls],
+                marker=marker_of[cls],
+                markersize=6,
+                linewidth=2,
+                markeredgecolor=SURFACE,
+                markeredgewidth=0.6,
+                label=idx_to_symbol.get(cls, str(cls)),
             )
         ax.set_ylim(-0.03, 1.03)
         ax.set_xlim(-0.5, max_dist + 0.5)
@@ -196,7 +200,7 @@ def make_figure(df: pd.DataFrame, axis_name: str, by: str, out_path: Path, metri
             ax.set_xlabel(f"Distance to {axis_name} (Chebyshev)", color=INK)
         fig.supylabel(ylabel, color=INK, x=0.005)
     else:
-        for ax in list(axes.flat)[len(panels):]:
+        for ax in list(axes.flat)[len(panels) :]:
             ax.set_visible(False)
         for ax in axes[-1, :]:
             ax.set_xlabel(f"Distance to {axis_name} (Chebyshev)", color=INK)
@@ -205,17 +209,30 @@ def make_figure(df: pd.DataFrame, axis_name: str, by: str, out_path: Path, metri
 
     # One shared legend; identity is colour + marker, never colour alone.
     handles = [
-        Line2D([0], [0], color=color_of[c], marker=marker_of[c], markersize=7,
-               linewidth=2, markeredgecolor=SURFACE, label=idx_to_symbol.get(c, str(c)))
+        Line2D(
+            [0],
+            [0],
+            color=color_of[c],
+            marker=marker_of[c],
+            markersize=7,
+            linewidth=2,
+            markeredgecolor=SURFACE,
+            label=idx_to_symbol.get(c, str(c)),
+        )
         for c in classes
     ]
     fig.legend(
-        handles=handles, loc="lower center", ncol=len(classes),
-        frameon=False, title="Class", bbox_to_anchor=(0.5, -0.01),
+        handles=handles,
+        loc="lower center",
+        ncol=len(classes),
+        frameon=False,
+        title="Class",
+        bbox_to_anchor=(0.5, -0.01),
     )
     fig.suptitle(
         f"Per-class probe {metric} vs distance to {axis_name}, by {BY_TO_TITLE[by]}",
-        color=INK, fontsize=15,
+        color=INK,
+        fontsize=15,
     )
     fig.tight_layout(rect=(0.04 if by == "both" else 0, 0.05, 1, 0.96))
     fig.savefig(out_path, dpi=150, facecolor=SURFACE, bbox_inches="tight")
@@ -263,8 +280,7 @@ def main() -> None:
 
     df = pd.read_csv(
         args.predictions_csv,
-        usecols=["grid_size", "complexity", "gt_idx", "gt_symbol", "pred_idx",
-                 "dist_to_goal", "dist_to_agent"],
+        usecols=["grid_size", "complexity", "gt_idx", "gt_symbol", "pred_idx", "dist_to_goal", "dist_to_agent"],
     )
 
     out_dir = args.out_dir if args.out_dir is not None else args.predictions_csv.parent

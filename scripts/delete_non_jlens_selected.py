@@ -47,6 +47,7 @@ from scripts.jlens_reasoning_tokens import parse_name  # noqa: E402
 from telos_interp.jlens_utils import (  # noqa: E402
     DEFAULT_ALWAYS_LAYERS,
     DEFAULT_METHODS,
+    DEFAULT_SCORE,
     METHODS,
     build_record,
     get_method,
@@ -55,6 +56,7 @@ from telos_interp.jlens_utils import (  # noqa: E402
     parse_methods,
     read_raw_record,
     record_path,
+    score_names,
     step_folder_index,
     to_disk_coords,
     top_filter,
@@ -152,12 +154,15 @@ def prune_trajectory(csv_path: Path, args) -> Outcome:
     # Asking for an arm it does not hold is a request this script cannot fulfil: the tokens
     # that arm would select were deleted by the earlier prune. Deleting is not the operation
     # that adds an arm.
-    existing_record = read_raw_record(record_path(trajectory_folder)) if record_path(trajectory_folder).exists() else None
+    existing_record = (
+        read_raw_record(record_path(trajectory_folder)) if record_path(trajectory_folder).exists() else None
+    )
     if existing_record is not None:
         new_arms = sorted(set(args.methods) - set(existing_record.get("arms", {})))
         if new_arms:
             return Outcome(
-                stem, "skipped",
+                stem,
+                "skipped",
                 f"record holds {sorted(existing_record.get('arms', {}))}, cannot add {new_arms} by "
                 f"deleting -- use jlens_reasoning_tokens.py --extend",
             )
@@ -176,6 +181,7 @@ def prune_trajectory(csv_path: Path, args) -> Outcome:
         candidate_layers=args.candidate_layers,
         direction_classes=args.direction_classes,
         top_k=args.jlens_top_k,
+        direction_score=args.direction_score,
     )
     kept = to_disk_coords(kept, trajectory_data)
     keep_paths = kept.activation_paths(model)
@@ -190,11 +196,11 @@ def prune_trajectory(csv_path: Path, args) -> Outcome:
         # Deleting on any of those bases would destroy the wrong files. Naming the arm is
         # what distinguishes "the mapping is broken" from "that lens arrived too late".
         starved = sorted(
-            name for name in kept.names
-            if any(not p.exists() for p in kept.activation_paths(model, arms=[name]))
+            name for name in kept.names if any(not p.exists() for p in kept.activation_paths(model, arms=[name]))
         )
         return Outcome(
-            stem, "skipped",
+            stem,
+            "skipped",
             f"{len(absent)}/{len(keep_paths)} selected files missing (arm(s) {starved}); a lens arm "
             f"whose tokens were already pruned cannot be recovered here -- "
             f"use jlens_reasoning_tokens.py --extend",
@@ -215,6 +221,7 @@ def prune_trajectory(csv_path: Path, args) -> Outcome:
             config={
                 "signal_json": str(args.signal_json),
                 "direction_classes": args.direction_classes,
+                "direction_score": args.direction_score,
                 "num_tokens": args.select_num_tokens,
                 "num_layers": args.select_num_layers,
                 "always_layers": list(args.always_layers),
@@ -257,50 +264,85 @@ def human(num_bytes: int) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument(
+        "--activations-dir", type=Path, required=True, help="Root of the gather_activations-style tree to prune."
     )
-    ap.add_argument("--activations-dir", type=Path, required=True,
-                    help="Root of the gather_activations-style tree to prune.")
-    ap.add_argument("--trajectories-dir", type=Path, required=True,
-                    help="Trajectory JSONs, used to map a CSV row's abs_pos onto a .pt filename. "
-                         "A trajectory whose JSON is missing is left completely untouched.")
-    ap.add_argument("--signal-json", type=Path, required=True,
-                    help="JSON mapping UP/DOWN/LEFT/RIGHT to token strings, e.g. "
-                         "data/jlens/direction_tokens_full.json.")
-    ap.add_argument("--apply", action="store_true",
-                    help="Actually delete. Without it this is a dry run that only reports.")
-    ap.add_argument("--tolerate-missing", action="store_true",
-                    help="Prune even when some selected files are absent. Off by default: a "
-                         "selection pointing at files that do not exist usually means the "
-                         "coordinate mapping is wrong, and deleting on that basis is unrecoverable.")
+    ap.add_argument(
+        "--trajectories-dir",
+        type=Path,
+        required=True,
+        help="Trajectory JSONs, used to map a CSV row's abs_pos onto a .pt filename. "
+        "A trajectory whose JSON is missing is left completely untouched.",
+    )
+    ap.add_argument(
+        "--signal-json",
+        type=Path,
+        required=True,
+        help="JSON mapping UP/DOWN/LEFT/RIGHT to token strings, e.g. data/jlens/direction_tokens_full.json.",
+    )
+    ap.add_argument(
+        "--apply", action="store_true", help="Actually delete. Without it this is a dry run that only reports."
+    )
+    ap.add_argument(
+        "--tolerate-missing",
+        action="store_true",
+        help="Prune even when some selected files are absent. Off by default: a "
+        "selection pointing at files that do not exist usually means the "
+        "coordinate mapping is wrong, and deleting on that basis is unrecoverable.",
+    )
     ap.add_argument("--sizes", default=None, help="Comma-separated grid sizes to prune, e.g. '11,15'.")
     ap.add_argument("--complexities", default=None, help="Comma-separated complexities, e.g. '0.0,0.2'.")
-    ap.add_argument("--select-methods", default=",".join(DEFAULT_METHODS),
-                    help=f"Comma-separated arms to keep (default '{','.join(DEFAULT_METHODS)}'). "
-                         f"Available: {','.join(METHODS)}. The union of every arm survives. Asking "
-                         "for an arm a trajectory's record does not already hold is refused: the "
-                         "tokens it would select were removed by the earlier prune, and only "
-                         "jlens_reasoning_tokens.py --extend can gather them back.")
+    ap.add_argument(
+        "--select-methods",
+        default=",".join(DEFAULT_METHODS),
+        help=f"Comma-separated arms to keep (default '{','.join(DEFAULT_METHODS)}'). "
+        f"Available: {','.join(METHODS)}. The union of every arm survives. Asking "
+        "for an arm a trajectory's record does not already hold is refused: the "
+        "tokens it would select were removed by the earlier prune, and only "
+        "jlens_reasoning_tokens.py --extend can gather them back.",
+    )
     ap.add_argument("--select-num-tokens", type=int, default=20)
     ap.add_argument("--select-num-layers", type=int, default=3)
-    ap.add_argument("--select-always-layers", default=",".join(str(i) for i in DEFAULT_ALWAYS_LAYERS),
-                    help="Layers kept for every selected token regardless of score (default 15). "
-                         "Added on top of --select-num-layers. Empty string to disable.")
-    ap.add_argument("--select-random-tokens", type=int, default=20,
-                    help="Size of the matched control arm to preserve (default 20). Set 0 only if "
-                         "you accept that no uniform-draw control can ever be recovered from these "
-                         "trajectories again.")
+    ap.add_argument(
+        "--select-always-layers",
+        default=",".join(str(i) for i in DEFAULT_ALWAYS_LAYERS),
+        help="Layers kept for every selected token regardless of score (default 15). "
+        "Added on top of --select-num-layers. Empty string to disable.",
+    )
+    ap.add_argument(
+        "--select-random-tokens",
+        type=int,
+        default=20,
+        help="Size of the matched control arm to preserve (default 20). Set 0 only if "
+        "you accept that no uniform-draw control can ever be recovered from these "
+        "trajectories again.",
+    )
     ap.add_argument("--select-random-layers", type=int, default=None)
     ap.add_argument("--select-seed", type=int, default=42)
     ap.add_argument("--direction-classes", default="all")
+    ap.add_argument(
+        "--direction-score",
+        choices=score_names(),
+        default=DEFAULT_SCORE,
+        help="How a row's direction hits become a score (see jlens_utils/scoring.py). "
+        "Must match the gather run this tree came from, or the prune keeps "
+        "different files than the filtered gather would have written. The "
+        "logprob modes need CSVs carrying the top_i_logprob columns.",
+    )
     ap.add_argument("--jlens-top-k", type=int, default=20)
-    ap.add_argument("--candidate-layers", default=None,
-                    help="Comma-separated layer pool to choose from; default is every layer the "
-                         "CSV has rows for.")
-    ap.add_argument("--limit", type=int, default=None,
-                    help="Process at most N trajectories. Worth using for a first --apply run: "
-                         "check the result on a handful before committing to the whole tree.")
+    ap.add_argument(
+        "--candidate-layers",
+        default=None,
+        help="Comma-separated layer pool to choose from; default is every layer the CSV has rows for.",
+    )
+    ap.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Process at most N trajectories. Worth using for a first --apply run: "
+        "check the result on a handful before committing to the whole tree.",
+    )
     ap.add_argument("--verbose", action="store_true", help="One line per trajectory.")
     args = ap.parse_args()
 
@@ -324,8 +366,11 @@ def main() -> None:
     print(f"{mode}: {len(csvs)} trajectory folder(s) under {args.activations_dir}", flush=True)
     print(f"keeping arms: {', '.join(args.methods)}", flush=True)
     if args.select_random_tokens == 0 or not any(not get_method(m).scored for m in args.methods):
-        print("WARNING: no control arm in this selection -- a lens result cannot be compared "
-              "against anything once the rest is gone", flush=True)
+        print(
+            "WARNING: no control arm in this selection -- a lens result cannot be compared "
+            "against anything once the rest is gone",
+            flush=True,
+        )
 
     # Reported as we go rather than collected first: each trajectory means listing and
     # unlinking ~12k files, so a batch of thousands is a long time to sit silent.
@@ -334,8 +379,10 @@ def main() -> None:
         outcome = prune_trajectory(csv_path, args)
         outcomes.append(outcome)
         if args.verbose or outcome.status == "skipped":
-            detail = outcome.reason if outcome.status == "skipped" else (
-                f"kept {outcome.kept}, deleted {outcome.deleted} ({human(outcome.freed)})"
+            detail = (
+                outcome.reason
+                if outcome.status == "skipped"
+                else (f"kept {outcome.kept}, deleted {outcome.deleted} ({human(outcome.freed)})")
             )
             print(f"  [{index}/{len(csvs)}] {outcome.status:<8} {outcome.stem}: {detail}", flush=True)
         elif index % 25 == 0 or index == len(csvs):

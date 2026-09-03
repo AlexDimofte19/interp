@@ -317,7 +317,7 @@ def eval_cognitive_map_probe(  # noqa: PLR0912
 
         for traj_file in tqdm(trajectory_files, desc="  trajectories", disable=not verbose):
             # Load trajectory
-            with open(traj_file, encoding='utf-8') as f:
+            with open(traj_file, encoding="utf-8") as f:
                 trajectory_data = json.load(f)
 
             # Extract metadata
@@ -414,7 +414,7 @@ def eval_cognitive_map_probe(  # noqa: PLR0912
 
             for traj_file in tqdm(trajectory_files, desc=f"  {size_name}", disable=not verbose):
                 # Load trajectory
-                with open(traj_file, encoding='utf-8') as f:
+                with open(traj_file, encoding="utf-8") as f:
                     trajectory_data = json.load(f)
 
                 # Extract metadata

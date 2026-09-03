@@ -134,16 +134,18 @@ def load_steps(input_folder: str, complexity_map: dict[str, float] | None = None
                 }
                 for e in step["sentence_evals"]
             ]
-            records.append({
-                "size": size,
-                "complexity": complexity,
-                "first_correct_idx": step["first_correct_sentence_idx"],
-                "convinced_idx": step["convinced_sentence_idx"],
-                "first_correct_fraction": step["first_correct_fraction"],
-                "convinced_fraction": step["convinced_fraction"],
-                "n_sentences": step["n_reasoning_sentences"],
-                "evals": evals,
-            })
+            records.append(
+                {
+                    "size": size,
+                    "complexity": complexity,
+                    "first_correct_idx": step["first_correct_sentence_idx"],
+                    "convinced_idx": step["convinced_sentence_idx"],
+                    "first_correct_fraction": step["first_correct_fraction"],
+                    "convinced_fraction": step["convinced_fraction"],
+                    "n_sentences": step["n_reasoning_sentences"],
+                    "evals": evals,
+                }
+            )
     if not records:
         raise ValueError(f"No usable results files under {input_folder!r}")
     return records
@@ -313,7 +315,17 @@ def _heatmap_grid(records: list[dict], cell_fn) -> tuple[list[int], list[float],
     return sizes, comps, value_m, sd_m
 
 
-def plot_heatmap(records: list[dict], output_dir: Path, cell_fn, title: str, cbar_label: str, name: str, precision: int, vmin: float, vmax: float) -> None:
+def plot_heatmap(
+    records: list[dict],
+    output_dir: Path,
+    cell_fn,
+    title: str,
+    cbar_label: str,
+    name: str,
+    precision: int,
+    vmin: float,
+    vmax: float,
+) -> None:
     """Graphs 7-10: a (grid complexity x size) heatmap of a per-cell statistic.
 
     Each cell is annotated ``value`` over ``±SD`` (sample standard deviation), so the
@@ -409,8 +421,14 @@ def _cell_pct_idx_zero(recs: list[dict], key: str) -> tuple[float | None, float 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--input-folder", default=DEFAULT_INPUT, help="Folder with <size*>/*.json results from run_inference.py.")
-    parser.add_argument("--trajectory-folder", default=None, help="Folder with the source trajectory JSONs (for grid_complexity); falls back to the comp<X> filename marker if omitted.")
+    parser.add_argument(
+        "--input-folder", default=DEFAULT_INPUT, help="Folder with <size*>/*.json results from run_inference.py."
+    )
+    parser.add_argument(
+        "--trajectory-folder",
+        default=None,
+        help="Folder with the source trajectory JSONs (for grid_complexity); falls back to the comp<X> filename marker if omitted.",
+    )
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT, help="Directory to write the PNG figures into.")
     args = parser.parse_args()
 
@@ -424,47 +442,91 @@ def main() -> None:
     records = load_steps(args.input_folder, complexity_map)
     n_sized = sum(1 for r in records if r["size"] is not None)
     n_comp = sum(1 for r in records if r["complexity"] is not None)
-    print(f"Loaded {len(records)} steps ({n_sized} with a parseable size, {n_comp} with a complexity) from {args.input_folder}")
+    print(
+        f"Loaded {len(records)} steps ({n_sized} with a parseable size, {n_comp} with a complexity) from {args.input_folder}"
+    )
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     plot_fraction_comparison(records, output_dir)
     plot_accuracy_per_size(records, output_dir)
-    plot_prob_around_commitment(records, output_dir, "convinced_idx", "convinced", "3_answer_prob_around_convinced.png")
-    plot_prob_around_commitment(records, output_dir, "first_correct_idx", "first correct", "4_answer_prob_around_first_correct.png")
-    plot_no_reasoning_share(records, output_dir, "first_correct_idx", "first correct", "5_first_correct_no_reasoning_per_size.png")
+    plot_prob_around_commitment(
+        records, output_dir, "convinced_idx", "convinced", "3_answer_prob_around_convinced.png"
+    )
+    plot_prob_around_commitment(
+        records, output_dir, "first_correct_idx", "first correct", "4_answer_prob_around_first_correct.png"
+    )
+    plot_no_reasoning_share(
+        records, output_dir, "first_correct_idx", "first correct", "5_first_correct_no_reasoning_per_size.png"
+    )
     plot_no_reasoning_share(records, output_dir, "convinced_idx", "convinced", "6_convinced_no_reasoning_per_size.png")
     plot_heatmap(
-        records, output_dir, lambda recs: _cell_mean_fraction(recs, "convinced_fraction"),
-        "Mean convinced fraction by complexity and size", "Mean convinced fraction",
-        "7_convinced_fraction_heatmap.png", precision=2, vmin=0.0, vmax=1.0,
+        records,
+        output_dir,
+        lambda recs: _cell_mean_fraction(recs, "convinced_fraction"),
+        "Mean convinced fraction by complexity and size",
+        "Mean convinced fraction",
+        "7_convinced_fraction_heatmap.png",
+        precision=2,
+        vmin=0.0,
+        vmax=1.0,
     )
     plot_heatmap(
-        records, output_dir, lambda recs: _cell_mean_fraction(recs, "first_correct_fraction"),
-        "Mean first-correct fraction by complexity and size", "Mean first-correct fraction",
-        "8_first_correct_fraction_heatmap.png", precision=2, vmin=0.0, vmax=1.0,
+        records,
+        output_dir,
+        lambda recs: _cell_mean_fraction(recs, "first_correct_fraction"),
+        "Mean first-correct fraction by complexity and size",
+        "Mean first-correct fraction",
+        "8_first_correct_fraction_heatmap.png",
+        precision=2,
+        vmin=0.0,
+        vmax=1.0,
     )
     plot_heatmap(
-        records, output_dir, lambda recs: _cell_pct_idx_zero(recs, "convinced_idx"),
-        "Convinced with no reasoning by complexity and size", "% convinced with no reasoning",
-        "9_convinced_no_reasoning_heatmap.png", precision=0, vmin=0.0, vmax=100.0,
+        records,
+        output_dir,
+        lambda recs: _cell_pct_idx_zero(recs, "convinced_idx"),
+        "Convinced with no reasoning by complexity and size",
+        "% convinced with no reasoning",
+        "9_convinced_no_reasoning_heatmap.png",
+        precision=0,
+        vmin=0.0,
+        vmax=100.0,
     )
     plot_heatmap(
-        records, output_dir, lambda recs: _cell_pct_idx_zero(recs, "first_correct_idx"),
-        "First-correct with no reasoning by complexity and size", "% first-correct with no reasoning",
-        "10_first_correct_no_reasoning_heatmap.png", precision=0, vmin=0.0, vmax=100.0,
+        records,
+        output_dir,
+        lambda recs: _cell_pct_idx_zero(recs, "first_correct_idx"),
+        "First-correct with no reasoning by complexity and size",
+        "% first-correct with no reasoning",
+        "10_first_correct_no_reasoning_heatmap.png",
+        precision=0,
+        vmin=0.0,
+        vmax=100.0,
     )
     plot_committed_before_full(records, output_dir)
     plot_heatmap(
-        records, output_dir, lambda recs: _cell_pct_before_full(recs, "convinced_idx"),
-        "Convinced before full reasoning by complexity and size", "% convinced before full reasoning",
-        "12_convinced_before_full_heatmap.png", precision=0, vmin=0.0, vmax=100.0,
+        records,
+        output_dir,
+        lambda recs: _cell_pct_before_full(recs, "convinced_idx"),
+        "Convinced before full reasoning by complexity and size",
+        "% convinced before full reasoning",
+        "12_convinced_before_full_heatmap.png",
+        precision=0,
+        vmin=0.0,
+        vmax=100.0,
     )
     plot_heatmap(
-        records, output_dir, lambda recs: _cell_pct_before_full(recs, "first_correct_idx"),
-        "First-correct before full reasoning by complexity and size", "% first-correct before full reasoning",
-        "13_first_correct_before_full_heatmap.png", precision=0, vmin=0.0, vmax=100.0,
+        records,
+        output_dir,
+        lambda recs: _cell_pct_before_full(recs, "first_correct_idx"),
+        "First-correct before full reasoning by complexity and size",
+        "% first-correct before full reasoning",
+        "13_first_correct_before_full_heatmap.png",
+        precision=0,
+        vmin=0.0,
+        vmax=100.0,
     )
 
     print(f"Figures written to {output_dir}/")

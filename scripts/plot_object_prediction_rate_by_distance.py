@@ -102,9 +102,7 @@ def make_figure(data: dict, obj: str, out_path: Path) -> None:
     # Panel grid sized to the number of complexity levels (defaults to 2x3 for 6).
     ncols = 3 if len(complexities) > 4 else len(complexities)
     nrows = -(-len(complexities) // ncols)  # ceil division
-    fig, axes = plt.subplots(
-        nrows, ncols, figsize=(5 * ncols, 4.25 * nrows), sharex=True, sharey=True, squeeze=False
-    )
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4.25 * nrows), sharex=True, sharey=True, squeeze=False)
     fig.patch.set_facecolor(SURFACE)
     flat_axes = axes.flat
 
@@ -126,7 +124,7 @@ def make_figure(data: dict, obj: str, out_path: Path) -> None:
             spine.set_color(GRID)
 
     # Hide any unused panels.
-    for ax in list(flat_axes)[len(complexities):]:
+    for ax in list(flat_axes)[len(complexities) :]:
         ax.set_visible(False)
 
     for ax in axes[-1, :]:
@@ -138,11 +136,11 @@ def make_figure(data: dict, obj: str, out_path: Path) -> None:
         Patch(facecolor=COLOR_TP, label="distance 0 (true positive)"),
         Patch(facecolor=COLOR_FP, label="distance ≥1 (false positive)"),
     ]
-    fig.legend(handles=legend_handles, loc="lower center", ncol=2, frameon=False,
-               bbox_to_anchor=(0.5, -0.01))
+    fig.legend(handles=legend_handles, loc="lower center", ncol=2, frameon=False, bbox_to_anchor=(0.5, -0.01))
     fig.suptitle(
         f"{obj.capitalize()} ({symbol}) prediction rate vs distance to {obj}, by grid complexity",
-        color=INK, fontsize=15,
+        color=INK,
+        fontsize=15,
     )
     fig.tight_layout(rect=(0, 0.05, 1, 0.96))
     fig.savefig(out_path, dpi=150, facecolor=SURFACE, bbox_inches="tight")

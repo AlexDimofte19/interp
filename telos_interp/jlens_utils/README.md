@@ -30,8 +30,8 @@ name, so adding one is a registry entry in `methods.py` rather than a branch in 
 
 | method | CSV it scores | ranks or samples |
 | --- | --- | --- |
-| `jlens` | `{stem}_jlens_analysis.csv` | ranks by direction count |
-| `logitlens` | `{stem}_logitlens_analysis.csv` | ranks by direction count |
+| `jlens` | `{stem}_jlens_analysis.csv` | ranks by direction score |
+| `logitlens` | `{stem}_logitlens_analysis.csv` | ranks by direction score |
 | `random` | — | seeded uniform draw |
 
 `jlens` and `logitlens` differ **only** in which CSV they read. The two CSVs share a schema,
@@ -49,17 +49,99 @@ and a lens CSV's rows are what enumerate that chain. So it needs a lens alongsid
 `top_filter` raises rather than silently returning an empty control. With two lenses read, it
 draws over the union, so it can reach anything either lens could have picked.
 
+## Scores
+
+*How* a scored method scores is the second registry, `scoring.SCORES`. Every mode is
+"higher is better", so `rank_tokens`, `rank_layers_by_direction` and
+`split_next_action_manifest.py` all sort by `-score` without knowing which is in use.
+
+| score | reads | one (token, layer) cell is | layers combine by |
+| --- | --- | --- | --- |
+| `count` | analysis CSV | how many of the top-k predictions are direction words | sum |
+| `logprob_mass` | analysis CSV | `log` of the top-k probability on those words | logsumexp |
+| `logprob_sum` | analysis CSV | the sum of their logprobs, i.e. their **product** | sum |
+| `logprob_mass_full` | mass table | `log` of the **whole vocabulary's** direction probability | logsumexp |
+
+`count` is the original and needs nothing but the `top_i` columns, so it reads every CSV
+ever written. The top-k logprob modes read the `top_i_logprob` beside each hit — columns
+only runs from this version onward emit — and `read_direction_scores` **raises** on an
+older CSV rather than scoring every row as "nothing matched", which would rank every token
+by a tie and look like a result.
+
+A cell is a real log-probability and so is ≤ 0. A token's *total* is not: `across_layers`
+adds probabilities belonging to one distribution per layer, so it can exceed 0 on a token
+loaded at several layers at once. It is only ever used to order tokens, and the order is
+what has to be monotone — do not read a token total as `log P(anything)`.
+
+Prefer a mass score. It is the count weighted by what the lens actually believed: a
+direction word predicted at p=0.4 outweighs one at p=1e-6, and adding probabilities keeps
+it monotone, so more or better-ranked direction words can only raise the score.
+`logprob_sum` is the literal "sum the log probabilities" and is available, but adding logs
+multiplies probabilities — a token emitting five direction words at logprob -3 (sum -15)
+scores *below* one emitting a single word at -2. It rewards confident-and-lonely over
+direction-saturated, which inverts what the count meant.
+
+A row with no direction word at all scores `NO_MATCH_LOGPROB` (-40), not 0. Under a logprob
+score 0 is `log(p=1)` — the best score possible — so zeroing the worst row would put it on
+top. The same floor stands in for a layer a token has no row for, which is what lets two
+tokens covering different layer subsets be compared.
+
+### Two artifacts: `source`
+
+`logprob_mass` and `logprob_mass_full` are the same quantity over different vocabularies.
+The first can only see direction words that reached the **top 20** — mass sitting at rank
+21 is invisible, and a token whose direction belief is spread thinly over many words looks
+empty. The second is computed at the source: while the `[b, vocab]` logits are still on the
+device, `jlens_reasoning_tokens.py` gathers *every* direction token id and logsumexps them.
+That costs one gather over ~500 columns plus one reduction, against logits the unembed
+already paid for.
+
+What it buys is the whole vocabulary. What it costs is late binding: a top-k score can be
+recomputed against a **different** direction vocabulary from the CSV alone, while a mass
+table is baked at gather time. This project points two vocabularies
+(`direction_tokens_full.json`, `grid_tokens_full.json`) at the same trees, so every table is
+written with a `.meta.json` sidecar naming the one that produced it — a mass table without
+its sidecar is a column of numbers nobody can interpret.
+
+`methods.score_artifact_path(folder, method, score_mode)` is the single place that decides
+which file a score reads, so the filter, the pruner and the probe-data preparer cannot end
+up on different ones.
+
+| artifact | shape | file |
+| --- | --- | --- |
+| analysis CSV | long — one row per (token, layer) | `{stem}_{lens}_analysis.csv` |
+| direction-mass table | wide — one row per token, one `L{n}` column per layer | `{stem}_{lens}_direction_mass.csv` |
+
+In the mass table an **empty** cell means the lens covered no such layer for that token; it
+is not the same as a cell holding the floor, which means "covered, no direction mass here".
+
+The mode is **not** stored per pick. It is a property of the run, so it lives in the arm's
+`config` in the selection record, and `read_selection_record` hands it back on every
+`TokenPick`. A record with no `direction_score` predates the logprob scores and is a count —
+which is every record currently on disk.
+
+
 ## Modules
 
 - **`methods.py`** — the registry: `METHODS`, `get_method`, `parse_methods`,
   `analysis_csv_path`. Also `abbrev`, which is what `prepare_activations_for_probing` puts in
   an auto-generated dataset directory name; it lives on the method so adding one cannot leave
   a hand-maintained lookup stale.
-- **`jlens_csv.py`** — read an analysis CSV and count, per (token, layer), how many of that
-  row's top-k lens predictions are direction words. Also the coordinate math: a CSV row's
-  `(step, abs_pos)` maps to `layer_{N}/step_{step_id}/output/{abs_pos - output_start}.pt`.
-  Read with `csv.DictReader`, never pandas — decoded tokens include `"NA"`, empty strings,
-  commas and newlines, which pandas' NA handling corrupts.
+- **`scoring.py`** — the score registry: `SCORES`, `get_score`, `NO_MATCH_LOGPROB`, and the
+  two aggregations (a row's hits → a cell score; a token's cells → the number it is ranked
+  by). They are separate because for a probability mass they are *not* the same operation.
+- **`jlens_csv.py`** — `read_direction_scores`: the one entry point for both artifacts,
+  dispatched on the score's `source`. Also the mass table's schema (`mass_header`, shared
+  with the writer so the two cannot drift), its sidecar, and the coordinate math — a CSV
+  row's `(step, abs_pos)` maps to
+  `layer_{N}/step_{step_id}/output/{abs_pos - output_start}.pt`. Read with
+  `csv.DictReader`, never pandas — decoded tokens include `"NA"`, empty strings, commas and
+  newlines, which pandas' NA handling corrupts.
+- **`layer_profile.py`** — the mean direction score per layer over a whole tree, which is
+  how a *single* layer is chosen for a dataset. It accumulates from the CSVs and not from a
+  prepared manifest, because a manifest only holds the layers that were selected: a layer's
+  mean there is conditional on having won, except at the force-kept layer 15 where it is
+  not. `scripts/jlens_layer_profile.py` is the CLI over it.
 - **`top_filter.py`** — `top_filter()` returns a `KeptTokens`, one arm per method.
   `rank_tokens` and `rank_layers_by_direction` are the two orderings, shared with
   `jlens_token_selection.py` so a prepared dataset and a pruned tree cannot drift.
@@ -118,3 +200,21 @@ layers, or 3 when 15 already scored into the top 3). Layer 15 is the project's s
 comparison point, and without forcing it a layer-15 baseline would need its own gather run.
 After pruning, `--layers 15` carves one out of the same record. It is deliberately *not* a
 method — it is a guarantee about every arm.
+
+## One layer, or one per token
+
+`--select-num-layers M` gives each token its own top-`M` layers. That is the right thing
+for deciding what to keep on disk, and the wrong thing for a probe: layers 7 and 22 are not
+in a shared basis, so pooling them into one `(N, D)` matrix asks a single weight vector to
+read several representation spaces at once. The alternative is one layer for the whole
+dataset, chosen by the highest mean direction score across every reasoning token —
+`LayerProfile`, `scripts/jlens_layer_profile.py`, and
+`split_next_action_manifest.py --single-layer L`.
+
+Take `L` from the CSV profile, not from a prepared manifest. A manifest holds a
+`(token, layer)` entry only where that layer was selected, so its per-layer mean is
+conditional on having won — while layer 15, force-kept for every token, carries an
+unconditional one. The bias runs against layer 15. The CSVs have no such hole.
+
+A control arm cannot choose a layer: it carries no scores. Give it the **same explicit** `L`
+the lens arm landed on, so the two arms still differ only in which tokens they hold.

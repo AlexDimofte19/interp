@@ -19,10 +19,7 @@ from telos_interp.commands.gather_activations.gather_activations_utils import (
 
 def _activations(layers, tokens, dim=4):
     """layer -> token -> deterministic (dim,) tensor, so files can be identified."""
-    return {
-        layer: {token: torch.full((dim,), float(layer * 100 + token)) for token in tokens}
-        for layer in layers
-    }
+    return {layer: {token: torch.full((dim,), float(layer * 100 + token)) for token in tokens} for layer in layers}
 
 
 def test_activation_layer_dir_with_and_without_step():
@@ -121,9 +118,7 @@ class _RecordingBlock(torch.nn.Module):
 class _StubModel(torch.nn.Module):
     def __init__(self, n_layers=3, as_tuple=False):
         super().__init__()
-        self.layers = torch.nn.ModuleList(
-            _RecordingBlock(i, as_tuple=as_tuple) for i in range(n_layers)
-        )
+        self.layers = torch.nn.ModuleList(_RecordingBlock(i, as_tuple=as_tuple) for i in range(n_layers))
         # _get_decoder_layers looks for model.layers, and needs at least one parameter
         # to resolve the device
         self.marker = torch.nn.Parameter(torch.zeros(1))

@@ -5,8 +5,8 @@ from glob import glob
 from pathlib import Path
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .gather_activations_utils import (
     build_truncated_input,

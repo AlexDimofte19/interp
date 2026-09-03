@@ -12,7 +12,9 @@ agree by construction: pruning an existing tree lands on the same files a filter
 would have produced.
 
 The result is **arm-keyed by method** (see `methods.py`). A scored arm — `jlens`,
-`logitlens` — ranks by direction count. An unscored arm — `random` — is a seeded uniform
+`logitlens` — ranks by direction score, under whichever mode of `scoring.py` the run asks
+for: the original `count`, or the direction probability mass the lens' own logprobs give
+(`logprob_mass`). An unscored arm — `random` — is a seeded uniform
 draw over the same universe, kept because a lens result means nothing without a matched
 control, and because once the tree is pruned to the lens arm, drawing a uniform sample is
 no longer possible. The control has to be reserved *before* the deletion, not after.
@@ -29,13 +31,14 @@ from pathlib import Path
 
 from .jlens_csv import (
     TokenScore,
-    csv_layers,
+    artifact_layers,
     load_direction_tokens,
     output_start,
-    read_direction_counts,
+    read_direction_scores,
     step_folder_index,
 )
-from .methods import DEFAULT_METHODS, analysis_csv_path, get_method, scored_methods
+from .methods import DEFAULT_METHODS, get_method, score_artifact_path, scored_methods
+from .scoring import DEFAULT_SCORE, get_score
 
 # Layer 15 is the project's standing comparison point (see general_probe_train.sh), so it is
 # kept for every selected token regardless of how it scores. Without that, a layer-15
@@ -43,23 +46,37 @@ from .methods import DEFAULT_METHODS, analysis_csv_path, get_method, scored_meth
 DEFAULT_ALWAYS_LAYERS = (15,)
 
 
-def rank_layers_by_direction(token_layers: dict[int, int], candidate_layers: list[int]) -> list[int]:
-    """Candidate layers ordered by this token's direction count, best first.
+def rank_layers_by_direction(
+    token_layers: dict[int, float],
+    candidate_layers: list[int],
+    score_mode: str = DEFAULT_SCORE,
+) -> list[int]:
+    """Candidate layers ordered by this token's direction score, best first.
 
     Ties break on ascending layer index. Shared with `_pick_layers` in
     `jlens_token_selection.py` so the filter and the probe-data preparer rank identically.
+    A layer the token has no score for takes the mode's `empty` value, which is 0 for a
+    count but a large negative floor for a logprob — using 0 there would rank an unscored
+    layer above every scored one.
 
     >>> rank_layers_by_direction({7: 2, 15: 9, 23: 2}, [7, 15, 23])
     [15, 7, 23]
+    >>> rank_layers_by_direction({7: -2.5, 15: -9.0}, [7, 15, 23], "logprob_mass")
+    [7, 15, 23]
     """
-    return sorted(candidate_layers, key=lambda layer: (-token_layers.get(layer, 0), layer))
+    empty = get_score(score_mode).empty
+    return sorted(candidate_layers, key=lambda layer: (-token_layers.get(layer, empty), layer))
 
 
 def rank_tokens(
     scores: dict[tuple[int, int], TokenScore],
     candidate_layers: list[int] | None = None,
 ) -> list[tuple[int, int]]:
-    """Token keys ordered by total direction count over `candidate_layers`, best first.
+    """Token keys ordered by total direction score over `candidate_layers`, best first.
+
+    Each `TokenScore` carries its own `score_mode` and collapses itself accordingly, so this
+    is one ordering for every mode — a count sums across layers, a probability mass
+    logsumexps — and higher is better in all of them.
 
     Ties break on step then position, which makes the order total and therefore stable
     across runs and machines. Shared with `select_token_layer_pairs`, which ranks the same
@@ -85,14 +102,20 @@ class TokenPick:
     downstream: `scripts/split_next_action_manifest.py` decides whether to *rank* a token's
     layers or *sample* them by whether a count is present, so a control that recorded counts
     would silently collapse onto its lowest-scoring layer.
+
+    `direction_count` and `layer_direction_counts` hold the score under whichever
+    `scoring.SCORES` mode the arm was built with — a count, or a (negative) logprob. The
+    names are unchanged because every pruned tree on disk already has them; `score_mode`
+    records which one the numbers are, and every ranker sorts by `-score` either way.
     """
 
     step: int
     pos: int
     layers: tuple[int, ...]
     token: str = ""
-    direction_count: int | None = None
-    layer_direction_counts: dict[int, int] | None = None
+    direction_count: float | None = None
+    layer_direction_counts: dict[int, float] | None = None
+    score_mode: str = DEFAULT_SCORE
 
     @property
     def key(self) -> tuple[int, int]:
@@ -171,7 +194,8 @@ def _layers_for(
         picked = rng.sample(candidate_layers, min(num_layers, len(candidate_layers)))
     else:
         per_layer = score.per_layer if score else {}
-        picked = rank_layers_by_direction(per_layer, candidate_layers)[:num_layers]
+        mode = score.score_mode if score else DEFAULT_SCORE
+        picked = rank_layers_by_direction(per_layer, candidate_layers, mode)[:num_layers]
     forced = [layer for layer in always_layers if layer in candidate_layers]
     return tuple(sorted(set(picked) | set(forced)))
 
@@ -183,10 +207,11 @@ def _scored_arm(
     num_layers: int,
     always_layers: tuple[int, ...],
 ) -> Arm:
-    """The top `num_tokens` tokens by direction count, each with its top layers."""
+    """The top `num_tokens` tokens by direction score, each with its top layers."""
     arm: Arm = {}
     for step, pos in rank_tokens(scores, candidate_layers)[:num_tokens]:
         score = scores[(step, pos)]
+        empty = score.score.empty
         layers = _layers_for(score, candidate_layers, num_layers, always_layers, rng=None)
         arm[(step, pos)] = TokenPick(
             step=step,
@@ -194,7 +219,8 @@ def _scored_arm(
             layers=layers,
             token=score.token,
             direction_count=score.total(candidate_layers),
-            layer_direction_counts={layer: score.per_layer.get(layer, 0) for layer in layers},
+            layer_direction_counts={layer: score.per_layer.get(layer, empty) for layer in layers},
+            score_mode=score.score_mode,
         )
     return arm
 
@@ -258,6 +284,7 @@ def top_filter(
     candidate_layers: list[int] | None = None,
     direction_classes: str = "all",
     top_k: int = 20,
+    direction_score: str = DEFAULT_SCORE,
     csv_paths: dict[str, Path] | None = None,
 ) -> KeptTokens:
     """Select the reasoning tokens and layers worth keeping for one trajectory.
@@ -266,8 +293,9 @@ def top_filter(
         signal_json: JSON mapping UP/DOWN/LEFT/RIGHT to token strings — the signal being
             looked for in each token's top-k lens predictions (e.g.
             `data/jlens/direction_tokens_full.json`).
-        trajectory_folder: the folder holding that trajectory's analysis CSVs. Each scored
-            method resolves its own CSV inside it via `analysis_csv_path`.
+        trajectory_folder: the folder holding that trajectory's lens artifacts. Each scored
+            method resolves its own inside it via `score_artifact_path` — which of the two
+            (analysis CSV or direction-mass table) depends on `direction_score`.
         methods: which arms to build, by name (see `methods.METHODS`).
         num_tokens: how many top-scoring tokens each *scored* arm keeps.
         num_layers: how many layers of each selected token to keep.
@@ -284,18 +312,26 @@ def top_filter(
             be selected. An unscored arm draws from the union of those pools.
         direction_classes: "all" or a subset such as "UP,DOWN".
         top_k: how many `top_i` columns of the CSV to scan.
-        csv_paths: override the CSV location per method. The gather script filters against
-            its still-uncommitted `{stem}_{lens}_analysis.csv.tmp`, which is not where
-            `analysis_csv_path` looks.
+        direction_score: which `scoring.SCORES` mode turns a token's direction evidence into
+            a number — `count` (the original), a top-k logprob mode that weights each hit by
+            how much the lens believed it, or `logprob_mass_full`, which reads the
+            direction-mass table instead and so sees the whole vocabulary rather than a
+            top-20 window. A top-k logprob mode needs a CSV with `top_i_logprob` columns and
+            raises on one written before they existed.
+        csv_paths: override the artifact location per method. The gather script filters
+            against its still-uncommitted `.tmp` files, which is not where
+            `score_artifact_path` looks. Pass the artifact `direction_score` actually
+            reads — the mass table for a `source="mass"` score, the analysis CSV otherwise.
 
     Returns:
         A `KeptTokens` in **CSV coordinates** — `pos` is `abs_pos`. Call `to_disk_coords`
-        to turn it into the `.pt` coordinates the activation tree uses. An arm whose CSV is
-        missing is absent from the result rather than raising: a trajectory that has not
-        been analysed yet is a data state, not a bug.
+        to turn it into the `.pt` coordinates the activation tree uses. An arm whose
+        artifact is missing is absent from the result rather than raising: a trajectory that
+        has not been analysed yet is a data state, not a bug.
 
     Raises:
-        ValueError: on an unknown method name, or when an unscored arm is requested with no
+        ValueError: on an unknown direction score, on a CSV too old to support one, on an
+            unknown method name, or when an unscored arm is requested with no
             scored method alongside it. An unscored arm samples over the reasoning chain,
             and a lens CSV's rows are what enumerate that chain — there is nothing to draw
             from otherwise.
@@ -313,18 +349,19 @@ def top_filter(
             f"the reasoning chain; add one of {scored_methods()}"
         )
 
+    get_score(direction_score)
     direction_tokens = load_direction_tokens(signal_json, direction_classes) if scored_wanted else set()
 
-    # Read each requested lens' CSV once. A missing one leaves the arm out entirely.
+    # Read each requested lens' artifact once. A missing one leaves the arm out entirely.
     scores_by_method: dict[str, dict[tuple[int, int], TokenScore]] = {}
     pool_by_method: dict[str, list[int]] = {}
     for name in scored_wanted:
-        path = (csv_paths or {}).get(name) or analysis_csv_path(folder, name)
+        path = (csv_paths or {}).get(name) or score_artifact_path(folder, name, direction_score)
         if path is None or not Path(path).exists():
             continue
         path = Path(path)
-        scores = read_direction_counts(path, direction_tokens, top_k=top_k)
-        pool = candidate_layers if candidate_layers is not None else csv_layers(path)
+        scores = read_direction_scores(path, direction_tokens, top_k=top_k, score_mode=direction_score)
+        pool = candidate_layers if candidate_layers is not None else artifact_layers(path, direction_score)
         if scores and pool:
             scores_by_method[name] = scores
             pool_by_method[name] = pool
@@ -394,6 +431,7 @@ def to_disk_coords(kept: KeptTokens, trajectory_data: dict) -> KeptTokens:
                 token=pick.token,
                 direction_count=pick.direction_count,
                 layer_direction_counts=pick.layer_direction_counts,
+                score_mode=pick.score_mode,
             )
             out[moved.key] = moved
         return out

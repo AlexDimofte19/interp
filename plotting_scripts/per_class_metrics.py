@@ -33,10 +33,10 @@ plotting_dir = "plots"
 
 # Colors for each class
 class_colors = {
-    "wall": "#5D5D5D",      # dark gray
-    "empty": "#3498DB",     # blue
-    "agent": "#E74C3C",     # red
-    "goal": "#27AE60",      # green
+    "wall": "#5D5D5D",  # dark gray
+    "empty": "#3498DB",  # blue
+    "agent": "#E74C3C",  # red
+    "goal": "#27AE60",  # green
 }
 
 
@@ -105,7 +105,7 @@ def plot_per_class_metrics():
         bbox_to_anchor=(0.5, 1.22),
     )
 
-    ax_recall.spines[['right', 'top']].set_visible(False)
+    ax_recall.spines[["right", "top"]].set_visible(False)
 
     # --- Bottom plot: Precision ---
     for i, cls in enumerate(classes):
@@ -145,7 +145,7 @@ def plot_per_class_metrics():
     ax_precision.set_xticklabels(grid_sizes)
     ax_precision.set_xlabel("Grid Size", fontsize=18)
 
-    ax_precision.spines[['right', 'top']].set_visible(False)
+    ax_precision.spines[["right", "top"]].set_visible(False)
 
     plt.tight_layout()
 

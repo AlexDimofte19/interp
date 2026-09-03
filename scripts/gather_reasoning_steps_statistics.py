@@ -35,9 +35,9 @@ import re
 import sys
 from pathlib import Path
 
+import matplotlib
 import numpy as np
 import pandas as pd
-import matplotlib
 
 matplotlib.use("Agg")  # headless-safe; remove if you want interactive windows
 import matplotlib.pyplot as plt
@@ -61,9 +61,9 @@ def parse_pt_path(p: Path):
         s, c = SIZE_RE.search(part), COMP_RE.search(part)
         if s and c:
             traj, size, comp = part, int(s.group(1)), float(c.group(1))
-        if (m := LAYER_RE.search(part)):
+        if m := LAYER_RE.search(part):
             layer = int(m.group(1))
-        if (m := STEP_RE.search(part)):
+        if m := STEP_RE.search(part):
             step = int(m.group(1))
     return traj, size, comp, layer, step
 
@@ -77,9 +77,7 @@ def build_dataframe(root: Path) -> pd.DataFrame:
         traj, size, comp, layer, step = parse_pt_path(p)
         if traj is None or size is None or comp is None:
             continue  # .pt not under a size/comp trajectory dir -> ignore
-        rows.append(
-            dict(path=str(p), traj=traj, size=size, comp=comp, layer=layer, step=step)
-        )
+        rows.append(dict(path=str(p), traj=traj, size=size, comp=comp, layer=layer, step=step))
     df = pd.DataFrame(rows)
     if df.empty:
         sys.exit("Found .pt files, but none under a 'size..comp..' trajectory dir.")
@@ -108,9 +106,7 @@ def choose_layer(df: pd.DataFrame, requested):
 
 def per_trajectory_counts(df: pd.DataFrame, layer, use_all: bool) -> pd.DataFrame:
     sub = df if (use_all or layer is None) else df[df["layer"] == layer]
-    return (
-        sub.groupby(["traj", "size", "comp"]).size().rename("n_steps").reset_index()
-    )
+    return sub.groupby(["traj", "size", "comp"]).size().rename("n_steps").reset_index()
 
 
 def print_diagnostics(df: pd.DataFrame) -> None:
@@ -126,8 +122,7 @@ def print_diagnostics(df: pd.DataFrame) -> None:
     # how many pt files sit in a single output dir, and how many step dirs / traj
     by_out = df.groupby(["traj", "layer", "step"]).size()
     print(
-        f"pt files per (traj,layer,step)     : "
-        f"min={by_out.min()}, median={int(by_out.median())}, max={by_out.max()}"
+        f"pt files per (traj,layer,step)     : min={by_out.min()}, median={int(by_out.median())}, max={by_out.max()}"
     )
     print()
 
@@ -138,9 +133,8 @@ def make_grids(t: pd.DataFrame):
     sizes = sorted(t["size"].unique())
 
     def piv(agg):
-        return (
-            t.pivot_table(index="size", columns="comp", values="n_steps", aggfunc=agg)
-            .reindex(index=sizes, columns=comps)
+        return t.pivot_table(index="size", columns="comp", values="n_steps", aggfunc=agg).reindex(
+            index=sizes, columns=comps
         )
 
     return comps, sizes, piv("sum"), piv("mean"), piv("std"), piv("count")
@@ -155,20 +149,17 @@ def plot_data_amount(t, out, layer_label):
 
     by_size = t.groupby("size")["n_steps"].sum()
     axes[0].bar([str(s) for s in by_size.index], by_size.values, color="indianred")
-    axes[0].set(xlabel="maze size", ylabel="amount of data (# .pt files)",
-                title="Data per maze size")
+    axes[0].set(xlabel="maze size", ylabel="amount of data (# .pt files)", title="Data per maze size")
     for x, v in enumerate(by_size.values):
         axes[0].text(x, v, f"{int(v):,}", ha="center", va="bottom", fontsize=8)
 
     by_comp = t.groupby("comp")["n_steps"].sum()
     axes[1].bar([f"{c:g}" for c in by_comp.index], by_comp.values, color="steelblue")
-    axes[1].set(xlabel="complexity", ylabel="amount of data (# .pt files)",
-                title="Data per complexity")
+    axes[1].set(xlabel="complexity", ylabel="amount of data (# .pt files)", title="Data per complexity")
     for x, v in enumerate(by_comp.values):
         axes[1].text(x, v, f"{int(v):,}", ha="center", va="bottom", fontsize=8)
 
-    fig.suptitle(f"Amount of data \u2014 total {total_pt:,} .pt files ({layer_label})",
-                 fontsize=13, y=1.0)
+    fig.suptitle(f"Amount of data \u2014 total {total_pt:,} .pt files ({layer_label})", fontsize=13, y=1.0)
     fig.tight_layout()
     fig.savefig(out / "data_amount.png", dpi=150)
     plt.close(fig)
@@ -195,10 +186,16 @@ def plot2_heatmap(comps, sizes, mean, std, ntraj, out):
             s = std.values[i, j]
             n = ntraj.values[i, j]
             s_txt = f"±{s:.1f}" if not np.isnan(s) else "±–"
-            ax.text(j, i, f"{m:.1f}{s_txt}\n(n={int(n)})", ha="center", va="center",
-                    fontsize=7.5, color="white" if m < vmax * 0.6 else "black")
-    ax.set(xlabel="complexity", ylabel="maze size",
-           title="Mean ± std reasoning steps per category")
+            ax.text(
+                j,
+                i,
+                f"{m:.1f}{s_txt}\n(n={int(n)})",
+                ha="center",
+                va="center",
+                fontsize=7.5,
+                color="white" if m < vmax * 0.6 else "black",
+            )
+    ax.set(xlabel="complexity", ylabel="maze size", title="Mean ± std reasoning steps per category")
     fig.colorbar(im, ax=ax, label="mean reasoning steps")
     fig.tight_layout()
     fig.savefig(out / "heatmap_mean_std.png", dpi=150)
@@ -207,13 +204,12 @@ def plot2_heatmap(comps, sizes, mean, std, ntraj, out):
 
 # --- main --------------------------------------------------------------------
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", type=Path, help="repository root to scan recursively")
-    ap.add_argument("--layer", type=int, default=None,
-                    help="restrict counting to this layer (default: auto)")
-    ap.add_argument("--all-layers", action="store_true",
-                    help="count across ALL layers (disables dedup; usually wrong)")
+    ap.add_argument("--layer", type=int, default=None, help="restrict counting to this layer (default: auto)")
+    ap.add_argument(
+        "--all-layers", action="store_true", help="count across ALL layers (disables dedup; usually wrong)"
+    )
     ap.add_argument("--out", type=Path, default=Path("reasoning_step_figures"))
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)

@@ -2,6 +2,13 @@
 
 Notes for a fresh Claude session picking up this work. Branch: `reasoning_theatre`.
 
+**Newest first, if you only read one thing:** the file is append-only and chronological, so
+the last section is the current state. As of 2026-08-31 that is *Truncation strategies —
+cutting where the lens is loud* (log entry 43): three rollout arms built and verified, none
+of them run yet. Before it: *Loudness through a sentence* (entry 42) and *Probe vs. rollout*
+(entries 39-41). The "Resuming — start here" section below is the round-2 grid-probing thread
+and is older than all three.
+
 Covers two connected changes: `scripts/jlens_reasoning_tokens.py` now persists activations
 alongside its lens analysis (committed as `2296c92`), and
 `prepare_activations_for_probing` can now select which of those tokens/layers a
@@ -314,6 +321,52 @@ runs: 18 at layer 15 (3 arms x 3 seeds x lr/mlp) + 4 at layers 7:23 (jlens/logit
 `lens_trajectories_3600.txt` — round 1's exact eval trajectories. Pin round 2 to them via
 `EVAL_NAMES` so the two rounds are comparable.
 
+### Round 3, queued: logprob scoring + one layer (2026-08-27, code only)
+
+Log entry 35. Two changes landed in the code and **nothing on disk has been touched**:
+
+- The lens CSVs now carry a `top_{i}_logprob` beside every `top_{i}`, and how a token's
+  direction evidence becomes a score is a registry (`jlens_utils/scoring.py`):
+  `--direction-score count|logprob_mass|logprob_sum|logprob_mass_full`. Default stays
+  `count`, so nothing recorded changes meaning. Avoid `logprob_sum` — it adds logs, which
+  multiplies probabilities and so scores a token *worse* the more direction words it emits.
+- The gather also writes a **direction-mass table** per (trajectory, lens):
+  `{stem}_{lens}_direction_mass.csv`, wide — one row per reasoning token, one `L{n}` column
+  per layer, each cell `log P(any direction word)` over the *whole* vocabulary rather than
+  a top-20 window. `--direction-score logprob_mass_full` scores it; that is the mode to
+  use. Every table has a `.meta.json` sidecar naming the vocabulary that made it — read it,
+  because round 1 and round 2 use different vocabularies on identically-shaped trees.
+- `split_next_action_manifest.py --single-layer L|best` (`SINGLE_LAYER=` in the
+  `train_*_arms.sh` pair) pins the whole dataset to one layer, instead of
+  `--layers-per-token 1` which keeps each token's own best layer and leaves the dataset
+  spanning the whole range.
+
+**Every CSV and every selection record on disk is pre-logprob**, so a logprob mode raises
+until the CSVs are re-emitted. That re-emit is CSV-only and writes no `.pt`, so the pruned
+tree is safe:
+
+```bash
+# 1. re-emit the CSVs + the direction-mass tables (no .pt written, tree untouched).
+#    --direction-mass-json is REQUIRED here: it defaults to --signal-json, which this
+#    (non-selective) invocation does not set, and without it no table is written.
+uv run python scripts/jlens_reasoning_tokens.py --overwrite --no-save-activations \
+    --trajectory-paths ... --jlens_dir /workspace/jlens/gridenv \
+    --activations-dir /workspace/activations/grid_reasoning_tokens --lens both \
+    --direction-mass-json /workspace/jlens/grid_tokens_full.json
+
+# 2. the unbiased per-layer profile -> pick L
+uv run python scripts/jlens_layer_profile.py /workspace/activations/grid_reasoning_tokens \
+    --signal-json /workspace/jlens/grid_tokens_full.json \
+    --direction-score logprob_mass_full
+
+# 3. train the arms pinned to it (give the CONTROL the same explicit L; it has no scores)
+SINGLE_LAYER=<L> PREPARED=... ./scripts/train_grid_arms.sh
+```
+
+Caveat before spending GPU time: on a **pruned** tree a new score can only re-rank the ~20
+tokens that survived. That is a usable top-K comparison, but a genuinely logprob-selected
+arm needs a fresh selective gather (or `--extend`) on a tree that still holds the tokens.
+
 ### Round 1 leftovers worth knowing
 
 - The token-major implementation entries 32-33 describe (prepare, loader, both trainers, the
@@ -329,3 +382,325 @@ Everything above is **uncommitted working-tree state** on `reasoning_theatre`.
 Do not run `make fix-style` or a bare `ruff check` on the whole repo: the first reformats
 everything and the second is configured with `fix=true`, so it rewrites files in place. Both
 pulled ~40 untouched files into the diff here.
+
+## Probe vs. rollout — what the probe is decoding (2026-08-28)
+
+New, and orthogonal to selection: `/workspace/reasoning_theatre/trajectories_train_single_step_probs/`
+(written by `scripts/inference_oss/run_inference.py`) re-runs the model at every reasoning
+sentence end with reasoning truncated there, and records what it *would* answer. That joins to
+entry 38's `heldout360_all_probes.csv` for free — `eos_token_pos`, `token_idx` and the `.pt`
+filename all index the same `step["output_tokens"]` list — so every reasoning token can be placed
+inside the sentence whose truncation eval covers it.
+
+```
+scripts/build_probe_rollout_join.py          -> probe_vs_rollout/per_token.csv
+scripts/analyze_probe_rollout.py             -> probe_vs_rollout/tables/*.csv, summary.json
+scripts/plot_probe_rollout.py                -> probe_vs_rollout/plots/*.png
+scripts/analyze_jlens_direction_classes.py   -> tables/q4v_*.csv   (entry 40)
+scripts/jlens_direction_vocab_diagnostic.py  -> which vocabulary tokens actually fire
+scripts/plot_commitment_all_tokens.py        -> plots/commit_all_tokens_*.png   (entry 41)
+scripts/plot_commitment_probs.py             -> plots/commit_probs_*.png        (entry 41)
+```
+
+Entry 41 moves the boundary comparison from sentence ENDS to every token. Two things it
+depends on that are easy to get wrong: past the convinced boundary the three comparators
+(this belief / previous belief / final action) are **one series by definition**, so only
+x <= 0 carries information; and `convinced_sentence_idx == 0` trajectories (95 of 360) must
+be dropped, or the two sides of the boundary are computed over different trajectories.
+
+`plot_commitment_probs.py` needs `eval_probe_per_token.py --full-probs`, which writes the
+whole 4-way softmax as `{probe}_p_{ACTION}` in a fixed LEFT,UP,RIGHT,DOWN order rather than
+the probe's own `label_to_idx` order, so the columns mean the same thing across arms. It is
+~35 min for 4 probes over the 87k tokens -- the cost is reading 87k `.pt` files off the FUSE
+mount, not the forward passes. Read the MLP arms' probabilities knowing they are near
+one-hot (mean max p 0.91 at 0.45 accuracy); the LR arm (0.686) is the calibrated readout.
+
+Result, in one line: **the probe decodes the model's in-flight belief, not the action it ends up
+taking** — on the 2,074 sentence ends where those differ the headline arm
+(`next_action_l15.jlens_topall_mlp`) matches the belief .431 and the final action .250
+(chance .25; the best arm, `next_action_mass_l15.jlens_topall_mlp`, gets .444 / .227 — quote
+the headline, not the maximum on the same rows), and all 26 probes lean the same way. The layer-15 lens does *not* see
+the boundary: read through the full 446-token direction vocabulary split by class it reaches
+prior-free AUC 0.54 at a sentence end (0.51 on an arbitrary token), against the probe's .517
+accuracy on the same rows. Entries 39 and 40 of the log have the full account.
+
+Four traps worth carrying:
+
+- The rollout root holds all 36k training trajectories on a **FUSE mount**. Glob it and the join
+  takes >5 min; address the 360 held-out files by name and it takes seconds.
+- Argmax over the raw `{ACTION}_logprob` columns of a lens CSV is **degenerate** — 63% "DOWN",
+  3% "LEFT", because it reads how common the uppercase string is. Center each column on its
+  corpus mean/sd before comparing them, or use the AUC over (token, action) pairs.
+- **Do not quote an argmax accuracy over the four direction classes either.** No per-column
+  correction fixes it when the classes fire at very different rates (RIGHT is at the floor for
+  74% of tokens), and every readout's argmax lands on one class for 48–79% of tokens. Quote the
+  AUC, which a per-class constant cannot move. `argmax_max_share` in `q4v_class_agreement.csv`
+  is the guard column.
+- The **RIGHT class of `direction_tokens_full.json` is anti-predictive** (one-vs-rest AUC .486).
+  `' right'` is 44% of its hits and sits *below* base rate — English "right" is a discourse word.
+  This belongs back in `notebooks/direction_tokens.ipynb`: test a candidate class by
+  P(answer = c | hit) against base rate before shipping it. Also, only 84 of the 446 tokens ever
+  reach a top-20 here, so the multilingual entries are dead weight on this task.
+
+---
+
+## Loudness through a sentence, and at the commitment boundary (log entry 42)
+
+Note the correction this makes to the paragraph above. "The layer-15 lens does *not* see the
+boundary" is true of the readout entries 39/40 used — a **top-20 count** on the 360 held-out
+trajectories. It is not true of the **full-vocabulary mass**, and that is the whole finding of
+entry 42.
+
+Three stdlib+pandas scripts, no GPU, all reading artifacts that already exist:
+
+```bash
+.venv/bin/python scripts/build_sentence_loudness.py    # -> loudness/per_token.csv  (~1m45s)
+.venv/bin/python scripts/plot_sentence_loudness.py     # -> loudness/plots|tables   (22 figures)
+.venv/bin/python scripts/analyze_sentence_loudness.py  # -> loudness/summary.json
+```
+
+Output root `/workspace/reasoning_theatre/loudness/`. Report:
+https://claude.ai/code/artifact/a26ec417-feae-42eb-a09d-af529f603c06
+
+What "loudness" now means: `exp(L15)` of the **direction-mass table**
+(`{stem}_jlens_direction_mass.csv`), i.e. `sum(exp(logprob(t)) for t in direction_tokens_full)`
+over all 446 tokens, at every reasoning token — not the top-20 count and not the top-20 mass.
+The tree is `/workspace/activations/jlens_mass_l15` and the trajectories are the **2,880 the
+mass arm trained on** (its 3,600 minus `next_action_mass_l15_eval_names.txt`), which is a
+different draw from `lens_trajectories_3600.txt` — the two trees overlap by only 348 names.
+
+Three traps to carry forward:
+
+- **The header offset is not 3.** `build_probe_rollout_join.py` hardcodes
+  `reasoning_pos = token_idx - 3`. The real gap between the mass table's `reasoning_pos`
+  (analysis-tagged tokens) and the rollout's `eos_token_pos` (`step["output_tokens"]`) is
+  `eos[0] + 1`. It happens to be 3 on every trajectory checked; read it anyway.
+- **Sentence position dominates everything else.** Loudness falls 2.2x from a sentence's first
+  decile to its last and resets at the break, so any effect measured at token resolution has to
+  be read against that sawtooth. It is also why the convinced-index effect only shows up in a
+  *paired within-trajectory* contrast at matched sentence positions.
+- **The direction-token control needs a window, not a token.** `is_direction_token` flags the
+  token the model emitted; dropping those rows is *not* enough, because the jlens predicts the
+  next tokens and so is loud on the token just before `" up"`. Excluding a ±1 window cuts the
+  boundary step from +.0266 to +.0076, and at ±3 (+.0041) it no longer beats its own placebo
+  (+.0051). `verbalization_proximity` in `summary.json`. Any future "the lens sees X" claim on
+  this data needs the same windowed control.
+- **"Convinced" means correct-from-here-on, not settled.** Defined against ground truth in
+  `run_inference.py::commitment_metrics`. `per_token.csv` carries `n_switches` and
+  `sent_model_action` if you want to rebuild the boundary from actual belief switches instead —
+  that is the obvious next cut.
+
+## Truncation strategies — cutting where the lens is loud (log entry 43)
+
+**Status: built and verified, NOT RUN.** `/workspace/reasoning_theatre/rollout_strategies/`
+does not exist yet — the only output on disk is the 10-trajectory smoke at
+`rollout_strategies_smoke/`, which shows all three arms run end to end and whose accuracies
+(n = 10) are not a result. Launching the three arms is the next action.
+
+`run_inference.py` no longer only cuts at sentence ends. Where it cuts is `--strategy`, and
+the registry is `scripts/inference_oss/truncation_strategies.py`:
+
+| `--strategy` | cutoffs per step | what it cuts at |
+| --- | --- | --- |
+| `eos` | ~24.5 | every reasoning sentence end (the original grid) |
+| `jlens_argmax_per_sentence` | ~25.5 | the loudest token of each sentence |
+| `jlens_top_k_global` | ~21.9 | the `--top-k` (20) loudest tokens of the whole chain |
+
+Loudness is entry 42's: `exp(L15)` of `{stem}_jlens_direction_mass.csv`, i.e.
+`sum(exp(logprob(t)) for t in direction_tokens_full)`. Ranking happens on the log (exp is
+monotone) and the mass table is never read without its `.meta.json` — the vocabulary it was
+baked against is copied into every results JSON.
+
+```bash
+bash scripts/inference_oss/run_inference_strategies.sh                     # all three arms
+bash scripts/inference_oss/run_inference_strategies.sh jlens_top_k_global  # one arm
+DRY_RUN=1 bash scripts/inference_oss/run_inference_strategies.sh           # cutoffs only, no model
+```
+
+Output root `/workspace/reasoning_theatre/rollout_strategies/<strategy>/`, logs in
+`<strategy>/logs/`. `analysis.py` reads any of them unchanged.
+
+Four things to carry:
+
+- **All three arms run the same 3,600 trajectories**, pinned by `--names-file` (built from
+  `/workspace/activations/jlens_mass_l15`, the only trees with mass tables). The eos arm is
+  re-run over them rather than reused from the 36,000-trajectory
+  `trajectories_train_single_step_probs/`, so the three differ only in cut placement. This is
+  the mass tree's full 3,600 — nothing here trains a probe, so entry 42's 720 held-out names
+  are *not* excluded.
+- **The endpoints are kept in every arm** (no-reasoning first, full-reasoning last), so every
+  arm's first and last eval is the same prompt and `final_sentence_accuracy` /
+  `convinced_sentence_idx` stay comparable. `--no-endpoint-cutoffs` drops them and breaks that.
+- **The schema is the eos schema.** `sentence_evals` is the cutoff list, `eos_token_pos` the
+  cut position; `cutoff_kind`, `cut_sentence_idx`, `pos_in_sentence`, `sentence_len`,
+  `dir_logmass` and `dir_prob` are added per eval. `n_reasoning_sentences` counts cutoffs in
+  every arm (`n_cutoffs` is the honest alias).
+- **The grids really are different.** The per-sentence argmax sits at mean fraction 0.417
+  through its sentence and coincides with the sentence end only 10.4% of the time; only 3.4%
+  of `jlens_top_k_global`'s cutoffs are sentence ends.
+- **The loud arms are confounded by verbalization, structurally.** The loudest token in a
+  sentence is very often the direction word the model is writing. On the dry-run trajectory the
+  per-sentence argmaxes are ` up` (.870), `(7,` (.130) and ` UP` (.686) against a sentence-final
+  `.` at .028 — so cutting at the argmax often means cutting just after the model typed the
+  answer. A raw accuracy gain for a loud arm is not evidence of earlier commitment. Read it
+  either with direction-word cutoffs dropped (entry 42(e)'s control; `dir_logmass` is on every
+  eval and the token is in the mass table) or against a seeded random-position arm of the same
+  K — that fourth strategy is one registry entry in `truncation_strategies.py` and is not built
+  yet.
+- **Do not raise `BATCH_SIZE` to buy throughput.** 16 rows / 49,152 padded-token area is the
+  measured setting: 64 rows (area cap raised to match) OOMs a 32 GB card at ~500-token prompts,
+  because eager attention allocates `rows x heads x seq^2`. Measured ~4.7 prompts/s on a mixed
+  size-5/11/15 set, ~3.2/s on size-11 alone, i.e. roughly 5-8 h per arm (~85k prompts) and
+  about a day for all three.
+
+## Both loud arms are run (log entry 44)
+
+**Status: RUN, on 2026-08-31/09-01.** The section above ("Truncation strategies", entry 43)
+says they were not; it is superseded. `/workspace/reasoning_theatre/rollout_strategies/` now
+holds 3,600 result JSONs per arm.
+
+| arm | wall clock (UTC) | cutoff-evals | cut/step | raw cutoff acc |
+| --- | --- | --- | --- | --- |
+| `jlens_argmax_per_sentence` | 08-31 18:42 → 09-01 00:45 | 82,212 | 22.84 | 69.89% |
+| `jlens_top_k_global` | 09-01 00:45 → 04:40 | 78,707 | 21.86 | 79.55% |
+
+**The `eos` arm was NOT re-run.** The finished 36k rollout covers all 3,600 names, so it
+supplies the sentence-end answers. See the noise floor below before relying on that.
+
+```bash
+bash scripts/inference_oss/run_inference_strategies.sh jlens_argmax_per_sentence jlens_top_k_global
+watch -n 1 bash scripts/inference_oss/rollout_status.sh     # live, work-weighted ETA, read-only
+python scripts/plot_loud_vs_sentence_end.py                 # -> comparison/loud_vs_sentence_end.{png,csv}
+python scripts/analyze_truncation_strategies.py             # the full arm comparison -- NOT YET RUN
+```
+
+Five things to carry:
+
+- **Do not compare the two raw arm accuracies.** Different grids, different sizes, and entry
+  43's verbalization confound is unaddressed in both. 37.5% of the argmax arm's cutoff tokens
+  *are* direction words. `analyze_truncation_strategies.py` does it properly and is unrun.
+- **`--max-batch-tokens` was the wrong invariant and it OOMed the first launch.** Eager
+  attention allocates `rows*heads*L^2`; the area cap is linear in `L`. 16 rows x 1587 tokens is
+  an area of 25,392 inside a 49,152 budget *and* a 4.80 GiB tensor. Fixed by
+  `--max-attn-elems` (default 16e6, caps `rows*L^2`) plus an OOM-halving retry;
+  `tests/test_run_inference_batching.py` pins it. Do not raise it back.
+- **There is an endpoint noise floor of ~3.3%, and it is intrinsic.** Two arms of the *same
+  run* disagree on 3.3% of no-reasoning endpoints — identical prompt, identical position, only
+  the batch neighbours differ, so it is left-padding (attention sinks are the suspect). The old
+  eos rollout adds 4.6 points on top (7.97% total). At the end of reasoning, where p ~ 1, both
+  comparisons agree 3600/3600 with mean |dp| 4e-5: it is argmax flipping between near-tied
+  logits, not drift. Any arm-vs-arm difference of a few points is noise.
+- **~5% of the argmax arm (165 files) was written by the pre-fix batching**, kept on resume.
+  Re-running them is ~10 min.
+- **Entry 44(d) is the one analysis actually run, and it now covers both arms.** A loud token
+  leans toward the conclusion of the sentence it is IN rather than the previous one's, by the
+  same ~15 points in both arms (.560/.397 argmax, .556/.404 top_k, on the ~11% of cutoffs whose
+  sentence ends differently than the one before it). The two controls part them: excluding
+  cutoffs that ARE the sentence end costs argmax most (.503/.450), while **excluding
+  direction-word cutoffs kills top_k** (.485/.470 — inside the noise floor) and leaves argmax
+  intact (.549/.399). Neither arm carries the claim alone. Figures:
+  `comparison/loud_vs_sentence_end_{arm}.png`.
+- **Do not subsample that analysis.** Both arms were first read on ~100 trajectories and both
+  samples overstated the effect by ~2x (top_k read .792/.154 against a true .556/.404 and
+  looked control-proof; it is not). The differ subset is ~11% of cutoffs.
+
+### TODO (next actions, newest first)
+
+- [ ] **Build and run the `random` truncation arm.** This is the missing control for entry
+  44(d), not a nice-to-have: the loudest token sits ~42% through its sentence, so it is simply
+  *closer in time* to that sentence's end than to the previous one's, and proximity alone could
+  produce the whole .560/.397 lean. Without a matched random-position arm we cannot tell "the
+  loud token knows" from "a token that far into the sentence knows", and the coincident-cutoff
+  row (.503/.450) says the margin is small enough for that to matter. Spec: one registry entry
+  in `scripts/inference_oss/truncation_strategies.py`, same shape as `JlensTopKGlobalStrategy`
+  with a seeded uniform draw of the same K, endpoints kept, `arm_seed()`-style frozen draw;
+  ~4 h of GPU for 3,600 trajectories. Then re-run `plot_loud_vs_sentence_end.py --arm random`
+  and read entry 44(d)'s table against it.
+- [ ] Run `scripts/analyze_truncation_strategies.py` (written, smoke-tested, unrun) for the
+  arm-vs-arm comparison with the verbalization control.
+- [ ] Decide whether to re-run the `eos` arm under this code. Entry 44(c): it removes 4.6 of
+  the 7.97 points of endpoint disagreement and not the intrinsic 3.3%.
+- [ ] Optionally re-run the 165 argmax files written by the pre-fix batching (~10 min).
+
+---
+
+## Local-belief probes — relabelling the probe target (2026-09-01, log entry 44)
+
+**One line:** relabel the `next_action` probe from the trajectory's final `agent_action`
+to the model's *local belief* at the probed token (what it answers when its reasoning is
+truncated there), and layer-15 balanced accuracy jumps `.745 → .862` (mlp) on the same
+tokens and split.
+
+The label comes from the two truncation rollouts of entry 43:
+
+| probe | tokens | label rollout | samples |
+| --- | --- | --- | --- |
+| **P2** | the existing `recorded_jlens` top-20 (== `next_action_mass_l15`'s tokens) | `jlens_top_k_global` | 71,913 |
+| **P1** | every sentence's loudest token (`loudest_in_sentence`), a new L15 gather | `jlens_argmax_per_sentence` | 75,008 |
+
+Join key: `(name, step, token_id == eos_token_pos)` — all three index `step["output_tokens"]`.
+
+### Pipeline (all under `/workspace/reasoning_theatre/local_belief_probes/`)
+
+```bash
+# 1. probe-1 gather: layer-15 residual at every per-sentence-loudest token (GPU, ~45 min)
+uv run --project /workspace/repo/interp python scripts/gather_local_belief_activations.py \
+    --rollout-dir /workspace/reasoning_theatre/rollout_strategies/jlens_argmax_per_sentence \
+    --out /workspace/activations/argmax_per_sentence_l15
+# tree is size{N}/{stem}/openai__gpt-oss-20b/layer_15/step_0/output/{eos_token_pos}.pt
+
+# 2. probe-1 prepare (probe-2 reuses /workspace/prepared/next_action_mass_l15_jlens)
+interp-cli prepare_activations_for_probing --activations-dir /workspace/activations/argmax_per_sentence_l15 \
+    --trajectories-dir /workspace/trajectories/reveng/trajectories_train_single_step \
+    --probe-type next_action --layers 15 --steps all --output-indices all \
+    --output-path /workspace/prepared/local_belief_p1_final
+
+# 3. relabel: label <- rollout model_action, keep final_label / rollout_answer_prob /
+#    rollout_correct / cutoff_kind / dir_logmass; direction_count = dir_logmass so the
+#    split can rank by loudness. Drops rows with no matching cutoff / null model_action.
+uv run ... python scripts/relabel_manifest_from_rollout.py \
+    /workspace/prepared/local_belief_p1_final \
+    /workspace/reasoning_theatre/rollout_strategies/jlens_argmax_per_sentence \
+    /workspace/prepared/local_belief_p1_local --report-csv p1_relabel_report.csv
+
+# 4. split (SAME 2880/720 partition as the mass baseline) + train lr/mlp
+python scripts/split_next_action_manifest.py /workspace/prepared/local_belief_p1_local \
+    --eval-names /workspace/prepared/next_action_mass_l15_eval_names.txt --single-layer 15 --seed 42 ...
+# scripts/train_all.sh does all 6 (p1 full, p1 top20, p2) x (lr, mlp)
+
+# 5. analysis: pred vs local belief, vs final action, verbalization-confound split
+uv run ... python scripts/eval_local_belief.py <probe.pt> <split_eval_dir>
+```
+
+### Results (balanced accuracy, shared 720-trajectory held-out eval)
+
+| arm | label | lr | mlp |
+| --- | --- | --- | --- |
+| **P2** jlens global top-20 | local belief | .802 | **.862** |
+| **P1** per-sentence, top-20/traj | local belief | .710 | .774 |
+| **P1** per-sentence, all | local belief | .606 | .678 |
+| baseline `next_action_mass_l15` (same tokens as P2) | **final action** | .699 | .745 |
+| random control | final action | .574 | .625 |
+
+On the rows where local belief ≠ final action (P2: 19%): **P2-mlp predicts the local
+belief .77, the final action .14** (entry 41 got .43/.25 at sentence ends). P2-mlp still
+scores .747 against the final action — same as the baseline — so it is a strict
+improvement.
+
+**Survives the token-itself verbalization control.** 34 % of P2's eval tokens are
+direction words (matches 44(d)'s 35 %). On the other 66 %, P2-mlp still scores .850 vs
+local belief (baseline .745) and follows local over final .74/.16 on disagreement rows.
+Verbalized tokens score higher but aren't the mechanism. Unlike 44(d) — where dropping
+direction words sends the *rollout's* sentence-lean into the noise — the *probe* keeps
+tracking belief without them. The ±k proximity window of 42(e) is still uncontrolled
+(the loud token sits ~42 % into its sentence; "closer in time" isn't separated from
+"the lens found it").
+
+### Where things live / what needs merging
+
+- New scripts live under `.../local_belief_probes/scripts/` (not in the repo — the
+  `reasoning_theatre` branch had unrelated uncommitted state and the bg-isolation guard).
+  They belong at `scripts/inference_oss/` (gather, relabel, eval) when someone commits.
+- `SESSION_LOG.txt` → append to `ICLR log.txt` via `ICLR_LOG_ENTRY_DRAFT.txt` (entry 44).
+- This file → append to `claude_session_readme.md`.
+- Probes: `.../local_belief_probes/probes/`. Datasets: `/workspace/prepared/local_belief_p*`.

@@ -64,11 +64,9 @@ def main():
     fig, ax = plt.subplots(figsize=(6, 3.6), facecolor=SURFACE)
     for a, c in zip(ACTIONS, SERIES):
         acc = df[df["agent_action"] == a].groupby("layer")["correct"].mean()
-        ax.plot(acc.index, acc.values, color=c, linewidth=2, marker="o",
-                markersize=5, label=a)
+        ax.plot(acc.index, acc.values, color=c, linewidth=2, marker="o", markersize=5, label=a)
     ax.axhline(0.25, color=MUTED, linewidth=1, linestyle="--")
-    ax.annotate("chance (25%)", (layers[0], 0.25), textcoords="offset points",
-                xytext=(0, 5), color=MUTED, fontsize=8)
+    ax.annotate("chance (25%)", (layers[0], 0.25), textcoords="offset points", xytext=(0, 5), color=MUTED, fontsize=8)
     ax.set_ylim(0, 1)
     ax.set_xlabel("layer")
     ax.set_ylabel("P(taken action ranked best of 4)")
@@ -83,8 +81,7 @@ def main():
     for a, c in zip(ACTIONS, SERIES):
         med = g[f"{a}_logprob"].median()
         lo, hi = g[f"{a}_logprob"].quantile(0.25), g[f"{a}_logprob"].quantile(0.75)
-        ax.plot(med.index, med.values, color=c, linewidth=2, marker="o",
-                markersize=5, label=a)
+        ax.plot(med.index, med.values, color=c, linewidth=2, marker="o", markersize=5, label=a)
         ax.fill_between(med.index, lo, hi, color=c, alpha=0.12, linewidth=0)
     ax.set_xlabel("layer")
     ax.set_ylabel("lens logprob (median, IQR)")
@@ -97,8 +94,7 @@ def main():
     fig, ax = plt.subplots(figsize=(6, 3.6), facecolor=SURFACE)
     for a, c in zip(ACTIONS, SERIES):
         med = g[f"{a}_position"].median()
-        ax.plot(med.index, med.values + 1, color=c, linewidth=2, marker="o",
-                markersize=5, label=a)
+        ax.plot(med.index, med.values + 1, color=c, linewidth=2, marker="o", markersize=5, label=a)
     ax.set_yscale("log")
     ax.set_xlabel("layer")
     ax.set_ylabel("median vocab rank (log)")
@@ -109,18 +105,21 @@ def main():
 
     # ---- Fig 4: accuracy heatmap size x complexity at deepest layer
     last = layers[-1]
-    piv = (df[df["layer"] == last]
-           .pivot_table(index="size", columns="complexity", values="correct"))
+    piv = df[df["layer"] == last].pivot_table(index="size", columns="complexity", values="correct")
     fig, ax = plt.subplots(figsize=(5.6, 3.6), facecolor=SURFACE)
-    im = ax.imshow(piv.values, cmap=plt.matplotlib.colors.LinearSegmentedColormap.from_list(
-        "blue_seq", ["#cde2fb", "#0d366b"]), vmin=0, vmax=1, aspect="auto")
+    im = ax.imshow(
+        piv.values,
+        cmap=plt.matplotlib.colors.LinearSegmentedColormap.from_list("blue_seq", ["#cde2fb", "#0d366b"]),
+        vmin=0,
+        vmax=1,
+        aspect="auto",
+    )
     ax.set_xticks(range(len(piv.columns)), [f"{c:g}" for c in piv.columns])
     ax.set_yticks(range(len(piv.index)), piv.index)
     for i in range(piv.shape[0]):
         for j in range(piv.shape[1]):
             v = piv.values[i, j]
-            ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=8,
-                    color="#ffffff" if v > 0.55 else INK)
+            ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=8, color="#ffffff" if v > 0.55 else INK)
     ax.set_xlabel("complexity")
     ax.set_ylabel("maze size")
     style(ax, f"Decoding accuracy at layer {last}, by maze difficulty")

@@ -24,6 +24,7 @@ from tqdm import tqdm
 from telos_interp.jlens_utils import METHODS
 
 from .jlens_token_selection import (
+    DEFAULT_SCORE,
     LAYER_SELECTIONS,
     RECORDED_SELECTIONS,
     SCORED_SELECTIONS,
@@ -33,6 +34,7 @@ from .jlens_token_selection import (
     SelectionConfig,
     TokenSelection,
     load_direction_tokens,
+    score_names,
     select_token_layer_pairs,
 )
 from .prepare_activations_for_probing_utils import (
@@ -720,6 +722,11 @@ def _generate_dirname(
     if selection.layer_selection != "spec":
         tag = f"{short[selection.layer_selection]}{selection.num_layers or ''}"
         filename = filename.replace(".pt", f"_lay{tag}.pt")
+    # The score mode changes which tokens were picked, so two prepares that differ only in it
+    # are different datasets and must not auto-name onto the same directory. `count` is left
+    # unmarked so every existing recorded invocation keeps producing the name it always did.
+    if selection.direction_score != DEFAULT_SCORE:
+        filename = filename.replace(".pt", f"_{selection.direction_score}.pt")
 
     # Strip the .pt extension — v3 outputs a directory.
     if filename.endswith(".pt"):
@@ -765,6 +772,7 @@ def prepare_activations_for_probing(
     num_layers: int | None = None,
     direction_tokens_path: str | None = None,
     direction_classes: str = "all",
+    direction_score: str = DEFAULT_SCORE,
     jlens_top_k: int = 20,
     token_major: bool = False,
 ) -> None:
@@ -856,6 +864,15 @@ def prepare_activations_for_probing(
         direction_tokens_path: JSON mapping UP/DOWN/LEFT/RIGHT to token strings. Required
             when either selection mode names a lens.
         direction_classes: Which of those lists to count, "all" (union) or e.g. "UP,DOWN".
+        direction_score: How a row's direction hits become a score, for the modes that
+            re-score a CSV. "count" (default) weights every hit equally -- how many of the
+            top-k lens predictions are direction words. "logprob_mass" weights each hit by
+            the lens' own logprob for it and adds them in probability space, so a direction
+            word the lens actually believed outweighs one it barely considered.
+            "logprob_sum" adds the logprobs literally; see `jlens_utils/scoring.py` for why
+            that penalises a token for emitting several direction words. The logprob modes
+            need a CSV with `top_i_logprob` columns and raise on an older one. A
+            `recorded_*` selection ignores this: its scores were fixed by the pruning run.
         jlens_top_k: How many top_i columns of the lens CSV to scan (default 20).
     """
     if seed is not None:
@@ -941,6 +958,17 @@ def prepare_activations_for_probing(
         raise ValueError(f"token_selection='{token_selection}' requires num_tokens to be set")
     if layer_selection != "spec" and num_layers is None:
         raise ValueError(f"layer_selection='{layer_selection}' requires num_layers to be set")
+    if direction_score not in score_names():
+        raise ValueError(f"Unknown direction_score: '{direction_score}'; expected one of {score_names()}")
+    if direction_score != DEFAULT_SCORE and token_selection in RECORDED_SELECTIONS:
+        # The record holds the scores the pruning run computed; honouring the flag here
+        # would report a score in the manifest that nothing was ranked by.
+        raise ValueError(
+            f"token_selection='{token_selection}' reads scores from the selection record, so "
+            f"direction_score='{direction_score}' would have no effect (the record holds the "
+            f"scores the pruning run computed). Re-score a CSV instead -- one of "
+            f"{sorted(SCORED_SELECTIONS)} -- or drop the flag."
+        )
 
     # Resolve the direction vocabulary once; every trajectory's CSV is scored against it.
     direction_tokens: set[str] | None = None
@@ -962,6 +990,7 @@ def prepare_activations_for_probing(
         seed=seed,
         direction_tokens_path=direction_tokens_path,
         direction_classes=direction_classes,
+        direction_score=direction_score,
     )
 
     # For distance probes, enforce steps="0" since astar_distance is only valid for step 0

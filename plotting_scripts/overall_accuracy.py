@@ -83,22 +83,30 @@ def plot_overall_accuracy():
         markeredgewidth=2,
     )
 
-   
-
     # Add accuracy labels to each point
     for i, size in enumerate(grid_sizes):
         # MLP labels (below the point)
         ax.text(
-            size, mlp_accuracies[i] - 0.025,
+            size,
+            mlp_accuracies[i] - 0.025,
             f"{mlp_accuracies[i] * 100:.1f}",
-            ha="center", va="top", fontsize=18, color="darkmagenta", fontweight="bold"
+            ha="center",
+            va="top",
+            fontsize=18,
+            color="darkmagenta",
+            fontweight="bold",
         )
 
-         # LR labels (above the point)
+        # LR labels (above the point)
         ax.text(
-            size, lr_accuracies[i] + 0.025,
+            size,
+            lr_accuracies[i] + 0.025,
             f"{lr_accuracies[i] * 100:.1f}",
-            ha="center", va="bottom", fontsize=18, color="teal", fontweight="bold"
+            ha="center",
+            va="bottom",
+            fontsize=18,
+            color="teal",
+            fontweight="bold",
         )
 
     # Grid lines

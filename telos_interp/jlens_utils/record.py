@@ -25,7 +25,10 @@ v2 keys the arms by method name and gives each its **own config block**::
 
 Per-arm config is not tidiness: an arm added later by an incremental gather carries that
 run's parameters, while the arms already on disk carry the original pruning run's. One
-shared block would have to misreport one of them.
+shared block would have to misreport one of them. It is also where `direction_score` lives —
+the numbers in `direction_count` / `layer_direction_counts` are meaningless without knowing
+whether they are counts or logprobs, and an arm's score mode is fixed at the moment it was
+drawn. A record with no `direction_score` predates the logprob scores and is a count.
 
 v1 — a flat `jlens`/`random` pair of lists and a single `config` — is still **read**, and
 must stay readable: every trajectory pruned before this change has a v1 record, and it is
@@ -36,6 +39,7 @@ shape in memory. The filename is unchanged for the same reason.
 import json
 from pathlib import Path
 
+from .scoring import DEFAULT_SCORE
 from .top_filter import Arm, KeptTokens, TokenPick
 
 RECORD_SUFFIX = "_jlens_selection.json"
@@ -67,7 +71,13 @@ def _pick_to_json(pick: TokenPick, output_start: int | None) -> dict:
     return entry
 
 
-def _pick_from_json(entry: dict) -> TokenPick:
+def _pick_from_json(entry: dict, score_mode: str = DEFAULT_SCORE) -> TokenPick:
+    """One recorded pick. `score_mode` comes from the arm's config, not the entry.
+
+    The scores are read back **uncast**: a count is an int in the file and stays one, a
+    logprob score is a float. Forcing either into `int` would round a logprob to a coarse
+    tie and silently change the ranking the record exists to preserve.
+    """
     counts = entry.get("layer_direction_counts")
     return TokenPick(
         step=int(entry["step"]),
@@ -75,7 +85,8 @@ def _pick_from_json(entry: dict) -> TokenPick:
         layers=tuple(int(layer) for layer in entry["layers"]),
         token=entry.get("token", ""),
         direction_count=entry.get("direction_count"),
-        layer_direction_counts={int(k): int(v) for k, v in counts.items()} if counts else None,
+        layer_direction_counts={int(k): v for k, v in counts.items()} if counts else None,
+        score_mode=score_mode,
     )
 
 
@@ -103,8 +114,7 @@ def build_record(
             name: {
                 "config": config,
                 "picks": [
-                    _pick_to_json(pick, (output_starts or {}).get(pick.step))
-                    for _, pick in sorted(arm.items())
+                    _pick_to_json(pick, (output_starts or {}).get(pick.step)) for _, pick in sorted(arm.items())
                 ],
             }
             for name, arm in kept.arms.items()
@@ -136,11 +146,7 @@ def _from_v1(record: dict) -> dict:
         "format_version": RECORD_FORMAT_VERSION,
         "stem": record.get("stem", ""),
         "model": record.get("model", ""),
-        "arms": {
-            name: {"config": config, "picks": record[name]}
-            for name in V1_ARMS
-            if name in record
-        },
+        "arms": {name: {"config": config, "picks": record[name]} for name in V1_ARMS if name in record},
     }
 
 
@@ -179,7 +185,12 @@ def read_selection_record(path: Path) -> tuple[KeptTokens, dict[str, dict]]:
     arms: dict[str, Arm] = {}
     configs: dict[str, dict] = {}
     for name, block in record.get("arms", {}).items():
-        picks = [_pick_from_json(entry) for entry in block.get("picks", [])]
+        # Which score the recorded numbers are is a property of the *run*, so it lives in
+        # the arm's config; a record written before the logprob scores existed has none and
+        # is a count by definition.
+        config = block.get("config", {})
+        score_mode = config.get("direction_score", DEFAULT_SCORE)
+        picks = [_pick_from_json(entry, score_mode) for entry in block.get("picks", [])]
         arms[name] = {pick.key: pick for pick in picks}
         configs[name] = block.get("config", {})
     return KeptTokens(arms), configs

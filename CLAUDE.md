@@ -108,10 +108,42 @@ under `cells`, keyed by each entry's `cells_key`. Loaders live in
 ### The lens line (jlens and logitlens)
 
 `scripts/jlens_reasoning_tokens.py` does one forward pass per trajectory and emits both the activations
-and a per-trajectory `{stem}_{lens}_analysis.csv` of top-20 lens predictions per (reasoning token, layer).
-Tokens are scored by how many of their top-k lens predictions are direction words, using a vocabulary
-JSON (`data/jlens/direction_tokens_full.json`, `data/jlens/grid_tokens_full.json` in the repo; deployed to
-`/workspace/jlens/` on the GPU host — see **GPU-host paths** above).
+and a per-trajectory `{stem}_{lens}_analysis.csv` of top-20 lens predictions per (reasoning token, layer),
+each with its `top_{i}_logprob`. Tokens are scored by how direction-loaded those predictions are, against a
+vocabulary JSON (`data/jlens/direction_tokens_full.json`, `data/jlens/grid_tokens_full.json` in the repo;
+deployed to `/workspace/jlens/` on the GPU host — see **GPU-host paths** above).
+
+**How a token scores is a second registry**, `jlens_utils/scoring.py`, dispatched by name exactly as the
+methods are: `--direction-score count|logprob_mass|logprob_sum|logprob_mass_full`. `count` is the original
+(how many top-k predictions are direction words) and is the default so nothing already on disk changes
+meaning. A mass score is the count weighted by belief — logsumexp of the matched logprobs, i.e. log of the
+total probability the lens puts on direction words — and is the one to reach for. `logprob_sum` adds the
+logprobs literally, which *multiplies* the probabilities and so scores a token **worse** for emitting
+several direction words; it exists because it is the literal reading, not because it is right. Every mode is
+"higher is better", so every ranker sorts by `-score` without knowing which ran. A row with no hit floors at
+`NO_MATCH_LOGPROB` (-40), never 0 — 0 is `log(p=1)`, the best score there is. A per-layer cell is a real
+log-probability (≤ 0); a token's cross-layer *total* adds probabilities across layers and can exceed 0 — it
+orders tokens, it is not `log P(anything)`.
+
+**Two artifacts, and `source` picks between them.** `logprob_mass` scores the analysis CSV's `top_i_logprob`
+columns, so it only sees direction words that reached the top 20. `logprob_mass_full` reads the
+**direction-mass table**, a wide `(token x layer)` CSV the gather writes beside the analysis CSV whose cells
+are `log P(any direction word)` over the *whole* vocabulary — computed while the `[b, vocab]` logits are
+still on the device, so it costs one gather plus one reduction against logits the unembed already paid for.
+The trade is late binding: a top-k score can be recomputed against a different vocabulary from the CSV
+alone, a mass table is baked at gather time. Since this repo points two vocabularies at the same trees,
+every table is written with a `.meta.json` sidecar naming the one that produced it — **never read a mass
+table without it**. `methods.score_artifact_path` is the single place that maps a score to its file.
+`--direction-mass-json` (defaults to `--signal-json`) chooses the vocabulary, `--no-direction-mass` skips
+the table, and `--no-top-logprobs` drops the 20 logprob columns for runs that will only ever score the mass
+table.
+
+The top-k logprob modes need the `top_{i}_logprob` columns, which only runs from this version emit;
+`read_direction_scores` raises on an older CSV rather than scoring every row as a tie. **Every CSV and every
+selection record currently on disk is pre-logprob**, i.e. a count, and no tree has a mass table yet.
+Re-emitting is a CSV-only pass (`--overwrite --no-save-activations`) that writes no `.pt` and so leaves the
+pruned tree alone; it produces the mass table too. The mode a record's numbers are in lives in that arm's
+`config.direction_score`, and its absence means `count`.
 
 `--lens jlens|logitlens|both`. The two lenses are **one code path**: `apply_lens_transport` with an empty
 `J_rows` *is* the logit lens (unembed each layer where it sits), and layer 23 is that case already, which
@@ -152,6 +184,28 @@ the arm into the record. Arms already recorded keep their picks and config verba
 inherited, never redrawn, because a fresh draw could only sample the survivors. The selection record is
 format v2 (`arms: {name: {config, picks}}`) and still reads v1 — it must, since every pruned trajectory
 has one.
+
+**One layer, not one per token.** `--layers-per-token 1` keeps each token's *own* best layer, so the
+dataset still spans many layers and one probe weight vector is asked to read several representation spaces.
+`split_next_action_manifest.py --single-layer L` pins the whole dataset to one layer instead (`SINGLE_LAYER`
+in the `train_*_arms.sh` pair); `--single-layer best` lets the manifest pick its argmax, but that mean is
+conditional on selection — a layer appears in a manifest only where it won, except layer 15 which is
+force-kept for every token. `scripts/jlens_layer_profile.py` computes the unbiased mean per layer from the
+CSVs (or, with `--direction-score logprob_mass_full`, from the mass tables — unbiased over the vocabulary
+as well as over layers), where every token is scored at every layer, and that is where `L` should come
+from. A control arm
+carries no scores and cannot pick: give it the same explicit `L`.
+
+Or pin the layer at *gather* time, which is stronger: `jlens_reasoning_tokens.py
+--select-candidate-layers 15` narrows the pool the selection ranks and saves from, so tokens are
+ranked by their layer-15 score rather than by a cross-layer total, and only layer 15 lands on disk.
+It does **not** narrow the CSV or the mass table — those still cover `--layers` — so one run can
+select a single layer and still leave the full `(token x layer)` profile behind for
+`jlens_layer_profile.py`. It mirrors `--candidate-layers` on `delete_non_jlens_selected.py`, and the
+two must be given the same pool or a prune keeps different files than the filtered gather wrote; the
+value is recorded in each arm's `config.candidate_layers` (absent/`null` = every layer the artifact
+covers). `scripts/jlens_mass_l15.sh` is the recorded invocation: `logprob_mass_full` ranking at layer
+15 over the same 3600 trajectories the count-era tree drew.
 
 Narrow at training time, not prepare time: `split_next_action_manifest.py --tokens-per-trajectory K
 --layers-per-token M` takes top-K off one prepared dataset (identical to a `--num-tokens K` prepare),
