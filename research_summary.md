@@ -387,6 +387,58 @@ does not win there. Zero reversals under either ruler.
 
 ---
 
+## 9c. Isolating the direction words (entry 49)
+
+`scripts/entry49_direction_word_analysis.py` → `direction_words/` (3 tables, 5 figures,
+`summary.json`). The standing confound: a lens calls a token loud partly because the model has
+already *written* a direction word there. Tested twice before (entry 37(2) inside the selected
+top-20 against the final label; entry 46 on eval-720) — here with the selection gone, the belief
+label, sixteen probes, and **both rulers**.
+
+**1. Both lenses concentrate verbalized tokens; the jlens does it far harder.** Share of tokens
+that ARE direction words, per loudness decile, against a **6.2%** base rate over all 87,221:
+
+| decile | 0 | 5 | 7 | 8 | 9 |
+| --- | --- | --- | --- | --- | --- |
+| jlens loudness | 0.0% | 0.4% | 3.1% | 12.6% | **44.3%** |
+| logitlens loudness | 0.7% | 3.3% | 7.2% | 13.2% | **26.9%** |
+
+7.1× the base rate in the jlens top decile against 4.3× for the logit lens. They are nearly equal
+at decile 8 and part only at the very top.
+
+**2. The gradient survives with every direction word removed** (81,819 non-direction tokens):
+
+| probe (mlp, belief label) | under jlens loudness | under logitlens loudness |
+| --- | --- | --- |
+| jlens top-20 | .399 → .729 (**+.331**) | .469 → .574 (+.104) |
+| final-label baseline | .343 → .597 (+.255) | .410 → .486 (+.076) |
+| logitlens P2 | .478 → .688 (+.210) | .486 → .624 (+.138) |
+| random selection | .511 → .684 (+.174) | .555 → .597 (+.043) |
+
+So loudness is **not** a proxy for "the token says up" — but only *jlens* loudness orders the
+non-verbalized tokens well.
+
+**3. The direction-word advantage is mostly jlens loudness.** Accuracy on direction words minus
+non-direction words, over all tokens vs inside the loudest decile (loudness held ~fixed):
+
+| probe | all tokens | loudest jlens decile | loudest logitlens decile |
+| --- | --- | --- | --- |
+| jlens top-20 belief | +.234 | **+.064** | +.193 |
+| final-label baseline | +.205 | **+.088** | +.176 |
+| random belief | +.133 | **+.066** | +.134 |
+| logitlens P1 belief | +.206 | **+.127** | +.165 |
+
+The all-tokens column is identical under both lenses, as it must be — no binning enters it.
+**Matching on jlens loudness collapses the advantage; matching on logitlens loudness barely moves
+it.** jlens loudness captures most of what makes a direction word decodable; logitlens loudness
+does not.
+
+**4. The label effect does not need verbalized tokens.** On non-direction words only: random
+selection **+10.3 pp** (.4772 → .5806) and jlens top-20 **+6.6 pp** (.4440 → .5099), against
++10.2 and +6.9 over all tokens. Essentially unchanged.
+
+---
+
 ## 10. Landmines
 
 - **Do not subsample an analysis over trajectories.** Entry 44(d)'s two arms were first read on ~100

@@ -435,6 +435,97 @@ a{color:var(--indigo)}
 """
 
 
+DW_FIGURES = [
+    (
+        "q1_direction_share_by_loudness.png",
+        "Direction words concentrate in the loud tokens — and the lenses differ",
+        "Share of evaluated tokens that are themselves direction words, per loudness decile, against the "
+        "6.2% base rate over all 87,221. <b>jlens loudness runs 0.0% → 44.3%</b> across its deciles; "
+        "<b>logitlens loudness 0.7% → 26.9%</b>. Both concentrate verbalized tokens; the Jacobian lens does "
+        "it far harder — 7.1x the base rate in its top decile against 4.3x. The two are nearly equal at "
+        "decile 8 (12.6% vs 13.2%) and only part at the very top.",
+    ),
+    (
+        "q2_gradient_nondirection.png",
+        "The gradient survives with every direction word removed",
+        "The headline claim, asked of the 81,819 <b>non-direction</b> tokens alone. Under <b>jlens "
+        "loudness</b> accuracy still climbs across all ten deciles — jlens-top-20-belief .399→.729 "
+        "(+.331), the final-label baseline .343→.597 (+.255), logitlens-P2-belief .478→.688 (+.210), "
+        "random-belief .511→.684 (+.174). Under <b>logitlens loudness</b> the same probes climb far less "
+        '(+.104, +.076, +.138, +.043). So loudness is not a proxy for "the token says up" — but only '
+        "jlens loudness orders the non-verbalized tokens well.",
+    ),
+    (
+        "q3_gradient_direction.png",
+        "The same gradient on direction words alone",
+        "The 5,401 tokens that ARE direction words. They thin out fast in the quiet deciles — under jlens "
+        "loudness the bottom deciles hold almost none, which is finding 1 restated — so cells below 120 "
+        "rows are computed but not plotted.",
+    ),
+    (
+        "q3_direction_word_gap.png",
+        "Is the direction-word advantage just loudness?",
+        "Accuracy on direction words minus accuracy on non-direction words: over all tokens, and again "
+        "inside the loudest decile only, where loudness is held roughly fixed. Over all tokens the "
+        "advantage is large (+.13 to +.23) and identical under both lenses — it must be, since no binning "
+        "is involved. <b>Matching on jlens loudness collapses it</b> (+.064 to +.127, roughly halved or "
+        "better); <b>matching on logitlens loudness barely moves it</b> (+.134 to +.193). jlens loudness "
+        "captures most of what makes a direction word easy to decode; logitlens loudness does not.",
+    ),
+    (
+        "q4_label_effect_nondirection.png",
+        "The label effect does not need verbalized tokens",
+        "Entry 49's headline — relabelling from the final action to the at-token local belief — "
+        "recomputed on <b>non-direction words only</b>. Random selection <b>+10.3 pp</b> (.4772 → .5806) "
+        "and jlens top-20 <b>+6.6 pp</b> (.4440 → .5099), against +10.2 and +6.9 over all tokens. "
+        "Essentially unchanged: the label effect is not carried by tokens the model already typed. "
+        "Identical under both lenses because no loudness binning enters this quantity.",
+    ),
+]
+
+
+def direction_word_section(root: Path) -> str:
+    """The direction-word analysis. Each figure is ALREADY two-panel (jlens | logitlens),
+    so it is emitted once rather than paired the way the loudness figures are."""
+    plots = root / "direction_words" / "plots"
+    if not plots.exists():
+        return ""
+    out = [
+        "<h2>Isolating the direction words</h2>",
+        "<p class='sub'>The standing confound: a lens calls a token loud partly because the model has "
+        "already <i>written</i> a direction word there, so a probe scoring well on loud tokens might only "
+        "be reading that word. Tested twice before — entry 37(2) inside the selected top-20 against the "
+        "final label, entry 46 on the eval-720 split — and here with the selection gone, the belief label, "
+        "sixteen probes, and both rulers.</p>",
+        "<div class='key'><b>The answer, in one line.</b> Both lenses do concentrate direction words in "
+        "their loud tokens, the Jacobian lens far harder (44.3% vs 26.9% of its top decile against a 6.2% "
+        "base rate) — but the loudness→accuracy gradient survives with every direction word removed, and "
+        "the label effect survives essentially untouched. What does <i>not</i> survive is the assumption "
+        "that the two rulers are interchangeable: matching on jlens loudness collapses the direction-word "
+        "advantage, matching on logitlens loudness does not.</div>",
+    ]
+    for fname, title, body in DW_FIGURES:
+        f = plots / fname
+        if not f.exists():
+            continue
+        out.append(
+            f"<figure><h3>{title}</h3>"
+            f"<p class='lens'>left: jlens loudness &nbsp;·&nbsp; right: logitlens loudness</p>"
+            f"<img src='data:image/png;base64,{b64(f)}' alt='{title}'>"
+            f"<div class='cap'><p class='what'>{body}</p>"
+            "<div class='scroll'><table class='prov settings'><tbody>"
+            f"<tr><th>evaluation set</th><td>{COMMON['eval_set']}</td></tr>"
+            f"<tr><th>evaluation tokens</th><td>81,819 non-direction + 5,401 direction = all 87,221</td></tr>"
+            f"<tr><th>evaluation label</th><td>{COMMON['eval_label_local']}</td></tr>"
+            "<tr><th>direction vocabulary</th><td>the 446-token <code>direction_tokens_full.json</code> — "
+            "a token counts as a direction word if the decoded token string is in it</td></tr>"
+            "<tr><th>metric</th><td>balanced accuracy; cells below 120 rows computed but not plotted</td></tr>"
+            f"<tr><th>file</th><td><code>direction_words/plots/{fname}</code></td></tr>"
+            "</tbody></table></div></div></figure>"
+        )
+    return "\n".join(out)
+
+
 def lens_comparison(sum_j: dict, sum_l: dict) -> str:
     """Per-probe loudness gradient under each ruler, side by side.
 
@@ -581,6 +672,7 @@ def main() -> int:
 
     parts.append("<h2>The two rulers, compared</h2>")
     parts.append(lens_comparison(summary, summary_l))
+    parts.append(direction_word_section(args.out))
 
     parts.append("<h2>What the numbers say</h2>")
     parts.append(

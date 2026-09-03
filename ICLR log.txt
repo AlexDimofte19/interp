@@ -3221,6 +3221,35 @@ csv either, and that is what makes the direction number mean anything.
 	    bash scripts/entry49_baseline_report.sh       # scoring + the page (page skipped)
 	    watch -n 1 ./scripts/entry49_status.sh
 
+	*** (f) ISOLATING THE DIRECTION WORDS, UNDER BOTH RULERS. *** The standing
+	verbalization confound, asked with the selection gone, the belief label, 16
+	probes and BOTH lenses (scripts/entry49_direction_word_analysis.py ->
+	direction_words/, 3 tables, 5 figures).
+
+	  1. BOTH LENSES CONCENTRATE VERBALIZED TOKENS, THE JLENS FAR HARDER. Share of
+	     tokens that ARE direction words, per loudness decile, base rate 6.2%:
+	       jlens loudness      decile 0  0.0%  ... 8  12.6%  9  44.3%   (7.1x base)
+	       logitlens loudness  decile 0  0.7%  ... 8  13.2%  9  26.9%   (4.3x base)
+	     Nearly equal at decile 8; they part only at the very top.
+	  2. THE GRADIENT SURVIVES WITH EVERY DIRECTION WORD REMOVED (81,819 tokens).
+	     Under JLENS loudness, quietest->loudest decile: jlens-top20-belief
+	     .399->.729 (+.331), final-label baseline .343->.597 (+.255), logitlens-P2
+	     .478->.688 (+.210), random-belief .511->.684 (+.174). Under LOGITLENS
+	     loudness the same probes move +.104/+.076/+.138/+.043. Loudness is not a
+	     proxy for "the token says up" -- but only jlens loudness orders the
+	     NON-verbalized tokens well.
+	  3. THE DIRECTION-WORD ADVANTAGE IS MOSTLY JLENS LOUDNESS. Direction minus
+	     non-direction accuracy, all tokens vs inside the loudest decile:
+	       jlens-top20-belief   all +.234   loudest jlens decile +.064   logitlens +.193
+	       final baseline       all +.205                       +.088             +.176
+	       random-belief        all +.133                       +.066             +.134
+	     The all-tokens column is identical under both lenses -- it must be, no
+	     binning enters it. Matching on JLENS loudness collapses the advantage;
+	     matching on LOGITLENS loudness barely moves it.
+	  4. THE LABEL EFFECT DOES NOT NEED VERBALIZED TOKENS. On non-direction words
+	     only: random selection +10.3 pp (.4772->.5806), jlens top-20 +6.6 pp
+	     (.4440->.5099), against +10.2 and +6.9 over all tokens.
+
 	OPEN: (1) no logitlens P1-TOP20 arm, so the logitlens per-sentence rule has no
 	counterpart to the capped jlens row that actually beat the baseline -- one
 	split + two trainings, ~10 min, no GPU rollout. (2) the +-k proximity window of
