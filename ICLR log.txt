@@ -3246,6 +3246,14 @@ csv either, and that is what makes the direction number mean anything.
 	     The all-tokens column is identical under both lenses -- it must be, no
 	     binning enters it. Matching on JLENS loudness collapses the advantage;
 	     matching on LOGITLENS loudness barely moves it.
+	  5. THE TWO RULERS ARE ONLY MODERATELY RELATED, AND THE DIRECTION WORDS ARE
+	     PART OF WHY. jlens loudness vs logitlens loudness over all 87,221 tokens:
+	     Pearson r .437, Spearman rho .411. Remove the 5,401 direction words and it
+	     FALLS to r .368, rho .346. Each lens is largely its own measurement -- which
+	     is why the ~50% top-20 overlap and the inverted orderings above are not
+	     anomalies -- and part of the agreement that does exist is the easy case both
+	     lenses catch, the token the model literally typed. Quote rho, not r: every
+	     use of loudness in this project is a RANKING, not a regression.
 	  4. THE LABEL EFFECT DOES NOT NEED VERBALIZED TOKENS. On non-direction words
 	     only: random selection +10.3 pp (.4772->.5806), jlens top-20 +6.6 pp
 	     (.4440->.5099), against +10.2 and +6.9 over all tokens.

@@ -473,6 +473,19 @@ DW_FIGURES = [
         "captures most of what makes a direction word easy to decode; logitlens loudness does not.",
     ),
     (
+        "q5_lens_agreement.png",
+        "How much do the two rulers actually agree — and is it the direction words?",
+        "<b>jlens loudness on x, logitlens loudness on y</b>, every one of the 87,221 held-out tokens, "
+        "as a log-count hexbin. Left: all tokens, <b>Pearson r = 0.437, Spearman ρ = 0.411</b>. Right: the "
+        "same with all 5,401 direction words removed, <b>r = 0.368, ρ = 0.346</b>. "
+        "<br><br>Two things follow. First, the rulers are only <i>moderately</i> related — ρ ≈ .41 means "
+        "each lens is largely its own measurement, which is why the ~50% top-20 overlap and the inverted "
+        "orderings elsewhere on this page are not anomalies. Second, agreement <b>falls</b> when the "
+        "direction words go, so part of what agreement there is comes from the easy case both lenses "
+        "catch: the token the model literally typed. On everything else they agree less still. Spearman ρ "
+        "is the figure to quote — every use of loudness in this project is a ranking, not a regression.",
+    ),
+    (
         "q4_label_effect_nondirection.png",
         "The label effect does not need verbalized tokens",
         "Entry 49's headline — relabelling from the final action to the at-token local belief — "
@@ -510,7 +523,7 @@ def direction_word_section(root: Path) -> str:
             continue
         out.append(
             f"<figure><h3>{title}</h3>"
-            f"<p class='lens'>left: jlens loudness &nbsp;·&nbsp; right: logitlens loudness</p>"
+            f"<p class='lens'>{'left: all tokens &nbsp;·&nbsp; right: direction words removed' if fname.startswith('q5') else 'left: jlens loudness &nbsp;·&nbsp; right: logitlens loudness'}</p>"
             f"<img src='data:image/png;base64,{b64(f)}' alt='{title}'>"
             f"<div class='cap'><p class='what'>{body}</p>"
             "<div class='scroll'><table class='prov settings'><tbody>"

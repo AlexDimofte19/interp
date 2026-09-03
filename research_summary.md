@@ -433,6 +433,14 @@ The all-tokens column is identical under both lenses, as it must be — no binni
 it.** jlens loudness captures most of what makes a direction word decodable; logitlens loudness
 does not.
 
+**5. The two rulers are only moderately related, and the direction words are part of why.**
+jlens loudness against logitlens loudness over all 87,221 tokens: **Pearson r = 0.437, Spearman
+ρ = 0.411**. Drop the 5,401 direction words and it *falls* to **r = 0.368, ρ = 0.346**. So each
+lens is largely its own measurement — which is why the ~50% top-20 overlap and the inverted
+orderings elsewhere are not anomalies — and part of what agreement exists comes from the easy case
+both lenses catch, the token the model literally typed. Quote ρ, not r: every use of loudness here
+is a ranking.
+
 **4. The label effect does not need verbalized tokens.** On non-direction words only: random
 selection **+10.3 pp** (.4772 → .5806) and jlens top-20 **+6.6 pp** (.4440 → .5099), against
 +10.2 and +6.9 over all tokens. Essentially unchanged.

@@ -276,6 +276,70 @@ def fig_label_effect(t4: pd.DataFrame, out: Path) -> None:
     plt.close(fig)
 
 
+def q5_lens_agreement(cuts: dict[str, pd.DataFrame], out: Path) -> dict:
+    """jlens loudness against logitlens loudness, with and without the direction words.
+
+    The two rulers are used interchangeably nowhere in this project precisely because they
+    disagree -- but "disagree" has been a top-20 overlap number until now. This is the whole
+    joint distribution, and it separates the part of the agreement that is carried by the
+    verbalized tokens (which BOTH lenses light up on, so they agree there almost by
+    construction) from the agreement on everything else.
+
+    Pearson r on the log-masses AND Spearman rho on the ranks: rho is the one that matters,
+    since every use of loudness in this project is a RANKING, not a regression.
+    """
+    j = cuts["jlens"][["name", "step", "token_id", "dir_logmass", "is_dir"]].rename(
+        columns={"dir_logmass": "jlens_logmass"}
+    )
+    l = cuts["logitlens"][["name", "step", "token_id", "dir_logmass"]].rename(
+        columns={"dir_logmass": "logitlens_logmass"}
+    )
+    # merged on the token key, never on row order -- the two cuts are written by separate runs
+    m = j.merge(l, on=["name", "step", "token_id"], how="inner", validate="one_to_one")
+    if len(m) != len(j):
+        raise SystemExit(f"lens merge lost rows: {len(j)} -> {len(m)}")
+
+    stats = {}
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5.6), sharex=True, sharey=True)
+    for ax, (tag, sub, title) in zip(
+        axes,
+        [
+            ("all", m, f"all {len(m):,} reasoning tokens"),
+            ("nodir", m[~m["is_dir"]], f"direction words removed ({int((~m['is_dir']).sum()):,} tokens)"),
+        ],
+        strict=True,
+    ):
+        x = sub["jlens_logmass"].to_numpy()
+        y = sub["logitlens_logmass"].to_numpy()
+        r = float(np.corrcoef(x, y)[0, 1])
+        rho = float(pd.Series(x).corr(pd.Series(y), method="spearman"))
+        stats[tag] = {"n": int(len(sub)), "pearson_r": r, "spearman_rho": rho}
+        hb = ax.hexbin(x, y, gridsize=70, bins="log", cmap="magma_r", mincnt=1, linewidths=0)
+        ax.set_title(title, fontsize=11)
+        ax.set_xlabel("jlens loudness  (layer-15 log direction mass)", fontsize=9)
+        ax.grid(alpha=0.2, linewidth=0.5)
+        ax.text(
+            0.03,
+            0.97,
+            f"Pearson r = {r:.3f}\nSpearman ρ = {rho:.3f}\nn = {len(sub):,}",
+            transform=ax.transAxes,
+            va="top",
+            fontsize=11,
+            bbox={"boxstyle": "round,pad=0.45", "fc": "white", "ec": "#8a1f5e", "alpha": 0.92},
+        )
+        fig.colorbar(hb, ax=ax, label="tokens per bin (log)")
+    axes[0].set_ylabel("logitlens loudness  (layer-15 log direction mass)", fontsize=9)
+    fig.suptitle("How much do the two loudness rulers agree, and is it the direction words?", fontsize=13)
+    fig.tight_layout()
+    fig.savefig(out / "plots" / "q5_lens_agreement.png", dpi=150)
+    plt.close(fig)
+
+    pd.DataFrame([{"subset": k, **v} for k, v in stats.items()]).to_csv(
+        out / "tables" / "q5_lens_agreement.csv", index=False
+    )
+    return stats
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
@@ -302,6 +366,7 @@ def main() -> int:
     fig_split(t23, out)
     fig_gap(t4, out)
     fig_label_effect(t4, out)
+    agree = q5_lens_agreement(cuts, out)
 
     summary = {
         "n_tokens": n,
@@ -317,9 +382,16 @@ def main() -> int:
             for lens in LENSES
         },
         "gaps": t4[t4["probe"].isin(FOCUS)][["lens", "probe", "gap_all", "gap_top_decile"]].to_dict("records"),
+        "lens_agreement": agree,
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
-    print(f"wrote {out} — 3 tables, 5 figures, summary.json", flush=True)
+    print(f"wrote {out} — 4 tables, 6 figures, summary.json", flush=True)
+    for tag, v in agree.items():
+        print(
+            f"  jlens vs logitlens loudness [{tag:5s}] n={v['n']:,}  "
+            f"Pearson r={v['pearson_r']:.3f}  Spearman rho={v['spearman_rho']:.3f}",
+            flush=True,
+        )
     for lens in LENSES:
         c = summary["concentration"][lens]
         print(
