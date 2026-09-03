@@ -6,9 +6,10 @@ while that was the working branch, so read "on `reasoning_theatre`" below as "be
 worktree".
 
 **Newest first, if you only read one thing:** the file is append-only and chronological, so
-the last section is the current state. As of 2026-09-02 that is *Three more baselines for the
-heldout-360 loudness page* (log entry 49) -- **in flight**, three rollout arms running, with
-the commands, the artifact paths and the open items in that section. Before it: *What loudness
+the last section is the current state. As of 2026-09-03 that is *Three more baselines for the
+heldout-360 loudness page* (log entry 49) -- **done**, six probes trained and read on the
+heldout 360; the report page is deliberately not built. See also **`research_summary.md`**,
+the inventory of every probe/dataset/arm/report the whole line has produced. Before it: *What loudness
 buys the probe, with the selection removed* (log entry 48): entry 46 re-run on the **heldout 360** over every
 reasoning token, with a new dense `every_token` rollout arm behind it. Before it: *the
 commitment boundary re-read by the belief-trained probes* (entry 47), *probe loudness*
@@ -958,7 +959,7 @@ Levels are not comparable between the two pages; only shapes are.
 
 ---
 
-## Three more baselines for the heldout-360 loudness page (in flight, log entry 49)
+## Three more baselines for the heldout-360 loudness page (log entry 49)
 
 **One line:** entry 48's ten probes confound the LABEL axis with the SELECTION axis — every
 local-belief probe was selected by the jlens, and the only non-jlens selection (`random`)
@@ -1024,14 +1025,43 @@ Entry 48's `probe_loudness_heldout360/` is **untouched**: the report scripts gai
 `--extra-probes` flag defaulting to empty (entry 47's convention), so re-running any of them
 against entry 48's inputs is byte-identical.
 
-### Verified so far
+### Results
+
+**Eval-720** (identical 71,913 samples, identical split; the new cell is the bottom-left pair):
+
+| tokens | final label | belief label | label effect |
+| --- | --- | --- | --- |
+| random 20 | .574 / .625 | **.660 / .723** | +8.6 / +9.8 |
+| jlens top-20 | .699 / .745 | .802 / .862 | +10.3 / +11.7 |
+| **selection effect** | +12.5 / +12.0 | +14.3 / +13.9 | |
+
+Label and selection are **separable and additive**. With the label fixed, lens quality orders
+random `.723` < logitlens `.796` < jlens `.862` (mlp). `logitlens_p1` is the *uncapped*
+variant (`.574/.644`) so it belongs against jlens P1-**full** (`.606/.678`), not P1-top20.
+
+**⚠ On the heldout 360 the SELECTION ordering inverts** — same probes, all 87,221 tokens,
+mlp vs local belief: random **.5886** (best of all 16) > logitlens .5498 > jlens .5243, a
+mirror image of the eval-720 row. That is entry 37(d)'s distribution shift: a loud-selected
+probe is specialised to loud tokens; the random control generalises. **The LABEL effect
+survives the population change** (+10.2 pp random, +6.9 pp jlens, same tokens). So a
+selection claim must always name its population; a label claim need not.
+
+All ten entry-48 probes reproduce their published heldout numbers to 4 dp (**delta +0.0000**),
+which is the check that the six added arms sit on the same measurement.
+
+### Verified along the way
 
 - step 1: 3600 folders covering the names file exactly (0 missing, 0 extra); over 300 sampled
   records every mass table has a `.meta.json` (logitlens, 446 tokens), one `logitlens` arm at
   layer 15 only, `logprob_mass_full`.
-- arm 1, first 24 trajectories / 517 cutoffs, 0 null labels — `model_action` == the step's
-  action at `end_of_reasoning` **1.000**, at the recorded tokens .842, at `no_reasoning` .375.
-  The 1.000 is the anchor; .375 sits just above the .25 chance floor with the reasoning gone.
+- `recorded_selection` cuts at **every** recorded pick over 600 trajectories / 11,979 picks,
+  0 missed; 1.38% coincide with the `end_of_reasoning` endpoint and keep that kind.
+- rollout label anchors, every arm: `model_action` == the step's action **1.000** at
+  `end_of_reasoning`, .35–.40 at `no_reasoning` (chance .25).
+- relabel joins exact: 0 rows with no matching cutoff in any of the three arms.
+- **Sampling landmine, hit again:** reading the first 40 rollout files *alphabetically* gave
+  4.9 cutoffs/traj for the per-sentence arm against a true **23.9** — the head of the list is
+  all `size11_comp0.0`. Sample randomly. (Entry 44(d) records the same mistake.)
 
 ### Still open
 
@@ -1042,3 +1072,8 @@ against entry 48's inputs is byte-identical.
   Everything else of entry 49 is committed and pushed on `worktree-probe-loudness`.
 - The two logitlens arm directories are named `jlens_*`. A rename is a `mv` plus one path in
   `entry49_baseline_probes.sh`; not done, to avoid touching a running arm.
+- **No logitlens P1-top20 arm**, so the logitlens per-sentence rule has no counterpart to the
+  capped jlens row that beat the baseline. One split + two trainings, ~10 min, no GPU rollout.
+- The report page (`tables/`, `plots/`, `report.html`) is **not built** by request. The two
+  join CSVs are in place and `analyze_probe_loudness.py` / `plot_probe_loudness.py` take them
+  unchanged via `--extra-probes`; `scripts/entry49_baseline_report.sh` runs the lot.

@@ -3048,3 +3048,171 @@ csv either, and that is what makes the direction number mean anything.
 	    python scripts/build_probe_loudness_heldout.py
 	    python scripts/analyze_probe_loudness.py --per-token <out>/per_token.csv --out <out>
 	    python scripts/plot_probe_loudness.py    --per-token <out>/per_token.csv --out <out>/plots
+
+49. THE MISSING CELLS: LABEL AND SELECTION SEPARATED, AND A SECOND LENS
+    (2026-09-03, all six probes trained and read on the held-out 360)
+
+	Entry 48 reads ten probes on the heldout 360. In those ten the LABEL axis and
+	the SELECTION axis are CONFOUNDED: every local-belief probe was selected by the
+	jlens, and the only non-jlens selection (`random`) exists only with the
+	final-action label. So entry 45's "+11.7 pp for the belief label" could not be
+	separated from "the jlens picked the tokens", and no second lens had ever been
+	trained against the belief label. This is entry 38(d).1's missing cell, finally
+	filled -- and it is now three cells, not one.
+
+	THREE NEW ARMS, all local-belief label, all layer 15, all on the SAME 2880/720
+	partition as entries 38 and 45 (eval-set name md5 32d1feac1464, verified
+	identical for all three):
+
+	  random_belief   the EXISTING random control's recorded picks, relabelled
+	  logitlens_p1    each sentence's loudest token BY LOGIT LENS (uncapped)
+	  logitlens_p2    the 20 globally loudest BY LOGIT LENS
+
+	WHAT HAD TO BE BUILT. The training tree held jlens artifacts only -- no
+	logitlens analysis CSV, no logitlens mass table -- so the two logitlens arms
+	needed a whole new tree (1h55m), pinned BY NAME to the 3600 the jlens tree
+	drew. --names-file is new on jlens_reasoning_tokens.py for exactly this: entry
+	36's correction says --per-combo/--seed does not reproduce a previous draw
+	(348/3600 overlap), so the set cannot be re-derived, it has to be pinned.
+	The two logitlens arms needed NO new strategy: JlensArgmaxPerSentenceStrategy
+	and JlensTopKGlobalStrategy take loudness from MassTableLoudness, which is
+	already parameterised by --lens. LENS=logitlens is the whole change. They
+	therefore RUN UNDER THE JLENS STRATEGY NAMES and land in directories called
+	jlens_* while holding logitlens results -- under rollout_strategies_baselines/,
+	not rollout_strategies/, which is untouched. Every result file records
+	strategy.lens; entry49_status.sh prints it per arm.
+
+	The random arm needed a fifth truncation strategy, recorded_selection, which
+	REPLAYS arms.<name>.picks out of {stem}_jlens_selection.json instead of
+	choosing. A control's seeded uniform draw is taken BEFORE the tree is pruned
+	and can never be made again; an arm that must label the same tokens the
+	existing random probe trained on has to read them. Verified over 600
+	trajectories / 11,979 picks: every recorded position is cut, 0 missed. 1.38%
+	of picks coincide with the end_of_reasoning endpoint and keep THAT cutoff_kind
+	(_dedupe, so the same prompt is never run twice) -- no label is lost, since
+	relabel_manifest_from_rollout.py joins on (name, step, eos_token_pos).
+
+	GPU: 1h55m gather + 4h05m / 6h01m / 4h07m arms + 66m P1 gather + ~1h35m
+	scoring. Rollout label anchors held on every arm: model_action == the step's
+	action 1.000 at end_of_reasoning, .35-.40 at no_reasoning (chance .25).
+	Relabel joins were exact -- 0 rows with no matching cutoff in any arm.
+
+	*** (a) RESULT 1: THE LABEL AND THE SELECTION ARE SEPARABLE AND ADDITIVE ***
+	Eval-720 balanced accuracy, identical 71,913 samples and identical split; the
+	only new cell is the bottom-left pair:
+
+	  tokens          final label      belief label     label effect
+	  random 20       .574 / .625      .660 / .723      +8.6 / +9.8
+	  jlens top-20    .699 / .745      .802 / .862     +10.3 / +11.7
+	  selection      +12.5 / +12.0    +14.3 / +13.9
+
+	Relabelling buys ~+9 to +12 pp WHATEVER the selection; loud selection buys
+	~+12 to +14 pp WHATEVER the label. Neither effect was an artifact of the other.
+	The bottom-left cell is the tightest comparison in the round: random_belief vs
+	the random/final control share the same tokens, split and hyperparameters and
+	differ only in the label.
+
+	(b) RESULT 2: LENS QUALITY ORDERS random < logitlens < jlens, LABEL FIXED.
+	Belief label, 20 tokens/traj, identical n and split:
+
+	  random           .660 / .723
+	  logitlens top-20 .730 / .796
+	  jlens top-20     .802 / .862
+
+	Near-evenly spaced. Both lenses beat a uniform draw, and the jlens is the
+	better instrument -- consistent with entry 38(a)'s 26/26. logitlens_p2 (.796
+	mlp) BEATS the jlens FINAL-ACTION baseline (.745) despite the weaker lens: the
+	label is worth more than the lens gap. At the matched per-sentence rule,
+	jlens P1-full .606/.678 against logitlens P1-full .574/.644, a stable
+	-3.2/-3.4 pp. NOTE logitlens_p1 is the UNCAPPED variant (max 230 rows from one
+	trajectory) so it belongs against P1-FULL, not against P1-top20 (.710/.774);
+	there is no logitlens top-20 counterpart yet.
+
+	*** (c) RESULT 3, AND THE ONE THAT CHANGES HOW (b) MUST BE STATED: THE
+	SELECTION ORDERING INVERTS ON THE HELD-OUT SET. *** Same probes, read on all
+	87,221 heldout-360 tokens instead of on their own 20/traj regime (mlp, vs
+	local belief):
+
+	  selection         eval-720 (loud regime)   heldout-360 (every token)
+	  random            .723  (worst)            .5886  (BEST of all 16)
+	  logitlens top-20  .796                     .5498
+	  jlens top-20      .862  (best)             .5243
+
+	A perfect mirror image. This is entry 37(d)'s distribution shift, reproduced
+	with the belief label and with a third arm in the middle: a loud-selected probe
+	only ever saw high-mass tokens and is SPECIALISED to them, while the random
+	control saw a uniform draw and generalises over the whole chain. The two
+	orderings cross exactly where the training distributions do. The logit lens
+	sits between the other two in BOTH orderings, which is what says this is a
+	selection-strength / coverage trade rather than one population flattering one
+	lens.
+
+	THE ASYMMETRY THAT MATTERS: the LABEL effect survives the population change
+	intact -- same tokens, disjoint tree, mlp vs local belief:
+	  random     final .4870 -> belief .5886   +10.2 pp
+	  jlens top20 final .4556 -> belief .5243   +6.9 pp
+	  logitlens_p2 .5498 against the jlens final baseline .4556  +9.4 pp
+	So of the two axes this entry separated, THE LABEL CLAIM NEEDS NO POPULATION
+	CAVEAT AND THE SELECTION CLAIM ALWAYS DOES. Entry 49(b) is a statement about
+	the loud regime only, and must be quoted with (c) beside it.
+
+	(d) REGRESSION CHECK. In the 16-probe rebuild all TEN entry-48 probes reproduce
+	their published heldout-360 numbers to 4 dp, delta +0.0000 on every one. That
+	is the check that the six added arms sit on the same measurement. The join is
+	clean: 0 mass mismatches, 0 final-label mismatches, 1 row of 87,221 whose
+	rollout emitted no valid action.
+
+	(e) A SAMPLING MISTAKE, RECORDED BECAUSE IT IS ENTRY 44(d)'S, AGAIN. Reading
+	the first 40 rollout files ALPHABETICALLY gave 4.9 cutoffs/traj for the
+	per-sentence arm against a true 23.9 -- the head of the list is all
+	size11_comp0.0, the shortest chains. A per-sentence rule scales with chain
+	length and is acutely sensitive to that; a fixed top-20 is capped and barely
+	moves (19.8 vs 19.9). It produced a wrong claim (that logitlens_p1 would train
+	on a third the data; it trains on 74,972, against P1's 75,008) before the
+	gather corrected it. SAMPLE RANDOMLY. The agreement rates in the anchors table
+	above come from the same head-of-list subsamples and are indicative only; the
+	1.000 at end_of_reasoning is robust to any subset.
+
+	ARTIFACTS: /workspace/activations/logitlens_mass_l15 (3600, covering the names
+	file exactly -- 0 missing, 0 extra; every mass table has its .meta.json, every
+	record one `logitlens` arm at layer 15 alone),
+	/workspace/activations/logitlens_argmax_per_sentence_l15 (74,975 .pt, 0 NaN),
+	/workspace/reasoning_theatre/rollout_strategies_baselines/ (3 arms x 3600),
+	/workspace/prepared/entry49_* , /workspace/probes/local_belief_baselines/ (6),
+	/workspace/reasoning_theatre/probe_loudness_heldout360_16probes/
+	(heldout360_16probes.csv 87,221 rows x 16 probes; per_token.csv 261,663 rows).
+	THE REPORT PAGE IS DELIBERATELY NOT BUILT -- tables/, plots/ and report.html
+	are absent by request; the two join CSVs are there and analyze/plot take them
+	unchanged via --extra-probes.
+
+	NEW FILE: research_summary.md -- the inventory this log is not. Every probe
+	across four eras with its selection, layers, label, eval-720 and heldout-360
+	numbers; the trajectory sets and why cross-era numbers do not compare; the
+	selection mechanisms; the activation trees; the six rollout arms; the prepared
+	datasets; the six reports with artifact URLs and figure counts; the landmines.
+
+	COMMITTED as 7f8649b (recorded_selection + --names-file + the --extra-probes
+	flags), 85295bd (the three pipeline scripts, and entry 45's gather/relabel/eval
+	scripts finally moved into scripts/inference_oss/), 3bebcc2 (NAMES_FILE and
+	--extra gpu on jlens_mass_l15.sh), 410b46b + a follow-up (entry49_status.sh),
+	6478129 (the handoff section), f209b75 + 4f8e66a (research_summary.md), on
+	branch worktree-probe-loudness, pushed to origin. STILL UNCOMMITTED:
+	--names-file and the has_work() guard live in scripts/jlens_reasoning_tokens.py
+	and tests/test_jlens_reasoning_tokens.py, which already carried ~959 and ~220
+	lines of older uncommitted working state -- landing mine lands that too, so it
+	is left for a human.
+
+	    LENS=logitlens SELECT_METHODS=logitlens \
+	    ACTIVATIONS_DIR=/workspace/activations/logitlens_mass_l15 \
+	    NAMES_FILE=/workspace/reasoning_theatre/rollout_strategies/mass_l15_names.txt \
+	      bash scripts/jlens_mass_l15.sh              # 1h55m, 3600/3600
+	    bash scripts/entry49_baseline_arms.sh         # 3 arms, 14h13m
+	    bash scripts/entry49_baseline_probes.sh       # gather/relabel/split/train
+	    bash scripts/entry49_baseline_report.sh       # scoring + the page (page skipped)
+	    watch -n 1 ./scripts/entry49_status.sh
+
+	OPEN: (1) no logitlens P1-TOP20 arm, so the logitlens per-sentence rule has no
+	counterpart to the capped jlens row that actually beat the baseline -- one
+	split + two trainings, ~10 min, no GPU rollout. (2) the +-k proximity window of
+	entry 42(e) is STILL the last uncontrolled confound. (3) no random-position
+	truncation arm (entry 44(d)'s matched control). (4) layer 15 only.
