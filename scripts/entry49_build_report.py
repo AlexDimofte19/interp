@@ -52,9 +52,16 @@ COMMON = {
         "by the commitment-boundary pages"
     ),
     "eval_label_final": "<b>final action</b> — the trajectory's own <code>agent_action</code>, i.e. where it ended up",
-    "loudness": (
-        "layer-15 full-vocabulary direction mass, <code>log Σ p(t)</code> over the 446-token "
-        "<code>direction_tokens_full.json</code>, read from the jlens mass table"
+    "loudness_jlens": (
+        "<b>jlens loudness</b> — layer-15 full-vocabulary direction mass under the <b>Jacobian lens</b>, "
+        "<code>log Σ p(t)</code> over the 446-token <code>direction_tokens_full.json</code> "
+        "(<code>jlens_mass_L15</code>)"
+    ),
+    "loudness_logitlens": (
+        "<b>logitlens loudness</b> — the same quantity under the <b>logit lens</b> "
+        "(<code>logitlens_mass_L15</code>). At layer 15 the two lenses' top-20 token sets overlap only "
+        "~50%, and the logit lens puts ~6x less mass on direction words (mean log-mass −5.23 vs −3.38), "
+        "so these are genuinely different rulers"
     ),
     "train_set": "2,880 training trajectories (the 720 eval trajectories are held out of training and are a different set again)",
     "hparams": "lr / mlp(1024), lr 3e-4, wd 1e-3, dropout 0, 50 epochs, batch 512, class-weight balanced, normalized, seed 42",
@@ -252,24 +259,24 @@ ROWSET_NOTE = (
 
 FIGURES: dict[str, dict] = {
     "loudness_distribution.png": P(
-        title="Loudness distribution",
-        shows="Distribution of layer-15 direction mass over the evaluated tokens, against the all-token reference.",
+        title="Loudness distribution — jlens vs logitlens",
+        shows="Distribution of layer-15 direction mass over the evaluated tokens, against the all-token reference — left under <b>jlens loudness</b>, right under <b>logitlens loudness</b>.",
         probes=[],
         rowset=None,
-        x="direction mass (log and probability form)",
-        note="Three coincident curves — since entry 48 the rowsets hold the same rows, so their loudness distributions are identical by construction.",
+        x="direction mass, log and probability form, under the lens named above each panel",
+        note="Three coincident curves — since entry 48 the rowsets hold the same rows, so their distributions are identical by construction. The two panels differ because the lenses do: logitlens loudness sits ~6x lower in mass than jlens loudness.",
     ),
     "{rs}_by_mass_decile.png": P(
-        title="Balanced accuracy by loudness decile",
-        shows="Each probe's balanced accuracy against the at-token local belief, within deciles of loudness.",
-        x="loudness decile (9 = loudest), equal-count bins over the evaluated rows",
-        note="The headline shape: does a louder token decode better, with no selection truncating the axis?",
+        title="Balanced accuracy by loudness decile — jlens vs logitlens",
+        shows="Each probe's balanced accuracy against the at-token local belief, within deciles of loudness — left panel binned by <b>jlens loudness</b>, right panel by <b>logitlens loudness</b>.",
+        x="loudness decile (9 = loudest), equal-count bins — under the lens named above each panel",
+        note="The headline shape: does a louder token decode better, with no selection truncating the axis? Ask it of each lens separately — the two rulers disagree about which tokens are loud.",
     ),
     "{rs}_by_sentence_frac.png": P(
         title="Balanced accuracy by position within the sentence",
         shows="The same accuracy, binned by where the token sits inside its own sentence.",
         x="position in its sentence, decile (0 = first token) — this is <code>frac_in_sentence</code>, NOT <code>sentence_idx/n_sentences</code>",
-        note="The control for entry 44(e): loudness and sentence position are correlated, so the position axis must be read beside the loudness one.",
+        note="The control for entry 44(e): loudness and sentence position are correlated under <i>both</i> lenses, so the position axis must be read beside the loudness one.",
     ),
     "{rs}_by_rel_sentence.png": P(
         title="Balanced accuracy around the commitment boundary",
@@ -279,21 +286,21 @@ FIGURES: dict[str, dict] = {
     ),
     "{rs}_mass_x_position.png": P(
         title="Loudness × position (one probe)",
-        shows="Accuracy on a loudness-tercile × sentence-position-tercile grid, for a single mlp probe.",
-        x="loudness tercile (columns) × position tercile (rows)",
-        note="Separates the two correlated axes: movement across loudness at fixed position vs across position at fixed loudness.",
+        shows="Accuracy on a loudness-tercile × sentence-position-tercile grid, for a single mlp probe — loudness under the lens named above each panel.",
+        x="loudness tercile (columns, under the panel's own lens) × position tercile (rows)",
+        note="Separates the two correlated axes: movement across that panel's loudness at fixed position, vs across position at fixed loudness.",
     ),
     "{rs}_follows_by_mass.png": P(
-        title="Which label the probe follows, by loudness",
+        title="Which label the probe follows, by loudness — jlens vs logitlens",
         shows="On rows where the local belief and the final action DISAGREE: how often the probe predicts the belief, the final action, or neither.",
-        x="loudness decile",
+        x="loudness decile, under the lens named above each panel",
         note="Restricted to disagreement rows only. This is where a final-action-trained probe can be seen switching to reporting the current belief.",
     ),
     "{rs}_chain_length_control.png": P(
-        title="Loudness gradient inside chain-length quartiles",
-        shows="The loudness→accuracy gradient re-cut within quartiles of reasoning-chain length.",
-        x="loudness tercile, one panel per chain-length quartile",
-        note="Entry 46's landmine: inside a fixed top-K arm, loudness correlates with chain length (r = +0.42) and the two effects cancel. On this page selection is removed and the confound is gone (r = −0.010) — the panel is kept as the check.",
+        title="Loudness gradient inside chain-length quartiles — jlens vs logitlens",
+        shows="The loudness→accuracy gradient re-cut within quartiles of reasoning-chain length, under each lens.",
+        x="loudness tercile (that panel's lens), one sub-panel per chain-length quartile",
+        note="Entry 46's landmine: inside a fixed top-K arm, <b>jlens loudness</b> correlates with chain length (r = +0.42) and the two effects cancel. On this page selection is removed and the confound is gone (r = −0.010) — the panel is kept as the check. Both r values were measured under jlens loudness.",
     ),
     "p2_label_comparison.png": P(
         title="The two labels, side by side",
@@ -344,11 +351,12 @@ def caption(fname: str, spec: dict, rs: str | None, keys: list[str]) -> str:
     <tr><th>evaluation label</th><td>{COMMON["eval_label_local"]}</td></tr>
     <tr><th>comparison label</th><td>{COMMON["eval_label_final"]}</td></tr>
     <tr><th>activations</th><td>{COMMON["eval_layer"]}</td></tr>
-    <tr><th>loudness axis</th><td>{COMMON["loudness"]}</td></tr>
+    <tr><th>left panel — loudness</th><td>{COMMON["loudness_jlens"]}</td></tr>
+    <tr><th>right panel — loudness</th><td>{COMMON["loudness_logitlens"]}</td></tr>
     <tr><th>metric</th><td>balanced accuracy — mean per-class recall over LEFT/UP/RIGHT/DOWN present in the bin; chance = .25</td></tr>
     <tr><th>training set</th><td>{COMMON["train_set"]}</td></tr>
     <tr><th>training hyperparameters</th><td>{COMMON["hparams"]}</td></tr>
-    <tr><th>file</th><td><code>plots/{fname}</code></td></tr>
+    <tr><th>files</th><td><code>plots/{fname}</code> (jlens loudness) &middot; <code>plots_logitlens_loudness/{fname}</code> (logitlens loudness)</td></tr>
   </tbody></table></div>
   <p class="note"><b>Note.</b> {spec["note"]}</p>
   {rows}
@@ -394,7 +402,13 @@ h2{font-size:23px;font-weight:600;margin:52px 0 12px;padding-top:20px;border-top
 figure{margin:28px 0 0;padding:20px;background:var(--card);border:1px solid var(--line);border-radius:8px}
 figure h3{margin:0;font-size:18px;font-weight:600}
 figure img{width:100%;height:auto;display:block;background:#fff;border:1px solid var(--line);
-  border-radius:5px;margin:12px 0 4px}
+  border-radius:5px;margin:6px 0 4px}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:12px 0 4px}
+@media (max-width:820px){.pair{grid-template-columns:1fr}}
+.panel{min-width:0}
+.lens{margin:0;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--magenta);font-weight:600}
+.lenshint{margin:2px 0 0;font-size:11.5px;color:var(--mut)}
 .cap{font-size:13.5px}
 .what{margin:10px 0}
 .rs{margin:10px 0;padding:9px 12px;background:var(--warn-bg);border-left:3px solid var(--ochre);border-radius:4px}
@@ -421,12 +435,82 @@ a{color:var(--indigo)}
 """
 
 
+def lens_comparison(sum_j: dict, sum_l: dict) -> str:
+    """Per-probe loudness gradient under each ruler, side by side.
+
+    ``delta`` is the balanced-accuracy rise from the quietest decile to the loudest, and
+    ``reversals`` counts decile-to-decile drops -- so a bigger delta with zero reversals is a
+    ruler that orders decodability better. The question this table answers is whether the
+    logit lens orders the probes' own tokens as cleanly as the Jacobian lens does, including
+    for the two arms the logit lens actually selected.
+    """
+    rows_j = sum_j.get("rowsets", {}).get("p2", {}).get("mass_monotonicity", {})
+    rows_l = sum_l.get("rowsets", {}).get("p2", {}).get("mass_monotonicity", {})
+    if not rows_j or not rows_l:
+        return "<p class='note'>Lens comparison unavailable — one of the two summaries is missing.</p>"
+    out = [
+        "<div class='scroll'><table class='res'><thead><tr><th>probe</th>"
+        "<th>jlens loudness — quietest → loudest</th><th>Δ</th><th>rev</th>"
+        "<th>logitlens loudness — quietest → loudest</th><th>Δ</th><th>rev</th>"
+        "<th>which ruler orders it better</th></tr></thead><tbody>"
+    ]
+    for k in rows_j:
+        if k not in rows_l:
+            continue
+        j, l = rows_j[k], rows_l[k]
+        name = PROBES.get(k, {}).get("label", k)
+        win = "jlens" if j["delta"] > l["delta"] else "logitlens"
+        margin = abs(j["delta"] - l["delta"])
+        out.append(
+            f"<tr><td>{name}</td>"
+            f"<td>{j['first']:.3f} → {j['last']:.3f}</td><td>{j['delta']:+.3f}</td><td>{j['n_reversals']}</td>"
+            f"<td>{l['first']:.3f} → {l['last']:.3f}</td><td>{l['delta']:+.3f}</td><td>{l['n_reversals']}</td>"
+            f"<td><b>{win}</b> by {margin:.3f}</td></tr>"
+        )
+    return "\n".join(out) + "</tbody></table></div>"
+
+
+def pair(plots_j: Path, plots_l: Path, fname: str, spec: dict, rs: str | None, keys: list[str]) -> str:
+    """One figure, drawn twice: binned by jlens loudness and by logitlens loudness.
+
+    Same probes, same rows, same metric -- the ONLY difference between the two panels is
+    which lens's layer-15 direction mass defines the x axis. Showing them apart would let a
+    reader carry a conclusion from one ruler to the other, which is exactly the mistake the
+    single-lens version of this page invited for the two logitlens-selected arms.
+    """
+    panels = []
+    for lens, root, note in (
+        ("jlens loudness", plots_j, "the Jacobian lens — the ruler every page before entry 49 used"),
+        ("logitlens loudness", plots_l, "the logit lens — the ruler the ll1 / ll2 arms were actually selected by"),
+    ):
+        f = root / fname
+        if not f.exists():
+            continue
+        panels.append(
+            f"<div class='panel'><p class='lens'>{lens}</p>"
+            f"<img src='data:image/png;base64,{b64(f)}' alt='{spec['title']} — {lens}'>"
+            f"<p class='lenshint'>{note}</p></div>"
+        )
+    if not panels:
+        return ""
+    return (
+        f"<figure><h3>{spec['title']}</h3><div class='pair'>"
+        + "".join(panels)
+        + "</div>"
+        + caption(fname, spec, rs, keys)
+        + "</figure>"
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", type=Path, default=OUT_DEFAULT)
     args = ap.parse_args()
-    plots = args.out / "plots"
+    plots_j = args.out / "plots"
+    plots_l = args.out / "plots_logitlens_loudness"
     summary = json.loads((args.out / "summary.json").read_text()) if (args.out / "summary.json").exists() else {}
+    sum_l_path = args.out / "logitlens_loudness" / "summary.json"
+    summary_l = json.loads(sum_l_path.read_text()) if sum_l_path.exists() else {}
 
     rowset_probes = {rs: list(b.get("overall", {})) for rs, b in summary.get("rowsets", {}).items()}
 
@@ -442,9 +526,15 @@ def main() -> int:
         "<p class='eyebrow'>ICLR log entry 49 &middot; probe loudness, selection removed</p>",
         "<h1>Sixteen Probes on the Held-Out 360</h1>",
         "<p class='sub'>Entry 48's page with the three entry-49 arms added — random selection with the "
-        "belief label, and both logit-lens arms. Every probe is read on the identical 87,221 tokens. "
-        "Every figure below carries its full provenance: which probes, trained on what, with which label, "
+        "belief label, and both logit-lens arms. Every probe is read on the identical 87,221 tokens, and "
+        "<b>every figure is drawn twice: once binned by jlens loudness, once by logitlens loudness</b>. "
+        "Each carries its full provenance underneath: which probes, trained on what, with which label, "
         "evaluated against what.</p>",
+        "<div class='key'><b>Loudness is never unqualified on this page.</b> It is always <i>jlens "
+        "loudness</i> (Jacobian lens) or <i>logitlens loudness</i> (logit lens) — two different rulers "
+        "whose top-20 token sets overlap only ~50% at layer 15. Every page before this one binned by "
+        "jlens loudness alone, which meant the two logitlens-selected arms were being ordered by a ruler "
+        "they were never selected by. Both are shown side by side throughout, left and right.</div>",
         "<div class='key'><b>Read this first.</b> Every probe here was <b>trained</b> on a selected ~20 "
         "tokens per trajectory, and every probe is <b>evaluated</b> on <b>all</b> 87,221 reasoning tokens "
         "of a disjoint set of trajectories, selected by nothing. That gap between the training and "
@@ -456,13 +546,7 @@ def main() -> int:
     order = ["p1_full", "p1_top20", "p2"]
     parts.append("<h2>Loudness distribution</h2>")
     f = "loudness_distribution.png"
-    if (plots / f).exists():
-        spec = FIGURES[f]
-        parts.append(
-            f"<figure><h3>{spec['title']}</h3><img src='data:image/png;base64,{b64(plots / f)}' alt='{spec['title']}'>"
-            + caption(f, spec, None, [])
-            + "</figure>"
-        )
+    parts.append(pair(plots_j, plots_l, f, FIGURES[f], None, []))
 
     titles = {
         "p1_full": "Rowset p1_full — the two uncapped jlens per-sentence probes",
@@ -481,7 +565,7 @@ def main() -> int:
             "{rs}_chain_length_control.png",
         ]:
             fname = tmpl.format(rs=rs)
-            if not (plots / fname).exists():
+            if not (plots_j / fname).exists() and not (plots_l / fname).exists():
                 continue
             spec = FIGURES[tmpl]
             shown = keys
@@ -489,22 +573,14 @@ def main() -> int:
                 shown = [k for k in keys if k.endswith("mlp")][:1]
             elif "follows_by_mass" in tmpl or "chain_length" in tmpl:
                 shown = [k for k in keys if k.endswith("mlp")]
-            parts.append(
-                f"<figure><h3>{spec['title']}</h3>"
-                f"<img src='data:image/png;base64,{b64(plots / fname)}' alt='{spec['title']}'>"
-                + caption(fname, spec, rs, shown)
-                + "</figure>"
-            )
+            parts.append(pair(plots_j, plots_l, fname, spec, rs, shown))
 
     f = "p2_label_comparison.png"
-    if (plots / f).exists():
-        spec = FIGURES[f]
-        parts.append("<h2>The two labels, side by side</h2>")
-        parts.append(
-            f"<figure><h3>{spec['title']}</h3><img src='data:image/png;base64,{b64(plots / f)}' alt='{spec['title']}'>"
-            + caption(f, spec, "p2", rowset_probes.get("p2", []))
-            + "</figure>"
-        )
+    parts.append("<h2>The two labels, side by side</h2>")
+    parts.append(pair(plots_j, plots_l, f, FIGURES[f], "p2", rowset_probes.get("p2", [])))
+
+    parts.append("<h2>The two rulers, compared</h2>")
+    parts.append(lens_comparison(summary, summary_l))
 
     parts.append("<h2>What the numbers say</h2>")
     parts.append(

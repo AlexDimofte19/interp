@@ -60,6 +60,13 @@ from pathlib import Path
 # embedded commas and newlines, which pandas' NA handling silently corrupts.
 csv.field_size_limit(10**9)
 
+# WHICH LENS DEFINES LOUDNESS. Both source CSVs carry jlens_mass_L15 and logitlens_mass_L15
+# side by side, so this is a column choice and never a re-gather. It was hard-coded to the
+# jlens, which silently binned the logitlens-selected probes by a ruler they were never
+# selected by -- at layer 15 the two lenses' top-20 sets overlap only ~50%. Set by
+# --mass-column; every downstream caption must name the lens it got.
+DEFAULT_MASS_COLUMN = "jlens_mass_L15"
+
 # id -> action, the fixed LEFT,UP,RIGHT,DOWN order eval_probe_per_token.py writes its
 # --full-probs columns in and plot_commitment_probs.py already uses.
 ID2A = {0: "LEFT", 1: "UP", 2: "RIGHT", 3: "DOWN"}
@@ -123,7 +130,7 @@ BASE_FIELDS = [
 ]
 
 
-def read_commitment(path: Path) -> dict[str, dict[int, dict[int, dict]]]:
+def read_commitment(path: Path, mass_column: str = DEFAULT_MASS_COLUMN) -> dict[str, dict[int, dict[int, dict]]]:
     """``{name: {step: {token_id: coords}}}`` from the commitment-boundary CSV.
 
     Only the columns this script needs are kept. ``token_idx`` there indexes
@@ -140,7 +147,7 @@ def read_commitment(path: Path) -> dict[str, dict[int, dict[int, dict]]]:
                 "size": r["size"],
                 "complexity": r["complexity"],
                 "label_final": r["label_name"],
-                "dir_logmass": float(r["jlens_mass_L15"]),
+                "dir_logmass": float(r[mass_column]),
                 "n_sentences": r["n_sentences"],
                 "sentence_idx": r["sentence_idx"],
                 "pos_in_sentence": r["pos_in_sentence"],
@@ -153,7 +160,9 @@ def read_commitment(path: Path) -> dict[str, dict[int, dict[int, dict]]]:
     return out
 
 
-def read_probe_csv(path: Path) -> tuple[dict[str, dict[int, dict[int, dict]]], list[str]]:
+def read_probe_csv(
+    path: Path, mass_column: str = DEFAULT_MASS_COLUMN
+) -> tuple[dict[str, dict[int, dict[int, dict]]], list[str]]:
     """``{name: {step: {token_idx: {probe_key: (pred, {action: p})}}}}`` plus the mass column."""
     out: dict[str, dict[int, dict[int, dict]]] = defaultdict(lambda: defaultdict(dict))
     with open(path, encoding="utf-8", newline="") as fh:
@@ -178,7 +187,7 @@ def read_probe_csv(path: Path) -> tuple[dict[str, dict[int, dict[int, dict]]], l
                 )
                 for key, src in PROBE_SOURCE.items()
             }
-            cell["_mass"] = float(r["jlens_mass_L15"])
+            cell["_mass"] = float(r[mass_column])
             cell["_label_final"] = r["label_name"]
             out[r["name"]][int(r["step"])][int(r["token_idx"])] = cell
     return out, sorted(have)
@@ -212,6 +221,22 @@ def ranks(values: dict[int, float]) -> dict[int, int]:
     """token_id -> rank of its mass, 1 = loudest. Ties break toward the earlier token."""
     order = sorted(values, key=lambda t: (-values[t], t))
     return {t: i + 1 for i, t in enumerate(order)}
+
+
+def register_extra_probes(spec: str, rowset: str) -> None:
+    """Add ``key=probe_key`` pairs to PROBE_SOURCE and to ``rowset``. Empty spec is a no-op."""
+    for pair in (t.strip() for t in spec.split(",") if t.strip()):
+        key, sep, src = pair.partition("=")
+        if not sep or not key or not src:
+            raise SystemExit(f"--extra-probes entry {pair!r} is not key=probe_key")
+        if key in PROBE_SOURCE:
+            raise SystemExit(f"--extra-probes key {key!r} already exists; keys must be unique")
+        if rowset not in ROWSETS:
+            raise SystemExit(f"unknown --extra-probes-rowset {rowset!r}")
+        PROBE_SOURCE[key] = src
+        ROWSETS[rowset].append(key)
+    if spec:
+        print(f"{len(PROBE_SOURCE)} probe(s) after --extra-probes: {', '.join(PROBE_SOURCE)}", flush=True)
 
 
 def main() -> int:
@@ -255,21 +280,19 @@ def main() -> int:
         "identical rows here, and p2 is the one whose figures carry the label contrast).",
     )
     ap.add_argument("--mass-tol", type=float, default=1e-6, help="max |probe CSV mass - commitment CSV mass|.")
+    ap.add_argument(
+        "--mass-column",
+        default="jlens_mass_L15",
+        choices=["jlens_mass_L15", "logitlens_mass_L15"],
+        help="Which lens's layer-15 direction mass becomes `dir_logmass`, i.e. the loudness axis "
+        "every downstream figure bins on. Default jlens_mass_L15, which is what every page before "
+        "entry 49 used. Say WHICH LENS in any caption built from the output.",
+    )
     ap.add_argument("--limit", type=int, default=None, help="first N trajectories (smoke test).")
     args = ap.parse_args()
 
-    for pair in (t.strip() for t in args.extra_probes.split(",") if t.strip()):
-        key, sep, src = pair.partition("=")
-        if not sep or not key or not src:
-            raise SystemExit(f"--extra-probes entry {pair!r} is not key=probe_key")
-        if key in PROBE_SOURCE:
-            raise SystemExit(f"--extra-probes key {key!r} already exists; keys must be unique")
-        if args.extra_probes_rowset not in ROWSETS:
-            raise SystemExit(f"unknown --extra-probes-rowset {args.extra_probes_rowset!r}")
-        PROBE_SOURCE[key] = src
-        ROWSETS[args.extra_probes_rowset].append(key)
-    if args.extra_probes:
-        print(f"{len(PROBE_SOURCE)} probe(s) after --extra-probes: {', '.join(PROBE_SOURCE)}", flush=True)
+    print(f"loudness axis: {args.mass_column}", flush=True)
+    register_extra_probes(args.extra_probes, args.extra_probes_rowset)
 
     wanted = list(ROWSETS) if args.rowsets == "all" else args.rowsets.split(",")
     unknown = [r for r in wanted if r not in ROWSETS]
@@ -278,9 +301,9 @@ def main() -> int:
     vocab = {t for lst in json.loads(args.signal_json.read_text()).values() for t in lst}
 
     print(f"reading {args.commitment_csv}", flush=True)
-    coords = read_commitment(args.commitment_csv)
+    coords = read_commitment(args.commitment_csv, args.mass_column)
     print(f"reading {args.probe_csv}", flush=True)
-    probes, _ = read_probe_csv(args.probe_csv)
+    probes, _ = read_probe_csv(args.probe_csv, args.mass_column)
     print(f"reading {args.rollout_dir}", flush=True)
     rollouts = read_rollouts(args.rollout_dir)
     print(

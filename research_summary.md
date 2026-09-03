@@ -359,6 +359,34 @@ tokens under **both** rankings.
 
 ---
 
+## 9b. The two loudness rulers, compared (entry 49)
+
+**Say which lens.** "Loudness" is always *jlens loudness* (Jacobian lens) or *logitlens loudness*
+(logit lens) — never bare. At layer 15 their top-20 token sets overlap only ~50% and the logit lens
+puts ~6x less mass on direction words (mean log-mass −5.23 vs −3.38). Every page before entry 49
+binned by **jlens loudness alone**, hard-coded in `build_probe_loudness_heldout.py`, which meant the
+two logitlens-selected arms were being ordered by a ruler they were never selected by. `--mass-column`
+now selects it; both cuts exist.
+
+Balanced-accuracy rise from the quietest to the loudest decile, heldout 360, all 87,221 tokens:
+
+| probe | jlens loudness Δ | logitlens loudness Δ | better ruler |
+| --- | --- | --- | --- |
+| P2 jlens top-20, mlp | +.358 | +.154 | jlens by .204 |
+| baseline jlens top-20 final, mlp | +.290 | +.119 | jlens by .171 |
+| random control final, mlp | — | — | jlens by .140 |
+| random selection belief, mlp | — | — | jlens by .125 |
+| **logitlens P1, mlp** | — | — | **jlens by .061** |
+| **logitlens P2, mlp** | — | — | **jlens by .068** |
+
+**jlens loudness orders decodability better for all 12 probes — including the two the logit lens
+selected.** That extends entry 38(a)'s 26/26 to the belief-label arms. The margin is much narrower on
+the logitlens-selected arms (+.04 to +.07) than on the jlens ones (+.15 to +.20), which is the
+expected shape: the logit lens is closest to competitive on the tokens it chose itself, and still
+does not win there. Zero reversals under either ruler.
+
+---
+
 ## 10. Landmines
 
 - **Do not subsample an analysis over trajectories.** Entry 44(d)'s two arms were first read on ~100
@@ -370,6 +398,8 @@ tokens under **both** rankings.
 - **`sentence_frac` means two different things.** In the probe-loudness CSVs it is position *within*
   a sentence; in the commitment CSV that quantity is `frac_in_sentence` and `sentence_frac` is
   `sentence_idx / n_sentences`.
+- **Never say "loudness" unqualified.** It means *jlens loudness* by default in this repo's tooling
+  and that default is invisible. Say jlens/logitlens, and show both where the column exists.
 - **Never read a mass table without its `.meta.json`** — two vocabularies point at the same trees.
 - **Token-major manifests leak under a row-level split.** Use `split_next_action_manifest.py`, which
   splits over unique trajectory names.
