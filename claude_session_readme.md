@@ -1074,6 +1074,7 @@ which is the check that the six added arms sit on the same measurement.
   `entry49_baseline_probes.sh`; not done, to avoid touching a running arm.
 - **No logitlens P1-top20 arm**, so the logitlens per-sentence rule has no counterpart to the
   capped jlens row that beat the baseline. One split + two trainings, ~10 min, no GPU rollout.
-- The report page (`tables/`, `plots/`, `report.html`) is **not built** by request. The two
-  join CSVs are in place and `analyze_probe_loudness.py` / `plot_probe_loudness.py` take them
-  unchanged via `--extra-probes`; `scripts/entry49_baseline_report.sh` runs the lot.
+- Report: <https://claude.ai/code/artifact/cd8900f2-5bb4-4e56-b1e4-8e13ed80f47b>
+  (source `probe_loudness_heldout360_16probes/report.html`), 20 figures, 18 tables. Built by
+  `scripts/entry49_build_report.py`, which assembles every caption from a `PROBES` and a
+  `FIGURES` registry so a figure cannot drift from its description.
