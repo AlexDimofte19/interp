@@ -18,6 +18,12 @@
 #     a large K would still print a per-trajectory budget it never applies.
 #   * LAYERS_PER_TOKEN -- one layer per token: the trainer pools every row into one (N, D)
 #     matrix fit by a single weight vector, and layers 7 and 22 are not in a shared basis.
+#     Note that this still spreads the DATASET over many layers -- each token keeps its own
+#     best one, so the single weight vector is still asked to read several spaces. Set
+#     SINGLE_LAYER to pin the whole arm to one layer instead (SINGLE_LAYER=best lets the
+#     manifest choose; scripts/jlens_layer_profile.py computes the unbiased choice from the
+#     CSVs). Give the control arm the SAME explicit layer -- it carries no scores to pick
+#     one from, and matching the lens arm's layer is what keeps the comparison about tokens.
 #   * a trajectory-grouped, label-stratified holdout: train_next_action_probe's own
 #     --eval-split is random over rows, and every trajectory owns all of its selected tokens
 #     with one shared label.
@@ -40,6 +46,7 @@ LOGS=${LOGS:-$PROBES/logs}
 EVAL_SPLIT=${EVAL_SPLIT:-0.2}
 TOKENS_PER_TRAJ=${TOKENS_PER_TRAJ:-"1 2 3"}   # top-K sweep, or "all"; one dataset serves all
 LAYERS_PER_TOKEN=${LAYERS_PER_TOKEN:-1}
+SINGLE_LAYER=${SINGLE_LAYER:-}   # e.g. 15, or "best"; overrides LAYERS_PER_TOKEN when set
 SEED=${SEED:-42}
 MODEL_TYPES=${MODEL_TYPES:-"lr mlp"}
 DEVICE=${DEVICE:-cuda}
@@ -80,12 +87,19 @@ train_arm() {
             token_args=(--tokens-per-trajectory "$k")
         fi
 
+        # One layer for the whole arm, or one layer per token. The two choose layers by
+        # different rules and the split script refuses both at once.
+        local layer_args=(--layers-per-token "$LAYERS_PER_TOKEN")
+        if [ -n "$SINGLE_LAYER" ]; then
+            layer_args=(--single-layer "$SINGLE_LAYER")
+        fi
+
         # Writes ${split_dir}_train and ${split_dir}_eval, each a lone manifest.json --
         # next_action copies no activations, so a split costs nothing but the JSON.
         uv run --project "$REPO" python "$REPO/scripts/split_next_action_manifest.py" \
             "$prepared" \
             "${token_args[@]}" \
-            --layers-per-token "$LAYERS_PER_TOKEN" \
+            "${layer_args[@]}" \
             --eval-split "$EVAL_SPLIT" \
             --seed "$SEED" \
             --train-out "${split_dir}_train" \
@@ -119,7 +133,7 @@ train_arm() {
 
 echo "prepared prefix: ${PREPARED}_<arm>"
 echo "arms:            $ARMS"
-echo "top-K sweep:     $TOKENS_PER_TRAJ   layers/token: $LAYERS_PER_TOKEN"
+echo "top-K sweep:     $TOKENS_PER_TRAJ   layers: ${SINGLE_LAYER:+single L$SINGLE_LAYER}${SINGLE_LAYER:-$LAYERS_PER_TOKEN/token}"
 echo "models:          $MODEL_TYPES   device: $DEVICE"
 
 # An arm whose dataset is missing must not take the others down -- it usually means that arm

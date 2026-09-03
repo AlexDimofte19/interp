@@ -22,6 +22,16 @@ Three reshapes that all have to happen before `train_next_action_probe` sees the
    keeps the top-scoring layer, reproducing a `--num-layers 1` prepare exactly (same
    `(-count, layer)` tie-break as `_pick_layers`) without re-running that slow job.
 
+   `--layers-per-token 1` still leaves the dataset spread over *many* layers: each token
+   keeps its own best one. `--single-layer L` instead pins the whole dataset to one layer,
+   which is the only way one weight vector reads one representation space. `--single-layer
+   best` picks L for you, as the layer with the highest mean direction score across the
+   dataset -- but read `best_layer`'s docstring before trusting that number: a manifest
+   only holds the layers that were *selected*, so the mean is conditional on having won,
+   except at the force-kept layer 15 where it is not. `scripts/jlens_layer_profile.py`
+   computes the same thing over the CSVs, where every layer is scored for every token, and
+   that is the number to pick L from.
+
 3. **Split.** `train_next_action_probe` splits with `torch.randperm` over rows and
    documents the samples as i.i.d. That is false here: one trajectory owns every one of
    its selected tokens, all carrying that trajectory's `agent_action`. A row-level split
@@ -56,10 +66,31 @@ writes PREPARED_DIR_train/manifest.json and PREPARED_DIR_eval/manifest.json.
 import argparse
 import json
 import random
+import sys
 from collections import Counter
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from telos_interp.jlens_utils import DEFAULT_SCORE  # noqa: E402
+
 ENTRY_KEYS = ("samples", "trajectories")
+
+
+def rank_key(score: float | None) -> tuple[bool, float]:
+    """Sort key for a direction score, best first, whatever mode produced it.
+
+    Not `-(score or 0)`: a count's minimum is 0, but a logprob score's *maximum* is 0, so a
+    row whose score is missing would sort to the top of a scored group under a logprob mode
+    and to the bottom under a count. Missing sorts last in both here, by ranking on
+    "has a score" before the score itself.
+
+    >>> sorted([3.0, None, 9.0], key=rank_key)
+    [9.0, 3.0, None]
+    >>> sorted([-9.0, None, -3.0], key=rank_key)
+    [-3.0, -9.0, None]
+    """
+    return (score is None, -score if score is not None else 0.0)
 
 
 def entries_key(manifest: dict) -> str:
@@ -103,6 +134,9 @@ def thin_layers(samples: list[dict], layers_per_token: int, seed: int) -> list[d
     records no counts, so it draws uniformly instead -- ranking those by a count that is
     always absent would silently collapse the control onto its lowest layer and destroy
     the comparison.
+
+    The descending order is `rank_key`, which is score-mode agnostic: a count and a
+    (negative) logprob are both "higher is better", and a missing score sorts last in both.
     """
     groups: dict[tuple, list[dict]] = {}
     for sample in samples:
@@ -116,7 +150,7 @@ def thin_layers(samples: list[dict], layers_per_token: int, seed: int) -> list[d
             kept.extend(rows)
             continue
         if any(row.get("layer_direction_count") is not None for row in rows):
-            rows = sorted(rows, key=lambda r: (-(r.get("layer_direction_count") or 0), r["layer"]))
+            rows = sorted(rows, key=lambda r: (rank_key(r.get("layer_direction_count")), r["layer"]))
         else:
             rows = random.Random(f"{seed}-{key}").sample(rows, layers_per_token)
         kept.extend(rows[:layers_per_token])
@@ -146,9 +180,10 @@ def trajectory_strata(samples: list[dict]) -> dict[str, int]:
 def thin_tokens(samples: list[dict], tokens_per_trajectory: int, seed: int) -> list[dict]:
     """Keep each trajectory's best `tokens_per_trajectory` tokens, all their layers.
 
-    Ranked by `(-direction_count, step, token_id)` -- the same tie-break
+    Ranked by `(rank_key(direction_count), step, token_id)` -- the same tie-break
     `select_token_layer_pairs` uses -- so this is identical to having prepared with
-    `--num-tokens K`, without paying for another prepare.
+    `--num-tokens K`, without paying for another prepare. The score may be a count or a
+    logprob; higher is better either way.
 
     A `random` control arm carries no `direction_count`, so it is sampled uniformly
     instead; ranking it by an always-absent count would take the lowest step/token index of
@@ -167,13 +202,77 @@ def thin_tokens(samples: list[dict], tokens_per_trajectory: int, seed: int) -> l
         elif any(row.get("direction_count") is not None for rows in tokens.values() for row in rows):
             keys = sorted(
                 tokens,
-                key=lambda k: (-(tokens[k][0].get("direction_count") or 0), k[2], k[3]),
+                key=lambda k: (rank_key(tokens[k][0].get("direction_count")), k[2], k[3]),
             )[:tokens_per_trajectory]
         else:
             keys = random.Random(f"{seed}-{name}").sample(sorted(tokens), tokens_per_trajectory)
         for key in sorted(keys, key=lambda k: (str(k[0]), k[2], k[3])):
             kept.extend(tokens[key])
     return kept
+
+
+def mean_layer_scores(samples: list[dict]) -> dict[int, tuple[float, int]]:
+    """{layer: (mean per-layer direction score, number of entries)} over the scored entries.
+
+    Entries with no `layer_direction_count` -- a control arm's -- are skipped rather than
+    counted as zero, which under a logprob score would be the maximum.
+    """
+    totals: dict[int, float] = {}
+    counts: dict[int, int] = {}
+    for sample in samples:
+        value = sample.get("layer_direction_count")
+        if value is None:
+            continue
+        layer = sample["layer"]
+        totals[layer] = totals.get(layer, 0.0) + value
+        counts[layer] = counts.get(layer, 0) + 1
+    return {layer: (totals[layer] / counts[layer], counts[layer]) for layer in sorted(counts)}
+
+
+def best_layer(samples: list[dict]) -> int | None:
+    """The layer with the highest mean direction score in this manifest, or None if unscored.
+
+    Ties break on the lower layer index, matching `rank_layers_by_direction`.
+
+    **This mean is conditional.** A manifest holds a (token, layer) entry only when that
+    layer was selected for that token, so a layer's mean here is its mean *given that it
+    beat the other layers of that token* -- except layer 15, which is force-kept for every
+    token (`top_filter.DEFAULT_ALWAYS_LAYERS`) and so carries an unconditional mean. The
+    two are not comparable, and the bias runs against layer 15. The unconditional number
+    comes from the CSVs, where every token is scored at every layer:
+    `scripts/jlens_layer_profile.py`.
+
+    >>> best_layer([{"layer": 7, "layer_direction_count": 1.0},
+    ...             {"layer": 15, "layer_direction_count": 4.0}])
+    15
+    >>> best_layer([{"layer": 7}]) is None
+    True
+    """
+    means = mean_layer_scores(samples)
+    if not means:
+        return None
+    return min(means, key=lambda layer: (-means[layer][0], layer))
+
+
+def keep_single_layer(samples: list[dict], layer: int) -> list[dict]:
+    """Every entry at `layer`, dropping the rest.
+
+    Unlike `thin_layers` this is not per token: a token with no entry at `layer` leaves the
+    dataset entirely. Only layer 15 is guaranteed present for every selected token, so any
+    other choice thins the token set too -- the caller reports by how much.
+    """
+    return [sample for sample in samples if sample["layer"] == layer]
+
+
+def format_layer_means(samples: list[dict], chosen: int | None = None) -> str:
+    """A per-layer mean/coverage table for the summary print."""
+    means = mean_layer_scores(samples)
+    tokens = len({(s.get("size"), s["name"], s["step"], s["token_id"]) for s in samples})
+    lines = [f"{'layer':>5} {'mean':>9} {'entries':>8} {'coverage':>9}"]
+    for layer, (mean, count) in means.items():
+        mark = "  <- chosen" if layer == chosen else ""
+        lines.append(f"{layer:>5} {mean:>9.4f} {count:>8} {count / tokens:>8.1%}{mark}")
+    return "\n".join(lines)
 
 
 def split_names(
@@ -269,6 +368,7 @@ def write_split(
     layers_per_token: int | None,
     tokens_per_trajectory: int | None = None,
     key: str = "samples",
+    single_layer: int | None = None,
 ) -> None:
     """Write a copy of `manifest` carrying only `samples`, plus a record of the split."""
     out = dict(manifest)
@@ -284,6 +384,7 @@ def write_split(
         "num_trajectories": len({s["name"] for s in samples}),
         "tokens_per_trajectory": tokens_per_trajectory,
         "layers_per_token": layers_per_token,
+        "single_layer": single_layer,
     }
     out.pop("_source", None)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -306,7 +407,19 @@ def main() -> None:
         "--layers-per-token",
         type=int,
         default=None,
-        help="keep only each token's N best layers (1 = one probe, one representation space)",
+        help="keep only each token's N best layers -- per token, so the dataset still spans "
+        "many layers. Use --single-layer for one layer across the whole dataset",
+    )
+    parser.add_argument(
+        "--single-layer",
+        default=None,
+        metavar="L|best",
+        help="pin the WHOLE dataset to one layer, so a single weight vector reads a single "
+        "representation space. 'best' picks the layer with the highest mean direction score "
+        "in this manifest -- but that mean is conditional on selection (see best_layer's "
+        "docstring); take L from scripts/jlens_layer_profile.py instead when it matters. "
+        "Any layer but 15 also drops the tokens that never selected it. Pass the same "
+        "explicit L to a control arm to keep the comparison matched",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
@@ -343,6 +456,9 @@ def main() -> None:
             f"{before} -> {len(samples)} samples"
         )
 
+    if args.layers_per_token is not None and args.single_layer is not None:
+        raise ValueError("--layers-per-token and --single-layer both choose layers; pass one")
+
     if args.layers_per_token is not None:
         if args.layers_per_token < 1:
             raise ValueError(f"--layers-per-token must be >= 1, got {args.layers_per_token}")
@@ -350,6 +466,36 @@ def main() -> None:
         samples = thin_layers(samples, args.layers_per_token, args.seed)
         print(f"Layers: kept {args.layers_per_token}/token, {before} -> {len(samples)} samples")
         print(f"  {layer_histogram(samples)}")
+
+    if args.single_layer is not None:
+        score_mode = manifest.get("selection", {}).get("direction_score", DEFAULT_SCORE)
+        if args.single_layer == "best":
+            chosen = best_layer(samples)
+            if chosen is None:
+                raise ValueError(
+                    "--single-layer best needs per-layer direction scores, and this manifest "
+                    "carries none (a control arm records none by design). Pass an explicit "
+                    "layer -- the one the matching lens arm chose."
+                )
+        else:
+            chosen = int(args.single_layer)
+        print(f"Layer means over this manifest ({score_mode}, conditional on selection):")
+        print(format_layer_means(samples, chosen))
+        before_samples = len(samples)
+        before_tokens = len({(s.get("size"), s["name"], s["step"], s["token_id"]) for s in samples})
+        samples = keep_single_layer(samples, chosen)
+        if not samples:
+            raise ValueError(f"--single-layer {chosen} matched no entries in {prepared_dir}")
+        after_tokens = len({(s.get("size"), s["name"], s["step"], s["token_id"]) for s in samples})
+        print(
+            f"Layers: pinned to L{chosen}, {before_samples} -> {len(samples)} samples, "
+            f"{before_tokens} -> {after_tokens} tokens"
+        )
+        if after_tokens < before_tokens:
+            print(
+                f"  NOTE: {before_tokens - after_tokens} token(s) had no entry at L{chosen} and "
+                "are gone; only L15 is kept for every selected token."
+            )
 
     if args.eval_names is not None:
         train_names, eval_names = eval_names_from_file(samples, args.eval_names)
@@ -361,8 +507,9 @@ def main() -> None:
     id_to_action = {v: k for k, v in manifest.get("action_to_id", {}).items()}
     train_out = args.train_out or prepared_dir.with_name(prepared_dir.name + "_train")
     eval_out = args.eval_out or prepared_dir.with_name(prepared_dir.name + "_eval")
-    write_split(manifest, train_samples, train_out, args.layers_per_token, args.tokens_per_trajectory, key)
-    write_split(manifest, eval_samples, eval_out, args.layers_per_token, args.tokens_per_trajectory, key)
+    single = None if args.single_layer is None else chosen
+    write_split(manifest, train_samples, train_out, args.layers_per_token, args.tokens_per_trajectory, key, single)
+    write_split(manifest, eval_samples, eval_out, args.layers_per_token, args.tokens_per_trajectory, key, single)
 
     num_trajectories = len(train_names) + len(eval_names)
     print(f"Source: {prepared_dir}  ({len(samples)} samples, {num_trajectories} trajectories)")

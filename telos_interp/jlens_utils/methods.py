@@ -16,7 +16,10 @@ independently:
     needs no CSV at all. `jlens` and `logitlens` differ *only* here: the two CSVs share a
     schema, so all the scoring and coordinate code is already lens-agnostic. What differs
     is upstream — the Jacobian lens transports a layer's residual stream into the layer-23
-    space before the unembed, the logit lens unembeds it directly.
+    space before the unembed, the logit lens unembeds it directly. `mass_suffix` names the
+    method's second artifact, the wide `(token x layer)` direction-mass table that a
+    `source="mass"` score reads (see `scoring.py`); it is derived from `csv_suffix` so one
+    lens' two files can never be named inconsistently.
 
 `scored`
     Whether tokens are ranked by direction count (and layers by
@@ -48,6 +51,22 @@ class SelectionMethod:
     scored: bool
     abbrev: str
     description: str = ""
+
+    @property
+    def mass_suffix(self) -> str | None:
+        """`{stem}_{lens}_direction_mass.csv`, derived from the analysis CSV's name.
+
+        Derived rather than declared so the two artifacts of one lens cannot be named
+        inconsistently by a method added later.
+
+        >>> METHODS["logitlens"].mass_suffix
+        '_logitlens_direction_mass.csv'
+        >>> METHODS["random"].mass_suffix is None
+        True
+        """
+        if self.csv_suffix is None:
+            return None
+        return self.csv_suffix.replace("_analysis.csv", "_direction_mass.csv")
 
 
 METHODS: dict[str, SelectionMethod] = {
@@ -140,13 +159,34 @@ def analysis_csv_path(trajectory_folder: Path, method: str) -> Path | None:
     return trajectory_folder / f"{trajectory_folder.name}{suffix}" if suffix else None
 
 
+def direction_mass_path(trajectory_folder: Path, method: str) -> Path | None:
+    """The method's direction-mass table, beside its analysis CSV."""
+    suffix = get_method(method).mass_suffix
+    return trajectory_folder / f"{trajectory_folder.name}{suffix}" if suffix else None
+
+
+def score_artifact_path(trajectory_folder: Path, method: str, score_mode: str) -> Path | None:
+    """Which artifact this (method, score) reads: the analysis CSV, or the mass table.
+
+    The single place that decision is made, so a filter, a pruner and a probe-data preparer
+    given the same score cannot end up reading different files.
+    """
+    from .scoring import get_score
+
+    if get_score(score_mode).source == "mass":
+        return direction_mass_path(trajectory_folder, method)
+    return analysis_csv_path(trajectory_folder, method)
+
+
 __all__ = [
     "DEFAULT_METHODS",
     "METHODS",
     "SelectionMethod",
     "analysis_csv_path",
+    "direction_mass_path",
     "get_method",
     "method_names",
     "parse_methods",
+    "score_artifact_path",
     "scored_methods",
 ]

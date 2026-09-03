@@ -26,14 +26,22 @@ def _prune(out_dir, env, signal_json, *extra):
     traj_root = env["traj_path"].parent.parent  # .../trajectories, holding size5/
     argv = [
         "delete_non_jlens_selected.py",
-        "--activations-dir", str(out_dir),
-        "--trajectories-dir", str(traj_root),
-        "--signal-json", str(signal_json),
-        "--select-num-tokens", "2",
-        "--select-num-layers", "2",
-        "--select-always-layers", "",
-        "--select-random-tokens", "1",
-        "--select-seed", "42",
+        "--activations-dir",
+        str(out_dir),
+        "--trajectories-dir",
+        str(traj_root),
+        "--signal-json",
+        str(signal_json),
+        "--select-num-tokens",
+        "2",
+        "--select-num-layers",
+        "2",
+        "--select-always-layers",
+        "",
+        "--select-random-tokens",
+        "1",
+        "--select-seed",
+        "42",
         "--verbose",
         *extra,
     ]
@@ -122,9 +130,12 @@ def test_missing_trajectory_json_deletes_nothing(env, signal_json, capsys, tmp_p
     empty.mkdir()
     argv = [
         "delete_non_jlens_selected.py",
-        "--activations-dir", str(env["tmp"] / "full"),
-        "--trajectories-dir", str(empty),
-        "--signal-json", str(signal_json),
+        "--activations-dir",
+        str(env["tmp"] / "full"),
+        "--trajectories-dir",
+        str(empty),
+        "--signal-json",
+        str(signal_json),
         "--apply",
     ]
     old, sys.argv = sys.argv, argv
@@ -152,8 +163,7 @@ def test_missing_selected_files_deletes_nothing(env, signal_json, capsys):
 def test_tolerate_missing_prunes_anyway(env, signal_json):
     full = _run(env, "full")
     _prune(env["tmp"] / "full", env, signal_json, "--apply")
-    _prune(env["tmp"] / "full", env, signal_json, "--apply", "--select-num-tokens", "4",
-           "--tolerate-missing")
+    _prune(env["tmp"] / "full", env, signal_json, "--apply", "--select-num-tokens", "4", "--tolerate-missing")
     assert _pts(full), "still a valid subset, just a narrower one than asked for"
 
 
@@ -193,9 +203,12 @@ def test_no_csvs_is_an_error(tmp_path, signal_json):
     empty.mkdir()
     argv = [
         "delete_non_jlens_selected.py",
-        "--activations-dir", str(empty),
-        "--trajectories-dir", str(tmp_path),
-        "--signal-json", str(signal_json),
+        "--activations-dir",
+        str(empty),
+        "--trajectories-dir",
+        str(tmp_path),
+        "--signal-json",
+        str(signal_json),
     ]
     old, sys.argv = sys.argv, argv
     try:
@@ -239,8 +252,7 @@ def test_cannot_widen_an_existing_selection(env, signal_json, capsys):
     _prune(env["tmp"] / "full", env, signal_json, "--apply")
     after_first = _pts(full)
 
-    _prune(env["tmp"] / "full", env, signal_json, "--apply",
-           "--select-methods", "jlens,logitlens,random")
+    _prune(env["tmp"] / "full", env, signal_json, "--apply", "--select-methods", "jlens,logitlens,random")
 
     assert _pts(full) == after_first
     out = capsys.readouterr().out
@@ -251,11 +263,9 @@ def test_cannot_widen_an_existing_selection(env, signal_json, capsys):
 def test_a_logitlens_tree_prunes_on_its_own_csv(env, signal_json):
     """The pruner is lens-agnostic: same filter, different CSV, same equivalence."""
     full = _run(env, "full", "--lens", "logitlens")
-    filtered = _run(env, "filtered", "--lens", "logitlens",
-                    *_select_args(signal_json, methods="logitlens,random"))
+    filtered = _run(env, "filtered", "--lens", "logitlens", *_select_args(signal_json, methods="logitlens,random"))
 
-    _prune(env["tmp"] / "full", env, signal_json, "--apply",
-           "--select-methods", "logitlens,random")
+    _prune(env["tmp"] / "full", env, signal_json, "--apply", "--select-methods", "logitlens,random")
 
     assert _pts(full) == _pts(filtered)
     assert _pts(full), "the selection cannot legitimately be empty"

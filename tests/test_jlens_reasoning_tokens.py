@@ -16,6 +16,7 @@ import json
 
 import pytest
 import torch
+from telos_interp.jlens_utils import NO_MATCH_LOGPROB
 from tests.conftest import (
     DIM,
     SCORABLE_LAYERS,
@@ -32,15 +33,40 @@ def _read_csv(path):
         return list(csv.DictReader(fh))
 
 
+# Columns whose value is a float the lens computed. Everything else -- ids, decoded token
+# strings, layer indices, ranks -- is exact and must match character for character.
+_FLOAT_COLS = tuple([f"{a}_logprob" for a in jrt.ACTIONS] + [f"top_{i}_logprob" for i in range(1, jrt.TOP_K + 1)])
+
+
+def assert_csvs_agree(path_a, path_b, tol=1.5e-4):
+    """The two CSVs are the same table, floats compared numerically.
+
+    Not `read_bytes()`: `--forward-batch-size` and `--batch-size` change the shape of the
+    lens GEMMs, which reassociates their reductions and moves the last bits of a logit. At
+    4 printed decimals that is invisible ~always, but the row now carries a logprob for
+    every one of the TOP_K predictions rather than only the four actions, so ~400 floats per
+    row get a chance to sit on a rounding boundary and one eventually does. The claim worth
+    testing is that the batching changes no *content*, which is this.
+    """
+    rows_a, rows_b = _read_csv(path_a), _read_csv(path_b)
+    assert len(rows_a) == len(rows_b)
+    for i, (ra, rb) in enumerate(zip(rows_a, rows_b, strict=True)):
+        assert list(ra) == list(rb), i
+        for col, va in ra.items():
+            vb = rb[col]
+            if col in _FLOAT_COLS:
+                assert abs(float(va) - float(vb)) <= tol, (i, col, va, vb)
+            else:
+                assert va == vb, (i, col, va, vb)
+
+
 def test_batched_and_unbatched_runs_agree_exactly(env):
     """Packing steps into one padded forward must not move a single value."""
     single = _run(env, "single", "--forward-batch-size", "1")
     batched = _run(env, "batched", "--forward-batch-size", "4")
 
     stem = env["stem"]
-    assert (single / f"{stem}_jlens_analysis.csv").read_bytes() == (
-        batched / f"{stem}_jlens_analysis.csv"
-    ).read_bytes()
+    assert_csvs_agree(single / f"{stem}_jlens_analysis.csv", batched / f"{stem}_jlens_analysis.csv")
 
     single_pts = sorted(p.relative_to(single) for p in single.rglob("*.pt"))
     batched_pts = sorted(p.relative_to(batched) for p in batched.rglob("*.pt"))
@@ -100,16 +126,19 @@ def test_csv_covers_lens_layers_only_and_keeps_row_order(env):
     assert [int(r["reasoning_pos"]) for r in step0] == [0, 1, 2, 3]
     assert {r["agent_action"] for r in step0} == {"UP"}
     assert all(len(r[f"top_{i}"]) > 0 for r in step0 for i in range(1, 21))
+    # every top_i carries the lens' own logprob for it, and they descend with the rank
+    for row in step0:
+        lps = [float(row[f"top_{i}_logprob"]) for i in range(1, 21)]
+        assert lps == sorted(lps, reverse=True)
+        assert all(lp <= 0.0 for lp in lps)
 
 
 def test_lens_chunking_does_not_change_the_csv(env):
-    """--batch-size only bounds the logits; it must not alter a single row."""
+    """--batch-size only bounds the logits; it must not alter a single value."""
     whole = _run(env, "chunk_off", "--batch-size", "0")
     chunked = _run(env, "chunk_on", "--batch-size", "2")
     stem = env["stem"]
-    assert (whole / f"{stem}_jlens_analysis.csv").read_bytes() == (
-        chunked / f"{stem}_jlens_analysis.csv"
-    ).read_bytes()
+    assert_csvs_agree(whole / f"{stem}_jlens_analysis.csv", chunked / f"{stem}_jlens_analysis.csv")
 
 
 def test_no_save_activations_writes_only_the_csv(env):
@@ -150,11 +179,11 @@ def _reference_run(env, out_name):
     traj_dir.mkdir(parents=True)
     output_base = traj_dir / "stub__model"
     header = (
-        ["size", "complexity", "run", "step", "reasoning_pos", "abs_pos", "token", "layer",
-         "agent_action"]
+        ["size", "complexity", "run", "step", "reasoning_pos", "abs_pos", "token", "layer", "agent_action"]
         + [f"{a}_rank" for a in jrt.ACTIONS]
         + [f"{a}_logprob" for a in jrt.ACTIONS]
         + [f"top_{i}" for i in range(1, jrt.TOP_K + 1)]
+        + [f"top_{i}_logprob" for i in range(1, jrt.TOP_K + 1)]
     )
 
     with open(traj_dir / f"{env['stem']}_jlens_analysis.csv", "w", newline="", encoding="utf-8") as fh:
@@ -195,27 +224,31 @@ def _reference_run(env, out_name):
                     ranks = torch.stack([(logits > logits[:, t : t + 1]).sum(1) for t in id_cols], dim=1)
                     own = torch.stack([logits[:, t] for t in id_cols], dim=1)
                     logprobs = own - logits.logsumexp(-1, keepdim=True)
-                    topk = logits.topk(jrt.TOP_K, dim=1).indices
-                ranks, logprobs, topk = ranks.tolist(), logprobs.tolist(), topk.tolist()
-                for (rp, ap, token), r, lp, tk in zip(positions, ranks, logprobs, topk, strict=True):
+                    top = logits.topk(jrt.TOP_K, dim=1)
+                    topk = top.indices
+                    # the same normaliser as the action logprobs, applied naively rather
+                    # than reusing the one lens_predictions computes once
+                    toplp = top.values - logits.logsumexp(-1, keepdim=True)
+                ranks, logprobs = ranks.tolist(), logprobs.tolist()
+                topk, toplp = topk.tolist(), toplp.tolist()
+                for (rp, ap, token), r, lp, tk, tlp in zip(positions, ranks, logprobs, topk, toplp, strict=True):
                     writer.writerow(
                         [name["size"], name["comp"], name["run"], si, rp, ap, token, layer, agent_action]
                         + r
                         + [round(x, 4) for x in lp]
                         + [tok.decode([i]) for i in tk]
+                        + [round(x, 4) for x in tlp]
                     )
     return traj_dir
 
 
 def test_matches_the_pre_batching_implementation(env):
-    """CSV byte-for-byte and every .pt tensor, against the loop this replaced."""
+    """Every CSV cell and every .pt tensor, against the loop this replaced."""
     reference = _reference_run(env, "reference")
     current = _run(env, "current", "--forward-batch-size", "4", "--batch-size", "2")
 
     stem = env["stem"]
-    assert (current / f"{stem}_jlens_analysis.csv").read_bytes() == (
-        reference / f"{stem}_jlens_analysis.csv"
-    ).read_bytes()
+    assert_csvs_agree(current / f"{stem}_jlens_analysis.csv", reference / f"{stem}_jlens_analysis.csv")
 
     ref_pts = sorted(p.relative_to(reference) for p in reference.rglob("*.pt"))
     cur_pts = sorted(p.relative_to(current) for p in current.rglob("*.pt"))
@@ -229,6 +262,7 @@ def test_matches_the_pre_batching_implementation(env):
 
 def test_crashed_run_leaves_no_csv(env, monkeypatch):
     """The done-marker contract: a failure must not leave a CSV that looks complete."""
+
     def boom(*_a, **_k):
         raise RuntimeError("forward exploded")
 
@@ -243,7 +277,6 @@ def test_crashed_run_leaves_no_csv(env, monkeypatch):
 # The point of --signal-json is that a filtered gather and a full gather followed by
 # pruning must land on the same files. These tests pin the first half of that; the
 # equivalence itself is tests/test_delete_non_jlens_selected.py.
-
 
 
 def _expected_selection(env, full_run_dir, signal_json, **overrides):
@@ -276,9 +309,7 @@ def test_selective_run_saves_exactly_the_selection(env, signal_json):
 
     expected = _expected_selection(env, full, signal_json)
     model_dir = picked / "stub__model"
-    assert {p.resolve() for p in picked.rglob("*.pt")} == {
-        p.resolve() for p in expected.activation_paths(model_dir)
-    }
+    assert {p.resolve() for p in picked.rglob("*.pt")} == {p.resolve() for p in expected.activation_paths(model_dir)}
 
     # a second forward pass must reproduce the first one exactly, not merely closely
     for rel in sorted(p.relative_to(picked) for p in picked.rglob("*.pt")):
@@ -286,6 +317,118 @@ def test_selective_run_saves_exactly_the_selection(env, signal_json):
             torch.load(picked / rel, weights_only=True),
             torch.load(full / rel, weights_only=True),
         ), rel
+
+
+# --- the direction-mass table -------------------------------------------------------------
+#
+# The second artifact: wide (one row per reasoning token, one column per layer) where the
+# analysis CSV is long, and computed over the WHOLE direction vocabulary rather than over the
+# direction words that reached the top-k. The property worth pinning is exactly that
+# difference -- when the top-k window is wide enough to hold every direction word, the two
+# must agree; the table exists for when it is not.
+
+
+def test_direction_mass_table_is_written_beside_the_csv(env, signal_json):
+    out = _run(env, "mass", "--direction-mass-json", str(signal_json))
+    stem = env["stem"]
+    mass_path = out / f"{stem}_jlens_direction_mass.csv"
+    assert mass_path.exists()
+
+    rows = _read_csv(mass_path)
+    layer_cols = [c for c in rows[0] if c.startswith("L")]
+    assert [int(c[1:]) for c in layer_cols] == sorted(SCORABLE_LAYERS), "one column per lensed layer"
+
+    # one row per (step, reasoning token) -- not per (token, layer) as the analysis CSV is
+    analysis = _read_csv(out / f"{stem}_jlens_analysis.csv")
+    assert len(rows) == len({(r["step"], r["abs_pos"]) for r in analysis})
+    for row in rows:
+        values = [float(row[c]) for c in layer_cols if row[c] != ""]
+        assert values and all(v <= 0.0 for v in values), "a log probability"
+
+
+def test_direction_mass_carries_the_vocabulary_that_made_it(env, signal_json):
+    """Two vocabularies get pointed at these trees; a table without provenance is unreadable."""
+    out = _run(env, "mass_meta", "--direction-mass-json", str(signal_json))
+    meta = json.loads((out / f"{env['stem']}_jlens_direction_mass.csv.meta.json").read_text())
+    assert meta["signal_json"] == str(signal_json)
+    assert meta["num_direction_tokens"] == 32  # the stub vocabulary, all of it round-tripping
+    assert meta["lens"] == "jlens"
+    assert meta["layers"] == sorted(SCORABLE_LAYERS)
+
+
+def test_direction_mass_equals_the_topk_mass_when_the_window_holds_everything(env, tmp_path):
+    """The two agree exactly where the top-k can see the whole vocabulary -- so the only
+    difference between them is truncation, which is the reason the table exists."""
+    from telos_interp.jlens_utils import read_direction_mass, read_direction_scores
+
+    # A vocabulary of ONE token: it either makes the top 20 or carries negligible mass, and
+    # in the stub's random lens it comfortably does for some (token, layer) pairs.
+    signal = tmp_path / "one.json"
+    signal.write_text(json.dumps({"UP": ["<7>"], "DOWN": [], "LEFT": [], "RIGHT": []}))
+    out = _run(env, "mass_agree", "--direction-mass-json", str(signal))
+    stem = env["stem"]
+
+    topk = read_direction_scores(
+        out / f"{stem}_jlens_analysis.csv", {"<7>"}, top_k=jrt.TOP_K, score_mode="logprob_mass"
+    )
+    full = read_direction_mass(out / f"{stem}_jlens_direction_mass.csv")
+    assert set(topk) == set(full)
+
+    compared = 0
+    for key, score in topk.items():
+        for layer, value in score.per_layer.items():
+            if value == NO_MATCH_LOGPROB:
+                continue  # the token missed the top-k here; only the table can see it
+            assert value == pytest.approx(full[key].per_layer[layer], abs=1e-3), (key, layer)
+            compared += 1
+    assert compared, "the fixture never put the direction token in the top-k; nothing was compared"
+    # and the table sees mass the top-k window missed, which is the point
+    assert any(
+        topk[key].per_layer[layer] == NO_MATCH_LOGPROB for key, score in full.items() for layer in score.per_layer
+    ), "the top-k window held everything; this fixture cannot show the difference"
+
+
+def test_no_direction_mass_suppresses_the_table(env, signal_json):
+    out = _run(env, "no_mass", *_select_args(signal_json), "--no-direction-mass")
+    assert list(out.glob("*_direction_mass.csv")) == []
+    assert (out / f"{env['stem']}_jlens_analysis.csv").exists()
+
+
+def test_no_top_logprobs_drops_the_columns_but_not_the_mass(env, signal_json):
+    out = _run(env, "no_toplp", "--direction-mass-json", str(signal_json), "--no-top-logprobs")
+    stem = env["stem"]
+    fields = list(_read_csv(out / f"{stem}_jlens_analysis.csv")[0])
+    assert "top_1" in fields and "top_1_logprob" not in fields
+    assert (out / f"{stem}_jlens_direction_mass.csv").exists()
+
+
+def test_selecting_on_the_mass_table_needs_one(env, signal_json):
+    with pytest.raises(SystemExit, match="writes none"):
+        _run(
+            env,
+            "mass_missing",
+            *_select_args(signal_json),
+            "--direction-score",
+            "logprob_mass_full",
+            "--no-direction-mass",
+        )
+
+
+def test_selection_can_rank_on_the_mass_table(env, signal_json):
+    """The selection reads the table it was told to, while it is still a .tmp."""
+    from telos_interp.jlens_utils import read_selection_record, record_path
+
+    out = _run(env, "mass_select", *_select_args(signal_json), "--direction-score", "logprob_mass_full")
+    kept, configs = read_selection_record(record_path(out))
+    assert configs["jlens"]["direction_score"] == "logprob_mass_full"
+    picks = list(kept["jlens"].values())
+    assert picks and all(p.score_mode == "logprob_mass_full" for p in picks)
+    # Per layer the score is a log probability and so <= 0. The token's own score aggregates
+    # ACROSS layers, which adds probabilities that belong to different distributions -- it is
+    # a ranking statistic, not a probability, and may exceed 0. Pinned so nobody "fixes" it.
+    assert all(isinstance(p.direction_count, float) for p in picks)
+    assert all(v <= 0.0 for p in picks for v in (p.layer_direction_counts or {}).values())
+    assert list(out.rglob("*.pt")), "the arm still gathered activations"
 
 
 def test_selective_run_is_a_large_saving(env, signal_json):
@@ -352,6 +495,7 @@ def test_selective_batching_does_not_move_a_value(env, signal_json):
 
 def test_selective_crash_leaves_no_csv(env, signal_json, monkeypatch):
     """The done-marker must not appear if the second pass never ran."""
+
     def boom(*_a, **_k):
         raise RuntimeError("second pass exploded")
 
@@ -394,6 +538,7 @@ def test_the_lenses_agree_at_the_target_layer(env):
     are the same function.
     """
     out = _run(env, "both", "--lens", "both")
+
     def at_target(name):
         rows = _csv_rows(out / f"{env['stem']}_{name}_analysis.csv")
         return [r for r in rows if int(r["layer"]) == jrt.TARGET_LAYER]
@@ -430,8 +575,15 @@ def test_selecting_a_lens_whose_csv_is_not_written_is_refused(env, signal_json):
 
 
 def _extend(env, out_name, signal_json, *extra):
-    return _run(env, out_name, "--lens", "both", "--extend",
-                *_select_args(signal_json, methods="jlens,logitlens,random"), *extra)
+    return _run(
+        env,
+        out_name,
+        "--lens",
+        "both",
+        "--extend",
+        *_select_args(signal_json, methods="jlens,logitlens,random"),
+        *extra,
+    )
 
 
 def test_extend_adds_an_arm_without_disturbing_the_others(env, signal_json):
@@ -519,8 +671,7 @@ def test_dropping_an_arm_is_refused_without_extend(env, signal_json, capsys):
     picked = _run(env, "tree", *_select_args(signal_json, methods="jlens,random"))
     before, _ = read_selection_record(record_path(picked))
 
-    _run(env, "tree", "--lens", "logitlens", "--overwrite",
-         *_select_args(signal_json, methods="logitlens"))
+    _run(env, "tree", "--lens", "logitlens", "--overwrite", *_select_args(signal_json, methods="logitlens"))
 
     after, _ = read_selection_record(record_path(picked))
     assert after == before, "the record must survive a run that would have dropped an arm"
@@ -531,8 +682,15 @@ def test_overwrite_record_permits_it_explicitly(env, signal_json):
     from telos_interp.jlens_utils import read_selection_record, record_path
 
     picked = _run(env, "tree", *_select_args(signal_json, methods="jlens,random"))
-    _run(env, "tree", "--lens", "logitlens", "--overwrite", "--overwrite-record",
-         *_select_args(signal_json, methods="logitlens"))
+    _run(
+        env,
+        "tree",
+        "--lens",
+        "logitlens",
+        "--overwrite",
+        "--overwrite-record",
+        *_select_args(signal_json, methods="logitlens"),
+    )
     after, _ = read_selection_record(record_path(picked))
     assert after.names == ["logitlens"]
 
@@ -549,8 +707,14 @@ def test_the_extend_wrapper_invocation_works(env, signal_json):
     picked = _run(env, "tree", *_select_args(signal_json, methods="jlens,random"))
     before, _ = read_selection_record(record_path(picked))
 
-    _run(env, "tree", "--lens", "logitlens", "--extend",
-         *_select_args(signal_json, methods="logitlens", **{"random-tokens": 0}))
+    _run(
+        env,
+        "tree",
+        "--lens",
+        "logitlens",
+        "--extend",
+        *_select_args(signal_json, methods="logitlens", **{"random-tokens": 0}),
+    )
 
     after, _ = read_selection_record(record_path(picked))
     assert sorted(after.names) == ["jlens", "logitlens", "random"]
@@ -560,3 +724,47 @@ def test_the_extend_wrapper_invocation_works(env, signal_json):
     # the jlens CSV was never rewritten, and the logitlens one now exists beside it
     assert (picked / f"{env['stem']}_jlens_analysis.csv").exists()
     assert (picked / f"{env['stem']}_logitlens_analysis.csv").exists()
+
+
+# --------------------------------------------------------------------------------------
+# --names-file: pinning a second tree to an existing tree's trajectory set.
+# --------------------------------------------------------------------------------------
+
+
+def test_names_file_keeps_only_the_listed_trajectories(env, tmp_path):
+    """The listed stem is processed; an unlisted one leaves the run with nothing to do.
+
+    This is the only way to make a second gather cover the same trajectories as an
+    existing one -- ICLR entry 36's correction records that --per-combo/--seed does NOT
+    reproduce a previous draw (two runs with identical flags overlapped by 348 of 3600).
+    """
+    names = tmp_path / "names.txt"
+
+    names.write_text(env["stem"] + "\n")
+    kept = _run(env, "kept", "--names-file", str(names))
+    assert (kept / f"{env['stem']}_jlens_analysis.csv").exists()
+
+    names.write_text("some_other_trajectory\n")
+    with pytest.raises(ValueError, match="no trajectories left to process"):
+        _run(env, "missed", "--names-file", str(names))
+    assert not (env["tmp"] / "missed").exists()
+
+
+def test_names_file_is_applied_before_the_size_filter(env, tmp_path):
+    """--names-file narrows first, then --sizes narrows what is left."""
+    names = tmp_path / "names.txt"
+    names.write_text(env["stem"] + "\n")
+    with pytest.raises(ValueError, match="no trajectories left to process"):
+        _run(env, "sized", "--names-file", str(names), "--sizes", "11")
+
+
+def test_an_empty_selection_is_an_error_not_an_empty_success(env, tmp_path):
+    """Filtering everything away must raise rather than exit 0 with no CSV written.
+
+    The repo has been bitten by a script that "succeeded" while writing nothing
+    (analyze_probe_rollout.py, entry 47); a mistyped --names-file is the same trap.
+    """
+    names = tmp_path / "names.txt"
+    names.write_text("nothing_matches_this\n")
+    with pytest.raises(ValueError, match="no trajectories left to process"):
+        _run(env, "empty", "--names-file", str(names))

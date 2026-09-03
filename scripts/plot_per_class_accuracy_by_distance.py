@@ -110,9 +110,7 @@ def make_figure(
     # Panel grid sized to the number of complexity levels (defaults to 2x3 for 6).
     ncols = 3 if len(complexities) > 4 else len(complexities)
     nrows = -(-len(complexities) // ncols)  # ceil division
-    fig, axes = plt.subplots(
-        nrows, ncols, figsize=(5 * ncols, 4.25 * nrows), sharex=True, sharey=True, squeeze=False
-    )
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4.25 * nrows), sharex=True, sharey=True, squeeze=False)
     fig.patch.set_facecolor(SURFACE)
     flat_axes = axes.flat
 
@@ -121,17 +119,14 @@ def make_figure(
         pivot = by_cd[comp][per_class_key]
         for cls in classes:
             # Only plot distances where this class has ground-truth support.
-            pts = sorted(
-                (int(dk), cm[metric])
-                for dk, cm in pivot.get(cls, {}).items()
-                if cm["gt_support"] > 0
-            )
+            pts = sorted((int(dk), cm[metric]) for dk, cm in pivot.get(cls, {}).items() if cm["gt_support"] > 0)
             if not pts:
                 continue
             xs = [p[0] for p in pts]
             ys = [p[1] for p in pts]
             ax.plot(
-                xs, ys,
+                xs,
+                ys,
                 color=color_of[cls],
                 marker=marker_of[cls],
                 markersize=6,
@@ -150,28 +145,42 @@ def make_figure(
             spine.set_color(GRID)
 
     # Hide any unused panels.
-    for ax in list(flat_axes)[len(complexities):]:
+    for ax in list(flat_axes)[len(complexities) :]:
         ax.set_visible(False)
 
     for ax in axes[-1, :]:
         ax.set_xlabel(f"Distance to {axis_name} (Chebyshev)", color=INK)
     for ax in axes[:, 0]:
-        ax.set_ylabel(f"{metric.capitalize()} (per-class recall)"
-                      if metric == "accuracy" else metric.capitalize(), color=INK)
+        ax.set_ylabel(
+            f"{metric.capitalize()} (per-class recall)" if metric == "accuracy" else metric.capitalize(), color=INK
+        )
 
     # One shared legend; identity is colour + marker, never colour alone.
     handles = [
-        Line2D([0], [0], color=color_of[cls], marker=marker_of[cls], markersize=7,
-               linewidth=2, markeredgecolor=SURFACE, label=class_labels[cls])
+        Line2D(
+            [0],
+            [0],
+            color=color_of[cls],
+            marker=marker_of[cls],
+            markersize=7,
+            linewidth=2,
+            markeredgecolor=SURFACE,
+            label=class_labels[cls],
+        )
         for cls in classes
     ]
     fig.legend(
-        handles=handles, loc="lower center", ncol=len(classes),
-        frameon=False, title="Class", bbox_to_anchor=(0.5, -0.01),
+        handles=handles,
+        loc="lower center",
+        ncol=len(classes),
+        frameon=False,
+        title="Class",
+        bbox_to_anchor=(0.5, -0.01),
     )
     fig.suptitle(
         f"Per-class probe {metric} vs distance to {axis_name}, by grid complexity",
-        color=INK, fontsize=15,
+        color=INK,
+        fontsize=15,
     )
     fig.tight_layout(rect=(0, 0.05, 1, 0.96))
     fig.savefig(out_path, dpi=150, facecolor=SURFACE, bbox_inches="tight")

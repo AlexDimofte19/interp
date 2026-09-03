@@ -17,10 +17,9 @@ import argparse
 import json
 from pathlib import Path
 
+import jlens
 import torch
 import transformers
-
-import jlens
 from jlens.vis import build_page, compute_slice
 
 ACTIONS = ["RIGHT", "LEFT", "UP", "DOWN"]
@@ -34,10 +33,13 @@ def main():
     ap.add_argument("--lens", type=Path, required=True)
     ap.add_argument("--out", type=Path, default=Path("slice.html"))
     ap.add_argument("--layer_stride", type=int, default=1)
-    ap.add_argument("--last_n_tokens", type=int, default=None,
-                    help="render only the last N positions (forward pass still uses all)")
-    ap.add_argument("--include_output", action="store_true",
-                    help="also include the step's generated output tokens")
+    ap.add_argument(
+        "--last_n_tokens",
+        type=int,
+        default=None,
+        help="render only the last N positions (forward pass still uses all)",
+    )
+    ap.add_argument("--include_output", action="store_true", help="also include the step's generated output tokens")
     args = ap.parse_args()
 
     traj = json.load(open(args.trajectory, encoding="utf-8"))
@@ -52,9 +54,7 @@ def main():
     print(f"{len(ids)} input tokens, agent_action={step['agent_action']}", flush=True)
 
     tok = transformers.AutoTokenizer.from_pretrained(MODEL_ID)
-    hf = transformers.AutoModelForCausalLM.from_pretrained(
-        MODEL_ID, torch_dtype="auto", device_map="auto"
-    )
+    hf = transformers.AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype="auto", device_map="auto")
     model = jlens.from_hf(hf, tok)
     lens = jlens.JacobianLens.load(str(args.lens))
     print(lens, flush=True)
@@ -65,7 +65,9 @@ def main():
     model.encode = lambda text, max_length=0: input_ids.to(model.input_device)
 
     slice_data = compute_slice(
-        model, lens, prompt="",
+        model,
+        lens,
+        prompt="",
         pinned_token_ids=pinned,
         layer_stride=args.layer_stride,
         last_n_tokens=args.last_n_tokens,

@@ -251,6 +251,78 @@ def test_end_to_end_on_a_control_manifest(tmp_path):
     assert all("direction_count" not in s for s in train["samples"])
 
 
+# --- one layer for the whole dataset ------------------------------------------------------
+#
+# `--layers-per-token 1` still leaves the dataset spread over many layers, one per token,
+# and a single weight vector cannot read them all. `--single-layer` pins the lot. Two things
+# have to stay visible: which layer was chosen and why, and that any layer but 15 silently
+# costs tokens, since 15 is the only one force-kept for every selected token.
+
+
+def test_best_layer_is_the_highest_mean(tmp_path):
+    assert split.best_layer(jlens_samples()) == 15, "layer_direction_count 5 beats 3 beats 1"
+    assert split.mean_layer_scores(jlens_samples())[15] == (5.0, 8 * 4)
+
+
+def test_best_layer_handles_negative_scores():
+    """A logprob score is negative; 'highest' must not become 'closest to zero magnitude'."""
+    rows = [
+        sample("t", 0, 0, 7, 0, direction_count=-1.0, layer_direction_count=-9.0),
+        sample("t", 0, 0, 15, 0, direction_count=-1.0, layer_direction_count=-0.5),
+    ]
+    assert split.best_layer(rows) == 15
+
+
+def test_best_layer_is_none_without_scores():
+    assert split.best_layer(control_samples()) is None
+
+
+def test_single_layer_best_pins_the_dataset(tmp_path):
+    prepared = _write_manifest(tmp_path, jlens_samples(num_trajectories=20))
+    train, evaluation = _run(prepared, "--single-layer", "best")
+    assert train["split"]["single_layer"] == 15
+    assert {s["layer"] for s in train["samples"] + evaluation["samples"]} == {15}
+    assert len(train["samples"]) + len(evaluation["samples"]) == 20 * 4
+
+
+def test_single_layer_takes_an_explicit_layer(tmp_path):
+    """How a control arm is matched to the lens arm's layer -- it cannot compute one."""
+    prepared = _write_manifest(tmp_path, control_samples(num_trajectories=20))
+    train, evaluation = _run(prepared, "--single-layer", "23")
+    assert train["split"]["single_layer"] == 23
+    assert {s["layer"] for s in train["samples"] + evaluation["samples"]} == {23}
+
+
+def test_single_layer_best_refuses_an_unscored_manifest(tmp_path):
+    prepared = _write_manifest(tmp_path, control_samples(num_trajectories=20))
+    with pytest.raises(ValueError, match="needs per-layer direction scores"):
+        _run(prepared, "--single-layer", "best")
+
+
+def test_single_layer_drops_tokens_that_never_selected_it(tmp_path, capsys):
+    """Only L15 is kept for every token; any other layer thins the token set too."""
+    rows = jlens_samples(num_trajectories=20)
+    # half the tokens were never selected at layer 23
+    rows = [r for r in rows if not (r["layer"] == 23 and r["token_id"] % 2)]
+    prepared = _write_manifest(tmp_path, rows)
+    train, evaluation = _run(prepared, "--single-layer", "23")
+    assert len(train["samples"]) + len(evaluation["samples"]) == 20 * 2
+    assert "had no entry at L23" in capsys.readouterr().out
+
+
+def test_single_layer_and_layers_per_token_are_exclusive(tmp_path):
+    prepared = _write_manifest(tmp_path, jlens_samples())
+    with pytest.raises(ValueError, match="pass one"):
+        _run(prepared, "--single-layer", "best", "--layers-per-token", "1")
+
+
+def test_single_layer_composes_with_token_thinning(tmp_path):
+    prepared = _write_manifest(tmp_path, jlens_samples(num_trajectories=20))
+    train, evaluation = _run(prepared, "--tokens-per-trajectory", "2", "--single-layer", "best")
+    assert len(train["samples"]) + len(evaluation["samples"]) == 20 * 2
+    assert {s["layer"] for s in train["samples"]} == {15}
+
+
 # --- grid_tile manifests ------------------------------------------------------------------
 #
 # A grid arm is the same token selection with a different label, so it has to survive the
@@ -381,3 +453,24 @@ def test_a_copied_manifest_is_refused(tmp_path):
     )
     with pytest.raises(ValueError, match="token-selection"):
         split.load_manifest(prepared)
+
+
+def test_thinning_ranks_negative_scores_the_right_way_up():
+    """A logprob score is negative and 0 is its maximum; `-(x or 0)` would invert this."""
+    rows = []
+    for token_id, score in ((0, -9.0), (1, -0.5)):
+        for layer in (7, 15):
+            rows.append(sample("t", 0, token_id, layer, 0, direction_count=score, layer_direction_count=score))
+    kept = split.thin_tokens(rows, tokens_per_trajectory=1, seed=42)
+    assert {t for _, _, t in tokens_of(kept)} == {1}, "-0.5 is more direction mass than -9.0"
+
+
+def test_a_row_missing_its_score_sorts_last_not_first():
+    """0 is a count's floor but a logprob's ceiling, so absence cannot stand in for it."""
+    rows = [
+        sample("t", 0, 0, 7, 0, direction_count=-1.0, layer_direction_count=-1.0),
+        sample("t", 0, 0, 15, 0, direction_count=-1.0),  # scored token, unscored layer row
+    ]
+    del rows[1]["layer_direction_count"]
+    kept = split.thin_layers(rows, layers_per_token=1, seed=42)
+    assert [r["layer"] for r in kept] == [7]

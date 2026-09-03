@@ -114,9 +114,7 @@ class MetricsAccumulator:
             if gt_count > 0:
                 recalls_for_balanced.append(recall)
 
-        balanced_accuracy = (
-            sum(recalls_for_balanced) / len(recalls_for_balanced) if recalls_for_balanced else 0.0
-        )
+        balanced_accuracy = sum(recalls_for_balanced) / len(recalls_for_balanced) if recalls_for_balanced else 0.0
 
         return {
             "accuracy": accuracy,
@@ -197,12 +195,10 @@ class DistanceAccumulatorSet:
         to symbols.
         """
         by_goal = {
-            str(dist): self.by_goal_distance[dist].compute_metrics()
-            for dist in sorted(self.by_goal_distance.keys())
+            str(dist): self.by_goal_distance[dist].compute_metrics() for dist in sorted(self.by_goal_distance.keys())
         }
         by_agent = {
-            str(dist): self.by_agent_distance[dist].compute_metrics()
-            for dist in sorted(self.by_agent_distance.keys())
+            str(dist): self.by_agent_distance[dist].compute_metrics() for dist in sorted(self.by_agent_distance.keys())
         }
         return {
             "by_goal_distance": by_goal,
@@ -261,9 +257,7 @@ def _print_distance_table(distance_metrics: dict, axis_name: str, title: str | N
         print(f"\n{'-' * 70}")
         print(title)
         print("-" * 70)
-    print(
-        f"{'Distance':>10} {'Accuracy':>10} {'Balanced':>10} {'Baseline':>10} {'Samples':>12}"
-    )
+    print(f"{'Distance':>10} {'Accuracy':>10} {'Balanced':>10} {'Baseline':>10} {'Samples':>12}")
     print("-" * 70)
     for dist_key in sorted(distance_metrics.keys(), key=lambda k: int(k)):
         m = distance_metrics[dist_key]
@@ -629,9 +623,7 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
                 gt_list.append(ground_truth[pos])
 
         goal_pos, agent_pos = _find_special_positions(ground_truth, goal_idx, agent_idx)
-        cell_records = _build_distance_records(
-            predictions, ground_truth, goal_pos, agent_pos, padding_idx
-        )
+        cell_records = _build_distance_records(predictions, ground_truth, goal_pos, agent_pos, padding_idx)
         pred_rows = (
             _build_prediction_rows(predictions, ground_truth, goal_pos, agent_pos, padding_idx)
             if save_predictions
@@ -699,9 +691,7 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
                     if activation is None:
                         continue
 
-                    pred_list, gt_list, cell_records, pred_rows = _process_step(
-                        activation, grid_state
-                    )
+                    pred_list, gt_list, cell_records, pred_rows = _process_step(activation, grid_state)
 
                     # Class-based accumulators (no size-based metrics in single_size_mode)
                     global_accumulator.update(pred_list, gt_list)
@@ -792,9 +782,7 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
                         if activation is None:
                             continue
 
-                        pred_list, gt_list, cell_records, pred_rows = _process_step(
-                            activation, grid_state
-                        )
+                        pred_list, gt_list, cell_records, pred_rows = _process_step(activation, grid_state)
 
                         # Class-based accumulators
                         global_accumulator.update(pred_list, gt_list)
@@ -959,9 +947,21 @@ def eval_cognitive_map_probe_per_distance(  # noqa: PLR0912, PLR0915
 
         idx_to_symbol = {i: class_names[i] for i in range(num_classes)}
         columns = [
-            "trajectory", "grid_size", "complexity", "layer", "step",
-            "row", "col", "gt_idx", "gt_symbol", "pred_idx", "pred_symbol",
-            "correct", "is_padding", "dist_to_goal", "dist_to_agent",
+            "trajectory",
+            "grid_size",
+            "complexity",
+            "layer",
+            "step",
+            "row",
+            "col",
+            "gt_idx",
+            "gt_symbol",
+            "pred_idx",
+            "pred_symbol",
+            "correct",
+            "is_padding",
+            "dist_to_goal",
+            "dist_to_agent",
         ]
         predictions_df = pd.DataFrame(prediction_rows, columns=columns)
         # Vectorised symbol decoding and correctness flag (avoids per-row work above).

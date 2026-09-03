@@ -29,7 +29,7 @@ import json
 import re
 import sys
 from collections import defaultdict
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 import torch
@@ -70,7 +70,7 @@ def ensure_unembed_assets(jlens_dir: Path) -> dict:
     return assets
 
 
-@lru_cache(maxsize=None)
+@cache
 def trajectory_actions(traj_file: Path) -> dict:
     """{step_id: agent_action} for one trajectory json."""
     steps = json.load(open(traj_file, encoding="utf-8"))["steps"]
@@ -104,12 +104,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--activations_root", type=Path, required=True)
     ap.add_argument("--jlens_dir", type=Path, required=True)
-    ap.add_argument("--trajectories_root", type=Path, required=True,
-                    help="e.g. C:/Uni/Thesis/data/trajectories_test_full")
+    ap.add_argument(
+        "--trajectories_root", type=Path, required=True, help="e.g. C:/Uni/Thesis/data/trajectories_test_full"
+    )
     ap.add_argument("--out", type=Path, default=Path("jlens_action_ranks.csv"))
     ap.add_argument("--batch_size", type=int, default=2048)
-    ap.add_argument("--runs_per_combo", type=int, default=None,
-                    help="keep the first N runs (lowest run index) per size/complexity/layer; default: all")
+    ap.add_argument(
+        "--runs_per_combo",
+        type=int,
+        default=None,
+        help="keep the first N runs (lowest run index) per size/complexity/layer; default: all",
+    )
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
@@ -148,10 +153,7 @@ def main():
         for _, m in parsed:
             runs_per_combo[(m["size"], m["comp"], m["layer"])].add(int(m["run"]))
         keep = {k: set(sorted(v)[: args.runs_per_combo]) for k, v in runs_per_combo.items()}
-        parsed = [
-            (f, m) for f, m in parsed
-            if int(m["run"]) in keep[(m["size"], m["comp"], m["layer"])]
-        ]
+        parsed = [(f, m) for f, m in parsed if int(m["run"]) in keep[(m["size"], m["comp"], m["layer"])]]
         print(f"{len(parsed)} files after sampling {args.runs_per_combo} runs per combo")
 
     for f, m in parsed:
@@ -171,11 +173,13 @@ def main():
 
     with open(args.out, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["size", "complexity", "layer", "run", "token", "agent_action"]
-                        + [f"{a}_position" for a in ACTIONS]
-                        + [f"{a}_logprob" for a in ACTIONS]
-                        + [f"top_{i}" for i in range(1, 6)]
-                        + [f"bottom_{i}" for i in range(1, 6)])
+        writer.writerow(
+            ["size", "complexity", "layer", "run", "token", "agent_action"]
+            + [f"{a}_position" for a in ACTIONS]
+            + [f"{a}_logprob" for a in ACTIONS]
+            + [f"top_{i}" for i in range(1, 6)]
+            + [f"bottom_{i}" for i in range(1, 6)]
+        )
         for layer, items in sorted(by_layer.items()):
             if layer == TARGET_LAYER:
                 J = None
@@ -186,9 +190,11 @@ def main():
                 continue
             for i in range(0, len(items), args.batch_size):
                 chunk = items[i : i + args.batch_size]
-                h = torch.stack(
-                    [torch.load(f, map_location="cpu", weights_only=True) for f, _ in chunk]
-                ).float().to(dev)
+                h = (
+                    torch.stack([torch.load(f, map_location="cpu", weights_only=True) for f, _ in chunk])
+                    .float()
+                    .to(dev)
+                )
                 with torch.no_grad():
                     if J is not None:
                         h = h @ J.T
@@ -207,13 +213,12 @@ def main():
                 top5, bot5 = top5.cpu().tolist(), bot5.cpu().tolist()
                 for (f, m), r, lp, t5, b5 in zip(chunk, ranks, logprobs, top5, bot5):
                     writer.writerow(
-                        [m["size"], m["comp"], layer, m["run"], f.stem,
-                         agent_action_for(f, args.trajectories_root)] + r
+                        [m["size"], m["comp"], layer, m["run"], f.stem, agent_action_for(f, args.trajectories_root)]
+                        + r
                         + [round(x, 4) for x in lp]
                         + [tok.decode([i]) for i in t5 + b5]
                     )
-                print(f"layer {layer}: {min(i + args.batch_size, len(items))}/{len(items)}",
-                      end="\r", flush=True)
+                print(f"layer {layer}: {min(i + args.batch_size, len(items))}/{len(items)}", end="\r", flush=True)
             print()
     print(f"wrote {args.out}")
 

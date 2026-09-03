@@ -157,7 +157,7 @@ def make_figure(df: pd.DataFrame, obj: str, by: str, out_path: Path) -> None:
         fig.supylabel(f"Fraction of cells predicted as {symbol}", color=INK, x=0.005)
     else:
         # Hide unused panels in the 1-D grid.
-        for ax in list(axes.flat)[len(panels):]:
+        for ax in list(axes.flat)[len(panels) :]:
             ax.set_visible(False)
         for ax in axes[-1, :]:
             ax.set_xlabel(f"Distance to {obj} (Chebyshev)", color=INK)
@@ -168,11 +168,11 @@ def make_figure(df: pd.DataFrame, obj: str, by: str, out_path: Path) -> None:
         Patch(facecolor=COLOR_TP, label="distance 0 (true positive)"),
         Patch(facecolor=COLOR_FP, label="distance ≥1 (false positive)"),
     ]
-    fig.legend(handles=legend_handles, loc="lower center", ncol=2, frameon=False,
-               bbox_to_anchor=(0.5, -0.01))
+    fig.legend(handles=legend_handles, loc="lower center", ncol=2, frameon=False, bbox_to_anchor=(0.5, -0.01))
     fig.suptitle(
         f"{obj.capitalize()} ({symbol}) prediction rate vs distance to {obj}, by {BY_TO_TITLE[by]}",
-        color=INK, fontsize=15,
+        color=INK,
+        fontsize=15,
     )
     fig.tight_layout(rect=(0.04 if by == "both" else 0, 0.05, 1, 0.96))
     fig.savefig(out_path, dpi=150, facecolor=SURFACE, bbox_inches="tight")

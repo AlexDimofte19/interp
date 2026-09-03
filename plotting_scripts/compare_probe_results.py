@@ -30,7 +30,9 @@ def _bar_chart(ax, labels, values_a, values_b, label_a, label_b, baseline_a=None
                 bar.get_x() + bar.get_width() / 2,
                 v + 0.005,
                 f"{v * 100:.1f}",
-                ha="center", va="bottom", fontsize=10,
+                ha="center",
+                va="bottom",
+                fontsize=10,
             )
 
     if baseline_a is not None and baseline_b is not None:
@@ -93,8 +95,13 @@ def plot_overall(data_a, data_b, label_a, label_b, out_dir):
     bars = ax.bar(x, [acc_a, acc_b], color=["darkmagenta", "teal"], width=0.5)
     for bar, v in zip(bars, [acc_a, acc_b]):
         ax.text(
-            bar.get_x() + bar.get_width() / 2, v + 0.01,
-            f"{v * 100:.2f}", ha="center", va="bottom", fontsize=12, fontweight="bold",
+            bar.get_x() + bar.get_width() / 2,
+            v + 0.01,
+            f"{v * 100:.2f}",
+            ha="center",
+            va="bottom",
+            fontsize=12,
+            fontweight="bold",
         )
 
     ax.hlines(base_a, x[0] - 0.25, x[0] + 0.25, colors="black", linestyles="--", label="Baseline")

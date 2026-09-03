@@ -349,7 +349,7 @@ def check_roundtrip(tokenizer, files: list[Path], n_check: int = 5) -> None:
             raise AssertionError(
                 f"{path.name}: re-tokenization differs at index {first} "
                 f"(len {len(actual)} vs stored {len(expected)}); "
-                f"got {actual[first:first + 8]}, stored {expected[first:first + 8]}"
+                f"got {actual[first : first + 8]}, stored {expected[first : first + 8]}"
             )
     logger.info("roundtrip OK: %d prompts re-tokenize to the stored ids", min(n_check, len(files)))
 
@@ -358,9 +358,7 @@ def check_roundtrip(tokenizer, files: list[Path], n_check: int = 5) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--trajectories-dir",
         type=Path,
@@ -371,44 +369,56 @@ def main() -> None:
     parser.add_argument("--model-id", default=MODEL_ID)
     parser.add_argument("--n-prompts", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--sizes", type=int, nargs="*", default=None,
-                        help="Restrict to these grid sizes (default: all)")
+    parser.add_argument(
+        "--sizes", type=int, nargs="*", default=None, help="Restrict to these grid sizes (default: all)"
+    )
 
-    parser.add_argument("--max-seq-len", type=int, default=1024,
-                        help="Left-truncation length. Must clear the 414-token prefix plus "
-                             "the grid (517 tokens at size 15) to reach any reasoning")
-    parser.add_argument("--dim-batch", type=int, default=16,
-                        help="Output dims per backward pass. Memory scales with "
-                             "dim_batch * max_seq_len -- tune this first on the server")
-    parser.add_argument("--skip-first", type=int, default=None,
-                        help="Override the measured instruction-prefix length (e.g. 16 for "
-                             "the jlens paper default, as an ablation)")
+    parser.add_argument(
+        "--max-seq-len",
+        type=int,
+        default=1024,
+        help="Left-truncation length. Must clear the 414-token prefix plus "
+        "the grid (517 tokens at size 15) to reach any reasoning",
+    )
+    parser.add_argument(
+        "--dim-batch",
+        type=int,
+        default=16,
+        help="Output dims per backward pass. Memory scales with "
+        "dim_batch * max_seq_len -- tune this first on the server",
+    )
+    parser.add_argument(
+        "--skip-first",
+        type=int,
+        default=None,
+        help="Override the measured instruction-prefix length (e.g. 16 for the jlens paper default, as an ablation)",
+    )
     parser.add_argument("--target-layer", type=int, default=None)
     parser.add_argument("--source-layers", type=int, nargs="*", default=None)
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--device-map", default="cuda")
     parser.add_argument("--compile", action="store_true")
 
-    parser.add_argument("--eval-every", type=int, default=10,
-                        help="Prompts between convergence records / checkpoint writes")
-    parser.add_argument("--stop-at-delta", type=float, default=0.002,
-                        help="Stop once mean_rel_change falls below this")
-    parser.add_argument("--min-prompts", type=int, default=100,
-                        help="Never stop early before this many prompts")
+    parser.add_argument(
+        "--eval-every", type=int, default=10, help="Prompts between convergence records / checkpoint writes"
+    )
+    parser.add_argument(
+        "--stop-at-delta", type=float, default=0.002, help="Stop once mean_rel_change falls below this"
+    )
+    parser.add_argument("--min-prompts", type=int, default=100, help="Never stop early before this many prompts")
 
-    parser.add_argument("--dump-prompts", type=Path, default=None,
-                        help="Write the corpus to this .jsonl for inspection")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Build (and optionally dump) the corpus, then stop")
-    parser.add_argument("--check-roundtrip", action="store_true",
-                        help="Verify reconstructed text re-tokenizes to the stored ids")
+    parser.add_argument(
+        "--dump-prompts", type=Path, default=None, help="Write the corpus to this .jsonl for inspection"
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Build (and optionally dump) the corpus, then stop")
+    parser.add_argument(
+        "--check-roundtrip", action="store_true", help="Verify reconstructed text re-tokenizes to the stored ids"
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    prompts, files, histogram = build_prompts(
-        args.trajectories_dir, args.n_prompts, args.seed, args.sizes
-    )
+    prompts, files, histogram = build_prompts(args.trajectories_dir, args.n_prompts, args.seed, args.sizes)
     logger.info("built %d prompts from %s", len(prompts), args.trajectories_dir)
     for (size, comp), count in sorted(histogram.items()):
         logger.info("  size %2d comp %.1f: %d", size, comp, count)
@@ -458,8 +468,7 @@ def main() -> None:
     graph_start = min(args.source_layers) if args.source_layers else 0
     target = args.target_layer if args.target_layer is not None else model.n_layers - 1
     logger.info(
-        "retained graph spans layers %d..%d (%d blocks) x dim_batch=%d x max_seq_len=%d"
-        "%s",
+        "retained graph spans layers %d..%d (%d blocks) x dim_batch=%d x max_seq_len=%d%s",
         graph_start,
         target,
         target - graph_start,

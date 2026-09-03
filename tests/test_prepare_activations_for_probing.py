@@ -1,6 +1,7 @@
 """Tests for prepare_activations_for_probing v3 manifest output."""
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -519,6 +520,19 @@ _JLENS_ACTIONS = ("RIGHT", "DOWN")  # per step
 _JLENS_N_PREFIX, _JLENS_N_GRID, _JLENS_N_SUFFIX = 3, 4, 2
 _JLENS_OUTPUT_START = _JLENS_N_PREFIX + _JLENS_N_GRID + _JLENS_N_SUFFIX  # 9
 _JLENS_N_ANALYSIS = 4  # analysis tokens per step; a 5th output token is the action
+# log(0.01) per direction hit: 20 of them still sum to p=0.2, so a mass score stays a real
+# (negative) log-probability the way it does on model output.
+_HIT_LOGPROB = -4.6052
+
+
+def _mass_of(hits: int) -> float:
+    """The direction mass a row with `hits` equal hits carries: log(hits * 0.01).
+
+    Deliberately the same number the top-k reader computes from those hits, so a fixture
+    where the top-k window sees everything makes the two sources agree -- which is what
+    isolates "the mass table is read correctly" from "the mass table sees more".
+    """
+    return math.log(hits * 0.01) if hits else -40.0
 
 
 def _jlens_count(step: int, token_idx: int, layer: int) -> int:
@@ -532,6 +546,8 @@ def _make_jlens_fixture(
     activation_dim: int = 4,
     write_csv: bool = True,
     lens: str = "jlens",
+    logprobs: bool = False,
+    mass_table: bool = False,
     step_grids: dict[int, list[str]] | None = None,
 ) -> tuple[Path, Path, Path]:
     """Activations + trajectory JSONs + per-trajectory jlens CSVs + a direction-token JSON.
@@ -542,6 +558,17 @@ def _make_jlens_fixture(
 
     `lens` names which method's CSV to write. The two lenses share a schema -- only the
     filename differs -- which is exactly why one scoring path serves both.
+
+    `mass_table` additionally writes the wide direction-mass table, whose cells are the
+    per-row mass the same `_jlens_count` hits imply -- so a `logprob_mass_full` selection
+    lands on the same tokens a `logprob_mass` one does and the two can be compared.
+
+    `logprobs` writes the current schema, with a `top_{i}_logprob` beside every `top_{i}`;
+    left False it writes the pre-logprob schema, which is what every CSV on disk still is.
+    Each hit gets the same logprob -- log(0.01), so the per-row total stays a real
+    probability and a mass score stays negative and monotone in the hit count. The two modes
+    therefore select the same tokens here: what is under test is the plumbing, not the
+    ranking (tests/test_jlens_utils.py pins where the two diverge).
     """
     import csv as _csv
 
@@ -560,6 +587,7 @@ def _make_jlens_fixture(
         + [f"{a}_rank" for a in ("RIGHT", "LEFT", "UP", "DOWN")]
         + [f"{a}_logprob" for a in ("RIGHT", "LEFT", "UP", "DOWN")]
         + [f"top_{i}" for i in range(1, 21)]
+        + ([f"top_{i}_logprob" for i in range(1, 21)] if logprobs else [])
     )
 
     def _token(i: int, groups: list[str]) -> dict:
@@ -627,6 +655,31 @@ def _make_jlens_fixture(
                             ]
                             + [0] * 8
                             + top
+                            + ([_HIT_LOGPROB] * hits + [-25.0] * (20 - hits) if logprobs else [])
+                        )
+
+        if mass_table:
+            from telos_interp.jlens_utils import mass_header
+
+            mass_path = activations_dir / traj_name / f"{traj_name}{METHODS[lens].mass_suffix}"
+            with open(mass_path, "w", newline="", encoding="utf-8") as f:
+                writer = _csv.writer(f)
+                writer.writerow(mass_header(list(_JLENS_LAYERS)))
+                for step in _JLENS_STEPS:
+                    for token_idx in range(_JLENS_N_ANALYSIS):
+                        cells = [_mass_of(_jlens_count(step, token_idx, layer)) for layer in _JLENS_LAYERS]
+                        writer.writerow(
+                            [
+                                3,
+                                0.0,
+                                traj_i,
+                                step,
+                                token_idx,
+                                _JLENS_OUTPUT_START + token_idx,
+                                f"t{token_idx}",
+                                _JLENS_ACTIONS[step],
+                            ]
+                            + cells
                         )
 
     return activations_dir, trajectories_dir, direction_path
@@ -650,6 +703,137 @@ def _prepare_next_action(activations_dir, trajectories_dir, out_dir, **kwargs):
     )
     manifest_path = (Path(out_dir) if out_dir is not None else Path(activations_dir)) / "manifest.json"
     return json.loads(manifest_path.read_text())
+
+
+class TestDirectionScoreModes:
+    """The score is a registry now: `count`, or the lens' own logprobs weighted in.
+
+    The failure that matters is silent -- a logprob mode reading a CSV with no logprob
+    columns would score every row as "nothing matched" and rank every token by a tie, after
+    a multi-hour prepare. It has to raise instead.
+    """
+
+    def test_logprob_mass_scores_and_records_itself(self, tmp_path):
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=2, logprobs=True)
+        manifest = _prepare_next_action(
+            acts,
+            trajs,
+            tmp_path / "out",
+            token_selection="jlens_direction",
+            layer_selection="jlens_direction",
+            num_tokens=2,
+            num_layers=1,
+            direction_tokens_path=str(directions),
+            direction_score="logprob_mass",
+        )
+        assert manifest["selection"]["direction_score"] == "logprob_mass"
+        scores = [s["direction_count"] for s in manifest["samples"]]
+        assert scores and all(isinstance(x, float) and x < 0 for x in scores), "a logprob, not a count"
+        assert all(isinstance(s["layer_direction_count"], float) for s in manifest["samples"])
+
+    def test_the_two_modes_agree_when_the_logprobs_are_flat(self, tmp_path):
+        """Same fixture, same picks: the plumbing changes the score, not the coordinates."""
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=2, logprobs=True)
+        common = {
+            "token_selection": "jlens_direction",
+            "layer_selection": "jlens_direction",
+            "num_tokens": 2,
+            "num_layers": 1,
+            "direction_tokens_path": str(directions),
+        }
+        counted = _prepare_next_action(acts, trajs, tmp_path / "c", **common)
+        massed = _prepare_next_action(acts, trajs, tmp_path / "m", direction_score="logprob_mass", **common)
+
+        def picks(manifest):
+            return sorted((s["name"], s["step"], s["token_id"], s["layer"]) for s in manifest["samples"])
+
+        assert picks(counted) == picks(massed)
+
+    def test_a_logprob_mode_refuses_a_pre_logprob_csv(self, tmp_path):
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1)
+        with pytest.raises(ValueError, match="no top_i_logprob columns"):
+            _prepare_next_action(
+                acts,
+                trajs,
+                tmp_path / "out",
+                token_selection="jlens_direction",
+                num_tokens=2,
+                direction_tokens_path=str(directions),
+                direction_score="logprob_mass",
+            )
+
+    def test_a_recorded_selection_refuses_a_score_it_cannot_apply(self, tmp_path):
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1, logprobs=True)
+        with pytest.raises(ValueError, match="reads scores from the selection record"):
+            _prepare_next_action(
+                acts,
+                trajs,
+                tmp_path / "out",
+                token_selection="recorded_jlens",
+                direction_tokens_path=str(directions),
+                direction_score="logprob_mass",
+            )
+
+    def test_the_mass_table_selects_the_same_tokens_as_the_topk_mass(self, tmp_path):
+        """Where the top-k window sees the whole vocabulary the two sources must agree, which
+        is what separates 'the table is read right' from 'the table sees more'."""
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=2, logprobs=True, mass_table=True)
+        common = {
+            "token_selection": "jlens_direction",
+            "layer_selection": "jlens_direction",
+            "num_tokens": 2,
+            "num_layers": 1,
+            "direction_tokens_path": str(directions),
+        }
+        topk = _prepare_next_action(acts, trajs, tmp_path / "t", direction_score="logprob_mass", **common)
+        full = _prepare_next_action(acts, trajs, tmp_path / "f", direction_score="logprob_mass_full", **common)
+
+        def picks(manifest):
+            return sorted((s["name"], s["step"], s["token_id"], s["layer"]) for s in manifest["samples"])
+
+        assert picks(topk) == picks(full)
+        assert full["selection"]["direction_score"] == "logprob_mass_full"
+
+    def test_a_mass_score_needs_no_logprob_columns(self, tmp_path):
+        """It reads the table, so a pre-logprob analysis CSV beside it is irrelevant."""
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1, logprobs=False, mass_table=True)
+        manifest = _prepare_next_action(
+            acts,
+            trajs,
+            tmp_path / "out",
+            token_selection="jlens_direction",
+            num_tokens=2,
+            direction_tokens_path=str(directions),
+            direction_score="logprob_mass_full",
+        )
+        assert manifest["samples"]
+
+    def test_a_mass_score_without_a_table_selects_nothing(self, tmp_path):
+        """The analysis CSV cannot stand in for it -- the mass was never computed."""
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1, logprobs=True)
+        with pytest.raises(ValueError, match="No activations were extracted"):
+            _prepare_next_action(
+                acts,
+                trajs,
+                tmp_path / "out",
+                token_selection="jlens_direction",
+                num_tokens=2,
+                direction_tokens_path=str(directions),
+                direction_score="logprob_mass_full",
+            )
+
+    def test_an_unknown_score_fails_before_any_work(self, tmp_path):
+        acts, trajs, directions = _make_jlens_fixture(tmp_path, num_trajectories=1, logprobs=True)
+        with pytest.raises(ValueError, match="Unknown direction_score"):
+            _prepare_next_action(
+                acts,
+                trajs,
+                tmp_path / "out",
+                token_selection="jlens_direction",
+                num_tokens=2,
+                direction_tokens_path=str(directions),
+                direction_score="logprob_maass",
+            )
 
 
 class TestJlensTokenSelection:

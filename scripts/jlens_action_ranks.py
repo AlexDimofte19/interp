@@ -116,8 +116,7 @@ def main():
 
     with open(args.out, "w", newline="") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["size", "complexity", "layer", "run", "token"]
-                        + [f"{a}_position" for a in ACTIONS])
+        writer.writerow(["size", "complexity", "layer", "run", "token"] + [f"{a}_position" for a in ACTIONS])
         for layer, items in sorted(by_layer.items()):
             if layer == TARGET_LAYER:
                 J = None
@@ -128,9 +127,11 @@ def main():
                 continue
             for i in range(0, len(items), args.batch_size):
                 chunk = items[i : i + args.batch_size]
-                h = torch.stack(
-                    [torch.load(f, map_location="cpu", weights_only=True) for f, _ in chunk]
-                ).float().to(dev)
+                h = (
+                    torch.stack([torch.load(f, map_location="cpu", weights_only=True) for f, _ in chunk])
+                    .float()
+                    .to(dev)
+                )
                 with torch.no_grad():
                     if J is not None:
                         h = h @ J.T
@@ -142,11 +143,8 @@ def main():
                     )  # [B, 4], rank 0 = argmax
                 ranks = ranks.cpu().tolist()
                 for (f, m), r in zip(chunk, ranks):
-                    writer.writerow(
-                        [m["size"], m["comp"], layer, m["run"], f.stem] + r
-                    )
-                print(f"layer {layer}: {min(i + args.batch_size, len(items))}/{len(items)}",
-                      end="\r")
+                    writer.writerow([m["size"], m["comp"], layer, m["run"], f.stem] + r)
+                print(f"layer {layer}: {min(i + args.batch_size, len(items))}/{len(items)}", end="\r")
             print()
     print(f"wrote {args.out}")
 

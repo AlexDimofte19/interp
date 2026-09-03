@@ -191,9 +191,7 @@ def build_step_payload(
 
     positions = reasoning_token_positions(trajectory, step)
     out = step.get("output_tokens", [])
-    analysis_idxs = [i for i, t in enumerate(out) if "analysis" in t.get("token_groups", [])] or list(
-        range(len(out))
-    )
+    analysis_idxs = [i for i, t in enumerate(out) if "analysis" in t.get("token_groups", [])] or list(range(len(out)))
     layers = sorted({layer for _, layer in cells})
     n_pos_csv = max(pos for pos, _ in cells) + 1
     n_pos = min(n_pos_csv, len(positions))
@@ -352,7 +350,11 @@ class TrajectoryExporter:
         seen = {p["step"]["index"] for p in self.emitted}
         for si in sorted(self.wanted_steps - seen):
             payload = build_step_payload(
-                self.trajectory, si, {}, self.dir_lookup, self.meta,
+                self.trajectory,
+                si,
+                {},
+                self.dir_lookup,
+                self.meta,
                 drop_probabilities=self.args.drop_probabilities,
             )
             write_step_file(self.out_dir, payload)
@@ -451,7 +453,8 @@ def list_coverage(csv_path: Path, out_dir: Path) -> None:
     with open(out, "w", encoding="utf-8") as f:
         json.dump(
             {f"size{k[0]}_comp{k[1]}_run{k[2]}": sorted(int(s) for s in v) for k, v in sorted(seen.items())},
-            f, indent=1,
+            f,
+            indent=1,
         )
     print(f"wrote {out}", flush=True)
 
@@ -459,22 +462,32 @@ def list_coverage(csv_path: Path, out_dir: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--csv", type=Path, required=True, help="jlens_reasoning_tokens CSV.")
-    ap.add_argument("--trajectory-paths", nargs="+", type=Path,
-                    help="Trajectory JSON file(s), directory, or glob(s).")
+    ap.add_argument("--trajectory-paths", nargs="+", type=Path, help="Trajectory JSON file(s), directory, or glob(s).")
     ap.add_argument("--direction-tokens", type=Path, help="direction_tokens.json.")
-    ap.add_argument("--list-coverage", action="store_true",
-                    help="Scan the CSV and report which trajectories it contains, then exit.")
-    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR,
-                    help=f"Export root; one folder per trajectory (default: {DEFAULT_OUT_DIR}).")
+    ap.add_argument(
+        "--list-coverage",
+        action="store_true",
+        help="Scan the CSV and report which trajectories it contains, then exit.",
+    )
+    ap.add_argument(
+        "--out-dir",
+        type=Path,
+        default=DEFAULT_OUT_DIR,
+        help=f"Export root; one folder per trajectory (default: {DEFAULT_OUT_DIR}).",
+    )
     ap.add_argument("--sizes", default=None, help="Comma-separated grid sizes to keep, e.g. '11,15'.")
     ap.add_argument("--complexities", default=None, help="Comma-separated complexities, e.g. '0.0,1.0'.")
     ap.add_argument("--runs", default=None, help="Comma-separated run indices, e.g. '0,3'.")
     ap.add_argument("--max-trajectories", type=int, default=None, help="Export at most N trajectories.")
     ap.add_argument("--steps", default="all", help="Step spec: 'all', '0,2' or '0:3'.")
-    ap.add_argument("--drop-probabilities", action="store_true",
-                    help="Strip per-token next-token probabilities to shrink step files.")
-    ap.add_argument("--no-early-exit", action="store_true",
-                    help="Keep scanning the CSV after every requested trajectory is done.")
+    ap.add_argument(
+        "--drop-probabilities",
+        action="store_true",
+        help="Strip per-token next-token probabilities to shrink step files.",
+    )
+    ap.add_argument(
+        "--no-early-exit", action="store_true", help="Keep scanning the CSV after every requested trajectory is done."
+    )
     ap.add_argument("--progress-every", type=int, default=2_000_000, help="Rows between progress lines.")
     ap.add_argument("--overwrite", action="store_true", help="Allow writing into a non-empty output folder.")
     args = ap.parse_args()
@@ -485,7 +498,9 @@ def main() -> None:
         return
     missing_args = [n for n in ("trajectory_paths", "direction_tokens") if getattr(args, n) is None]
     if missing_args:
-        raise SystemExit("missing required argument(s): " + ", ".join("--" + a.replace("_", "-") for a in missing_args))
+        raise SystemExit(
+            "missing required argument(s): " + ", ".join("--" + a.replace("_", "-") for a in missing_args)
+        )
     dir_lookup = load_direction_lookup(args.direction_tokens)
     wanted = build_wanted(args)
     if not wanted:
@@ -527,8 +542,10 @@ def main() -> None:
             n_rows += 1
             if n_rows % args.progress_every == 0:
                 rate = n_rows / max(1e-9, time.time() - started)
-                print(f"  {n_rows / 1e6:.1f}M rows | {rate:,.0f} rows/s | "
-                      f"{len(done)}/{len(wanted)} trajectories done", flush=True)
+                print(
+                    f"  {n_rows / 1e6:.1f}M rows | {rate:,.0f} rows/s | {len(done)}/{len(wanted)} trajectories done",
+                    flush=True,
+                )
             key = group_key(row[i_size], row[i_comp], row[i_run])
             if key != current_key:
                 # rows are contiguous per trajectory, so a key change ends the current one
@@ -568,8 +585,11 @@ def main() -> None:
         exporter.close_trajectory()
 
     elapsed = time.time() - started
-    print(f"scanned {n_rows:,} rows in {elapsed / 60:.1f} min; "
-          f"{len(done)}/{len(wanted)} trajectories had CSV data -> {args.out_dir}", flush=True)
+    print(
+        f"scanned {n_rows:,} rows in {elapsed / 60:.1f} min; "
+        f"{len(done)}/{len(wanted)} trajectories had CSV data -> {args.out_dir}",
+        flush=True,
+    )
 
 
 def _self_test() -> None:
@@ -583,8 +603,12 @@ def _self_test() -> None:
     def make_trajectory(n_analysis: int) -> dict:
         out = [{"token": "<|channel|>", "token_id": 1, "token_groups": ["output", "template"]}]
         out += [
-            {"token": f"Ġt{i}", "token_id": 100 + i, "token_groups": ["output", "analysis"],
-             "probabilities": {" a": 1.0}}
+            {
+                "token": f"Ġt{i}",
+                "token_id": 100 + i,
+                "token_groups": ["output", "analysis"],
+                "probabilities": {" a": 1.0},
+            }
             for i in range(n_analysis)
         ]
         step = {
@@ -633,7 +657,8 @@ def _self_test() -> None:
     for i in range(n_pos * n_layers):
         for action, code in DIR_CODES.items():
             expect = sum(
-                1 for k in range(TOP_K)
+                1
+                for k in range(TOP_K)
                 if lens["topk"][i * TOP_K + k] >= 0 and lens["vocab_dir"][lens["topk"][i * TOP_K + k]] == code
             )
             assert lens["density"][action][i] == expect, (action, i)

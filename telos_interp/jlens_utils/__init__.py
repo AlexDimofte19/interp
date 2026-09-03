@@ -1,7 +1,8 @@
 """Shared selection logic: score a trajectory's reasoning tokens, keep the best few.
 
 Method-dispatched — `jlens`, `logitlens` and `random` are entries in `methods.METHODS`, not
-branches in each consumer. Adding a lens is a registry entry.
+branches in each consumer. Adding a lens is a registry entry. The same holds for *how* a
+token scores: `count`, `logprob_mass` and `logprob_sum` are entries in `scoring.SCORES`.
 
 Stdlib only — no torch — so the two standalone scripts that decide what lands on disk can
 import it without pulling in the model stack, and so the selection is unit-testable on a
@@ -11,22 +12,38 @@ laptop. See README.md for how the pieces fit together.
 from .jlens_csv import (
     DEFAULT_JLENS_CSV_SUFFIX,
     DIRECTION_CLASSES,
+    MASS_PREFIX_COLUMNS,
     TokenScore,
+    artifact_layers,
+    csv_has_logprobs,
     csv_layers,
     jlens_csv_path,
     load_direction_tokens,
+    logprob_column,
+    mass_csv_layers,
+    mass_header,
+    mass_layer_column,
+    mass_meta_path,
     output_start,
     read_direction_counts,
+    read_direction_mass,
+    read_direction_scores,
+    read_mass_meta,
+    require_logprob_columns,
     step_folder_index,
+    write_mass_meta,
 )
+from .layer_profile import LayerProfile, format_profile
 from .methods import (
     DEFAULT_METHODS,
     METHODS,
     SelectionMethod,
     analysis_csv_path,
+    direction_mass_path,
     get_method,
     method_names,
     parse_methods,
+    score_artifact_path,
     scored_methods,
 )
 from .record import (
@@ -39,6 +56,16 @@ from .record import (
     read_selection_record,
     record_path,
     write_selection_record,
+)
+from .scoring import (
+    DEFAULT_SCORE,
+    NO_MATCH_LOGPROB,
+    SCORES,
+    SOURCES,
+    DirectionScore,
+    get_score,
+    mass_scores,
+    score_names,
 )
 from .top_filter import (
     DEFAULT_ALWAYS_LAYERS,
@@ -56,22 +83,40 @@ __all__ = [
     "DEFAULT_ALWAYS_LAYERS",
     "DEFAULT_JLENS_CSV_SUFFIX",
     "DEFAULT_METHODS",
+    "DEFAULT_SCORE",
     "DIRECTION_CLASSES",
+    "MASS_PREFIX_COLUMNS",
     "METHODS",
+    "NO_MATCH_LOGPROB",
     "RECORD_FORMAT_VERSION",
     "RECORD_SUFFIX",
+    "SCORES",
+    "SOURCES",
     "Arm",
+    "DirectionScore",
     "KeptTokens",
+    "LayerProfile",
     "SelectionMethod",
     "TokenPick",
     "TokenScore",
     "analysis_csv_path",
     "arm_seed",
+    "artifact_layers",
     "build_record",
+    "csv_has_logprobs",
     "csv_layers",
+    "direction_mass_path",
+    "format_profile",
     "get_method",
+    "get_score",
     "jlens_csv_path",
     "load_direction_tokens",
+    "logprob_column",
+    "mass_csv_layers",
+    "mass_header",
+    "mass_layer_column",
+    "mass_meta_path",
+    "mass_scores",
     "merge_records",
     "method_names",
     "normalize_record",
@@ -80,12 +125,19 @@ __all__ = [
     "rank_layers_by_direction",
     "rank_tokens",
     "read_direction_counts",
+    "read_direction_mass",
+    "read_direction_scores",
+    "read_mass_meta",
     "read_raw_record",
     "read_selection_record",
     "record_path",
+    "require_logprob_columns",
+    "score_artifact_path",
+    "score_names",
     "scored_methods",
     "step_folder_index",
     "to_disk_coords",
     "top_filter",
+    "write_mass_meta",
     "write_selection_record",
 ]

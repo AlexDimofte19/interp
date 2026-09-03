@@ -11,28 +11,39 @@ surviving trace of that trajectory's control arm.
 
 import csv
 import json
+import math
 import subprocess
 import sys
 
 import pytest
 from telos_interp.jlens_utils import (
+    MASS_PREFIX_COLUMNS,
     METHODS,
+    NO_MATCH_LOGPROB,
     KeptTokens,
+    LayerProfile,
     TokenPick,
     TokenScore,
     arm_seed,
     build_record,
+    csv_has_logprobs,
     csv_layers,
     load_direction_tokens,
+    mass_header,
     merge_records,
     parse_methods,
     rank_layers_by_direction,
     rank_tokens,
     read_direction_counts,
+    read_direction_mass,
+    read_direction_scores,
+    read_mass_meta,
     read_selection_record,
     record_path,
+    score_artifact_path,
     to_disk_coords,
     top_filter,
+    write_mass_meta,
     write_selection_record,
 )
 
@@ -48,11 +59,11 @@ CSV_HEADER = ["step", "reasoning_pos", "abs_pos", "token", "layer", *[f"top_{i}"
 # columns. Within every token layer 23 outscores 7 outscores 15, so the layer ranking is
 # unambiguous too.
 PER_TOKEN = {
-    (0, 100): {23: 4, 7: 3, 15: 1},   # 8
-    (0, 101): {23: 3, 7: 2, 15: 1},   # 6
-    (0, 102): {23: 2, 7: 1, 15: 1},   # 4
-    (0, 103): {23: 1, 7: 1, 15: 0},   # 2
-    (0, 104): {23: 0, 7: 0, 15: 0},   # 0
+    (0, 100): {23: 4, 7: 3, 15: 1},  # 8
+    (0, 101): {23: 3, 7: 2, 15: 1},  # 6
+    (0, 102): {23: 2, 7: 1, 15: 1},  # 4
+    (0, 103): {23: 1, 7: 1, 15: 0},  # 2
+    (0, 104): {23: 0, 7: 0, 15: 0},  # 0
 }
 
 
@@ -72,6 +83,50 @@ def write_csv(folder, rows, method="jlens"):
                 top = [DIRECTION_WORDS[i % len(DIRECTION_WORDS)] for i in range(hits)]
                 top += ["_filler"] * (TOP_K - hits)
                 writer.writerow([step, abs_pos, abs_pos, f"tok{abs_pos}", layer, *top])
+    return path
+
+
+LOGPROB_HEADER = CSV_HEADER + [f"top_{i}_logprob" for i in range(1, TOP_K + 1)]
+
+
+def write_logprob_csv(folder, rows, method="jlens"):
+    """A CSV in the current schema, with a `top_{i}_logprob` beside every `top_{i}`.
+
+    `rows` is {(step, abs_pos): {layer: [logprob per direction hit]}} -- the *values* are the
+    logprobs the lens gave the direction words, so a test can make count and mass disagree.
+    Non-direction fillers get a far-lower logprob, since they only need to not be counted.
+    """
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{folder.name}{METHODS[method].csv_suffix}"
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(LOGPROB_HEADER)
+        for (step, abs_pos), per_layer in sorted(rows.items()):
+            for layer, hit_logprobs in sorted(per_layer.items()):
+                hits = len(hit_logprobs)
+                top = [DIRECTION_WORDS[i % len(DIRECTION_WORDS)] for i in range(hits)]
+                top += ["_filler"] * (TOP_K - hits)
+                lps = list(hit_logprobs) + [-30.0] * (TOP_K - hits)
+                writer.writerow([step, abs_pos, abs_pos, f"tok{abs_pos}", layer, *top, *lps])
+    return path
+
+
+def write_mass_csv(folder, rows, method="jlens", layers=LAYERS):
+    """Write a direction-mass table where that method's filter will look for it.
+
+    `rows` is {(step, abs_pos): {layer: mass}}; a layer left out of a token's dict becomes an
+    empty cell, which is how the real table records "the lens covered no such layer here".
+    """
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{folder.name}{METHODS[method].mass_suffix}"
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(mass_header(layers))
+        for (step, abs_pos), per_layer in sorted(rows.items()):
+            writer.writerow(
+                [5, 0.0, 1, step, abs_pos, abs_pos, f"tok{abs_pos}", "UP"]
+                + [per_layer.get(layer, "") for layer in layers]
+            )
     return path
 
 
@@ -207,8 +262,13 @@ def test_always_layers_are_added_not_counted(signal, folder):
 
 def test_candidate_layers_narrow_both_ranking_and_result(signal, folder):
     kept = top_filter(
-        signal, folder, methods=["jlens"], num_tokens=1, num_layers=1,
-        always_layers=(), candidate_layers=[7, 15],
+        signal,
+        folder,
+        methods=["jlens"],
+        num_tokens=1,
+        num_layers=1,
+        always_layers=(),
+        candidate_layers=[7, 15],
     )
     assert kept["jlens"][(0, 100)].layers == (7,)
     assert kept["jlens"][(0, 100)].direction_count == 4  # 3 + 1, layer 23 excluded
@@ -226,13 +286,16 @@ def test_asking_for_more_than_exists_keeps_everything(signal, folder):
 def test_each_lens_scores_its_own_csv(signal, folder):
     """The two lenses share every line of scoring code and disagree only via their CSVs."""
     # logitlens sees the ranking reversed, and one extra layer the jlens CSV never had
-    write_csv(folder, {
-        (0, 100): {23: 0, 7: 0, 15: 0, 19: 0},
-        (0, 104): {23: 4, 7: 3, 15: 1, 19: 2},
-    }, method="logitlens")
+    write_csv(
+        folder,
+        {
+            (0, 100): {23: 0, 7: 0, 15: 0, 19: 0},
+            (0, 104): {23: 4, 7: 3, 15: 1, 19: 2},
+        },
+        method="logitlens",
+    )
 
-    kept = top_filter(signal, folder, methods=["jlens", "logitlens"], num_tokens=1,
-                      num_layers=1, always_layers=())
+    kept = top_filter(signal, folder, methods=["jlens", "logitlens"], num_tokens=1, num_layers=1, always_layers=())
     assert sorted(kept["jlens"]) == [(0, 100)]
     assert sorted(kept["logitlens"]) == [(0, 104)]
     # layer 19 exists only in the logitlens CSV, so only that arm can ever select it
@@ -282,10 +345,17 @@ def test_random_arm_is_seeded_and_carries_no_counts(signal, folder):
 def test_random_arm_differs_per_trajectory(signal, folder):
     """Seeding on the trajectory name means each one gets its own draw from one --seed."""
     draws = {
-        name: tuple(top_filter(
-            signal, folder, methods=["jlens", "random"], num_tokens=1,
-            random_tokens=2, seed=1, seed_key=name,
-        )["random"])
+        name: tuple(
+            top_filter(
+                signal,
+                folder,
+                methods=["jlens", "random"],
+                num_tokens=1,
+                random_tokens=2,
+                seed=1,
+                seed_key=name,
+            )["random"]
+        )
         for name in [f"traj_{i}" for i in range(8)]
     }
     assert len(set(draws.values())) > 1
@@ -299,8 +369,9 @@ def test_random_arm_draws_from_the_whole_chain(signal, folder):
     """
     seen = set()
     for seed in range(60):
-        kept = top_filter(signal, folder, methods=["jlens", "random"], num_tokens=2,
-                          random_tokens=1, seed=seed, seed_key="t")
+        kept = top_filter(
+            signal, folder, methods=["jlens", "random"], num_tokens=2, random_tokens=1, seed=seed, seed_key="t"
+        )
         seen.update(kept["random"])
     assert seen == {(0, 100), (0, 101), (0, 102), (0, 103), (0, 104)}
 
@@ -310,8 +381,15 @@ def test_random_layers_spread_across_the_pool(signal, folder):
     seen = set()
     for seed in range(40):
         kept = top_filter(
-            signal, folder, methods=["jlens", "random"], num_tokens=1, random_tokens=1,
-            random_layers=1, always_layers=(), seed=seed, seed_key="t",
+            signal,
+            folder,
+            methods=["jlens", "random"],
+            num_tokens=1,
+            random_tokens=1,
+            random_layers=1,
+            always_layers=(),
+            seed=seed,
+            seed_key="t",
         )
         seen.update(next(iter(kept["random"].values())).layers)
     assert seen == set(LAYERS)
@@ -319,8 +397,14 @@ def test_random_layers_spread_across_the_pool(signal, folder):
 
 def test_always_layers_apply_to_the_control_too(signal, folder):
     kept = top_filter(
-        signal, folder, methods=["jlens", "random"], num_tokens=1, random_tokens=2,
-        random_layers=1, always_layers=(15,), seed_key="t",
+        signal,
+        folder,
+        methods=["jlens", "random"],
+        num_tokens=1,
+        random_tokens=2,
+        random_layers=1,
+        always_layers=(15,),
+        seed_key="t",
     )
     assert all(15 in pick.layers for pick in kept["random"].values())
 
@@ -330,8 +414,15 @@ def test_control_draws_over_the_union_of_the_lenses(signal, folder):
     write_csv(folder, {(0, 200): {7: 1}, (0, 201): {7: 1}}, method="logitlens")
     seen = set()
     for seed in range(60):
-        kept = top_filter(signal, folder, methods=["jlens", "logitlens", "random"],
-                          num_tokens=1, random_tokens=1, seed=seed, seed_key="t")
+        kept = top_filter(
+            signal,
+            folder,
+            methods=["jlens", "logitlens", "random"],
+            num_tokens=1,
+            random_tokens=1,
+            seed=seed,
+            seed_key="t",
+        )
         seen.update(kept["random"])
     assert {(0, 200), (0, 201)} <= seen, "the logitlens CSV's tokens must be drawable"
     assert (0, 100) in seen, "and the jlens CSV's too"
@@ -341,10 +432,12 @@ def test_control_draws_over_the_union_of_the_lenses(signal, folder):
 
 
 def test_merged_unions_overlapping_arms():
-    kept = KeptTokens({
-        "jlens": {(0, 5): TokenPick(0, 5, (7, 15), direction_count=3)},
-        "random": {(0, 5): TokenPick(0, 5, (15, 23)), (0, 9): TokenPick(0, 9, (7,))},
-    })
+    kept = KeptTokens(
+        {
+            "jlens": {(0, 5): TokenPick(0, 5, (7, 15), direction_count=3)},
+            "random": {(0, 5): TokenPick(0, 5, (15, 23)), (0, 9): TokenPick(0, 9, (7,))},
+        }
+    )
     assert kept.merged() == {(0, 5): (7, 15, 23), (0, 9): (7,)}
     assert kept.num_files() == 4
     # restricted to one arm, for reporting which arm a missing file belongs to
@@ -389,8 +482,9 @@ def test_step_folder_index_follows_step_id(signal, tmp_path):
 
 def test_record_round_trips(tmp_path, signal, folder):
     kept = to_disk_coords(
-        top_filter(signal, folder, methods=["jlens", "random"], num_tokens=2,
-                   num_layers=1, random_tokens=2, seed_key="t"),
+        top_filter(
+            signal, folder, methods=["jlens", "random"], num_tokens=2, num_layers=1, random_tokens=2, seed_key="t"
+        ),
         trajectory(),
     )
     out = tmp_path / "stub_size5_comp0.4_1"
@@ -405,8 +499,7 @@ def test_record_round_trips(tmp_path, signal, folder):
 
 def test_record_keeps_the_control_countless(signal, folder):
     kept = to_disk_coords(
-        top_filter(signal, folder, methods=["jlens", "random"], num_tokens=1,
-                   random_tokens=2, seed_key="t"),
+        top_filter(signal, folder, methods=["jlens", "random"], num_tokens=1, random_tokens=2, seed_key="t"),
         trajectory(),
     )
     record = build_record(kept, stem="s", model="m", config={}, output_starts={0: 7})
@@ -423,15 +516,28 @@ def test_v1_record_still_reads(tmp_path):
     uniform draw over the reasoning chain cannot be made again.
     """
     path = tmp_path / "t_jlens_selection.json"
-    path.write_text(json.dumps({
-        "format_version": 1,
-        "stem": "t", "model": "m__n",
-        "config": {"seed": 42, "num_tokens": 20},
-        "jlens": [{"step": 0, "token_idx": 93, "layers": [7, 15], "abs_pos": 100,
-                   "token": "tok100", "direction_count": 8,
-                   "layer_direction_counts": {"7": 3, "15": 1}}],
-        "random": [{"step": 0, "token_idx": 5, "layers": [15, 23]}],
-    }))
+    path.write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "stem": "t",
+                "model": "m__n",
+                "config": {"seed": 42, "num_tokens": 20},
+                "jlens": [
+                    {
+                        "step": 0,
+                        "token_idx": 93,
+                        "layers": [7, 15],
+                        "abs_pos": 100,
+                        "token": "tok100",
+                        "direction_count": 8,
+                        "layer_direction_counts": {"7": 3, "15": 1},
+                    }
+                ],
+                "random": [{"step": 0, "token_idx": 5, "layers": [15, 23]}],
+            }
+        )
+    )
 
     kept, configs = read_selection_record(path)
     assert kept.names == ["jlens", "random"]
@@ -446,13 +552,18 @@ def test_v1_record_still_reads(tmp_path):
 def test_merging_preserves_arms_the_new_record_lacks(tmp_path):
     """Adding a logitlens arm must not disturb the two arms already on disk."""
     old = build_record(
-        KeptTokens({"jlens": {(0, 1): TokenPick(0, 1, (7,), direction_count=3)},
-                    "random": {(0, 2): TokenPick(0, 2, (15,))}}),
-        stem="t", model="m", config={"seed": 42},
+        KeptTokens(
+            {"jlens": {(0, 1): TokenPick(0, 1, (7,), direction_count=3)}, "random": {(0, 2): TokenPick(0, 2, (15,))}}
+        ),
+        stem="t",
+        model="m",
+        config={"seed": 42},
     )
     new = build_record(
         KeptTokens({"logitlens": {(0, 9): TokenPick(0, 9, (23,), direction_count=5)}}),
-        stem="t", model="m", config={"seed": 7},
+        stem="t",
+        model="m",
+        config={"seed": 7},
     )
     merged = merge_records(old, new)
     assert sorted(merged["arms"]) == ["jlens", "logitlens", "random"]
@@ -467,6 +578,243 @@ def test_record_rejects_an_unknown_version(tmp_path):
     path.write_text(json.dumps({"format_version": 99, "jlens": [], "random": []}))
     with pytest.raises(ValueError, match="format_version"):
         read_selection_record(path)
+
+
+# --- direction scores ------------------------------------------------------------------
+#
+# The count throws away everything the lens actually believed. These pin the two logprob
+# scores against it, and pin the failure mode that matters most: a logprob score run
+# against a CSV written before the logprob columns existed must raise, never quietly
+# score every row as "nothing matched".
+
+
+def test_count_mode_reads_a_logprob_csv_unchanged(tmp_path):
+    """The new columns are additive: a count sees exactly what it saw before."""
+    plain = write_csv(tmp_path / "a", {(0, 100): {7: 3}})
+    rich = write_logprob_csv(tmp_path / "b", {(0, 100): {7: [-0.1, -2.0, -9.0]}})
+    tokens = set(DIRECTION_WORDS)
+    assert read_direction_counts(plain, tokens, top_k=TOP_K)[(0, 100)].per_layer == {7: 3}
+    assert read_direction_counts(rich, tokens, top_k=TOP_K)[(0, 100)].per_layer == {7: 3}
+
+
+def test_logprob_mass_is_the_total_direction_probability(tmp_path):
+    path = write_logprob_csv(tmp_path / "t", {(0, 100): {7: [math.log(0.25), math.log(0.25)]}})
+    scores = read_direction_scores(path, set(DIRECTION_WORDS), top_k=TOP_K, score_mode="logprob_mass")
+    # two hits at p=0.25 is p=0.5 of direction mass, not p=0.0625
+    assert scores[(0, 100)].per_layer[7] == pytest.approx(math.log(0.5))
+
+
+def test_logprob_sum_multiplies_where_mass_adds(tmp_path):
+    path = write_logprob_csv(tmp_path / "t", {(0, 100): {7: [math.log(0.25), math.log(0.25)]}})
+    scores = read_direction_scores(path, set(DIRECTION_WORDS), top_k=TOP_K, score_mode="logprob_sum")
+    assert scores[(0, 100)].per_layer[7] == pytest.approx(math.log(0.0625))
+
+
+def test_a_row_with_no_direction_word_floors_rather_than_zeroing(tmp_path):
+    path = write_logprob_csv(tmp_path / "t", {(0, 100): {7: []}})
+    scores = read_direction_scores(path, set(DIRECTION_WORDS), top_k=TOP_K, score_mode="logprob_mass")
+    # 0.0 would be log(p=1), i.e. the *best* possible score for the worst possible row
+    assert scores[(0, 100)].per_layer[7] == NO_MATCH_LOGPROB
+
+
+def test_mass_and_count_can_rank_tokens_differently(tmp_path):
+    """Which is the whole point: one confident hit can beat three the lens barely made."""
+    path = write_logprob_csv(
+        tmp_path / "t",
+        {
+            (0, 100): {7: [math.log(0.001)] * 3},  # count 3, mass ~ log(0.003)
+            (0, 101): {7: [math.log(0.400)]},  # count 1, mass ~ log(0.4)
+        },
+    )
+    tokens = set(DIRECTION_WORDS)
+    by_count = rank_tokens(read_direction_scores(path, tokens, top_k=TOP_K, score_mode="count"), [7])
+    by_mass = rank_tokens(read_direction_scores(path, tokens, top_k=TOP_K, score_mode="logprob_mass"), [7])
+    assert by_count[0] == (0, 100)
+    assert by_mass[0] == (0, 101)
+
+
+def test_a_logprob_score_refuses_a_pre_logprob_csv(csv_path):
+    with pytest.raises(ValueError, match="no top_i_logprob columns"):
+        read_direction_scores(csv_path, set(DIRECTION_WORDS), top_k=TOP_K, score_mode="logprob_mass")
+    assert not csv_has_logprobs(csv_path, TOP_K)
+
+
+def test_top_filter_ranks_by_the_requested_score(tmp_path, signal):
+    folder = tmp_path / "t"
+    write_logprob_csv(
+        folder,
+        {
+            (0, 100): {7: [math.log(0.001)] * 3, 15: []},
+            (0, 101): {7: [math.log(0.400)], 15: []},
+        },
+    )
+    counted = top_filter(
+        signal, folder, methods=["jlens"], num_tokens=1, num_layers=1, top_k=TOP_K, direction_score="count"
+    )
+    massed = top_filter(
+        signal, folder, methods=["jlens"], num_tokens=1, num_layers=1, top_k=TOP_K, direction_score="logprob_mass"
+    )
+    assert list(counted["jlens"]) == [(0, 100)]
+    assert list(massed["jlens"]) == [(0, 101)]
+    pick = massed["jlens"][(0, 101)]
+    assert pick.score_mode == "logprob_mass"
+    assert pick.direction_count < 0, "a logprob score is negative and still 'higher is better'"
+
+
+def test_a_logprob_score_survives_the_record(tmp_path, signal):
+    """Floats must not be rounded to int, and the mode has to come back with them."""
+    folder = tmp_path / "t"
+    write_logprob_csv(folder, {(0, 100): {7: [math.log(0.4)], 15: [math.log(0.1)]}})
+    kept = top_filter(
+        signal, folder, methods=["jlens"], num_tokens=1, num_layers=2, top_k=TOP_K, direction_score="logprob_mass"
+    )
+    path = tmp_path / "r.json"
+    write_selection_record(
+        path,
+        build_record(kept, stem="t", model="m", config={"direction_score": "logprob_mass"}),
+    )
+    loaded, configs = read_selection_record(path)
+    pick = loaded["jlens"][(0, 100)]
+    original = kept["jlens"][(0, 100)]
+    assert pick.score_mode == "logprob_mass"
+    assert pick.direction_count == pytest.approx(original.direction_count)
+    assert pick.layer_direction_counts[7] == pytest.approx(math.log(0.4))
+    assert configs["jlens"]["direction_score"] == "logprob_mass"
+
+
+def test_a_record_without_a_score_mode_is_a_count(tmp_path):
+    """Every record written before the logprob scores existed, which is all of them."""
+    path = tmp_path / "r.json"
+    path.write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "config": {"seed": 42},
+                "jlens": [
+                    {
+                        "step": 0,
+                        "token_idx": 93,
+                        "layers": [7],
+                        "token": "t",
+                        "direction_count": 8,
+                        "layer_direction_counts": {"7": 3},
+                    }
+                ],
+                "random": [],
+            }
+        )
+    )
+    kept, _ = read_selection_record(path)
+    assert kept["jlens"][(0, 93)].score_mode == "count"
+
+
+# --- the direction-mass table ------------------------------------------------------------
+#
+# The second artifact. Its cells are computed at gather time over the WHOLE vocabulary, so
+# there is nothing to score here -- the reader's job is to hand them back in the same shape
+# a scored CSV produces, and to keep "not covered" distinct from "no mass".
+
+
+def test_mass_header_matches_the_reader(tmp_path):
+    path = write_mass_csv(tmp_path / "t", {(0, 100): {7: -1.0}})
+    with open(path, newline="", encoding="utf-8") as f:
+        fields = list(csv.DictReader(f).fieldnames)
+    assert fields[: len(MASS_PREFIX_COLUMNS)] == list(MASS_PREFIX_COLUMNS)
+    assert fields[len(MASS_PREFIX_COLUMNS) :] == ["L7", "L15", "L23"]
+
+
+def test_reading_a_mass_table_needs_no_vocabulary(tmp_path):
+    path = write_mass_csv(tmp_path / "t", {(0, 100): {7: -1.5, 15: -0.25, 23: -9.0}})
+    scores = read_direction_mass(path)
+    assert scores[(0, 100)].per_layer == {7: -1.5, 15: -0.25, 23: -9.0}
+    assert scores[(0, 100)].score_mode == "logprob_mass_full"
+    assert scores[(0, 100)].token == "tok100"
+
+
+def test_an_empty_cell_is_absence_not_a_floor(tmp_path):
+    """'The lens covered no such layer' and 'no direction mass here' are different facts."""
+    path = write_mass_csv(tmp_path / "t", {(0, 100): {7: -1.0}})
+    score = read_direction_mass(path)[(0, 100)]
+    assert score.per_layer == {7: -1.0}, "15 and 23 are absent, not NO_MATCH_LOGPROB"
+    # ...and absence still floors when the token is scored over a layer set that includes them
+    assert score.total([15]) == NO_MATCH_LOGPROB
+
+
+def test_read_direction_scores_dispatches_to_the_mass_table(tmp_path):
+    path = write_mass_csv(tmp_path / "t", {(0, 100): {7: -1.0}})
+    scores = read_direction_scores(path, set(), top_k=TOP_K, score_mode="logprob_mass_full")
+    assert scores[(0, 100)].per_layer == {7: -1.0}
+
+
+def test_a_mass_score_resolves_to_the_mass_table(tmp_path):
+    folder = tmp_path / "t"
+    assert score_artifact_path(folder, "jlens", "count").name.endswith("_jlens_analysis.csv")
+    assert score_artifact_path(folder, "jlens", "logprob_mass_full").name.endswith("_jlens_direction_mass.csv")
+
+
+def test_the_mass_table_is_not_an_analysis_csv(tmp_path, csv_path):
+    with pytest.raises(ValueError, match="no L<layer> columns"):
+        read_direction_mass(csv_path)
+
+
+def test_top_filter_ranks_on_the_mass_table(tmp_path, signal):
+    """No analysis CSV at all: a mass score never needs one."""
+    folder = tmp_path / "t"
+    write_mass_csv(folder, {(0, 100): {7: -9.0, 15: -9.0}, (0, 101): {7: -0.5, 15: -9.0}}, layers=[7, 15])
+    kept = top_filter(
+        signal,
+        folder,
+        methods=["jlens"],
+        num_tokens=1,
+        num_layers=1,
+        always_layers=(),
+        top_k=TOP_K,
+        direction_score="logprob_mass_full",
+    )
+    assert list(kept["jlens"]) == [(0, 101)]
+    assert kept["jlens"][(0, 101)].layers == (7,), "its best layer, ranked on the same numbers"
+    # layer 15 is force-kept for every arm regardless of score, mass score included
+    forced = top_filter(
+        signal, folder, methods=["jlens"], num_tokens=1, num_layers=1, top_k=TOP_K, direction_score="logprob_mass_full"
+    )
+    assert forced["jlens"][(0, 101)].layers == (7, 15)
+
+
+def test_the_mass_sidecar_round_trips(tmp_path):
+    path = write_mass_csv(tmp_path / "t", {(0, 100): {7: -1.0}})
+    assert read_mass_meta(path) == {}, "a table written before sidecars existed"
+    write_mass_meta(path, {"signal_json": "/w/direction_tokens_full.json", "num_direction_tokens": 539})
+    assert read_mass_meta(path)["num_direction_tokens"] == 539
+
+
+# --- the dataset-wide layer profile ----------------------------------------------------
+
+
+def test_layer_profile_picks_the_highest_mean_layer(tmp_path):
+    path = write_logprob_csv(
+        tmp_path / "t",
+        {
+            (0, 100): {7: [math.log(0.5)], 15: [math.log(0.01)], 23: []},
+            (0, 101): {7: [math.log(0.5)], 15: [math.log(0.90)], 23: []},
+        },
+    )
+    scores = read_direction_scores(path, set(DIRECTION_WORDS), top_k=TOP_K, score_mode="logprob_mass")
+    profile = LayerProfile(score_mode="logprob_mass")
+    profile.add(scores, [7, 15, 23])
+    assert profile.tokens == 2
+    # layer 15 averages log(0.01) and log(0.9); layer 7 is log(0.5) twice
+    assert profile.best_layer() == 7
+    assert profile.means()[23] == NO_MATCH_LOGPROB, "an unhit layer floors, it does not vanish"
+
+
+def test_layer_profile_counts_every_token_at_every_pinned_layer(tmp_path):
+    """The whole reason to profile the CSV: no layer's mean is conditional on selection."""
+    path = write_logprob_csv(tmp_path / "t", {(0, 100): {7: [math.log(0.5)]}})
+    scores = read_direction_scores(path, set(DIRECTION_WORDS), top_k=TOP_K, score_mode="logprob_mass")
+    profile = LayerProfile(score_mode="logprob_mass")
+    profile.add(scores, [7, 15, 23])
+    assert sorted(profile.counts) == [7, 15, 23]
+    assert set(profile.counts.values()) == {1}
 
 
 # --- the package's own constraint ------------------------------------------------------

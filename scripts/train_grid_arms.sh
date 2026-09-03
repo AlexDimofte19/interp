@@ -37,6 +37,10 @@ TAG=${TAG:-l15}                                  # goes in the probe/log filenam
 EVAL_NAMES=${EVAL_NAMES:-}                       # file of eval trajectory names, one per line
 EVAL_SPLIT=${EVAL_SPLIT:-0.2}                    # only used when EVAL_NAMES is empty
 LAYERS_PER_TOKEN=${LAYERS_PER_TOKEN:-1}
+# One layer for the WHOLE arm rather than one per token (which still spans many layers
+# across the dataset). "best" lets the manifest pick; an explicit L is what a control arm
+# needs, since it carries no scores to pick from. See scripts/jlens_layer_profile.py.
+SINGLE_LAYER=${SINGLE_LAYER:-}
 TOKENS_PER_TRAJ=${TOKENS_PER_TRAJ:-all}
 SPLIT_SEED=${SPLIT_SEED:-42}                     # NOT the training seed: see below
 MODEL_TYPES=${MODEL_TYPES:-"lr mlp"}
@@ -59,7 +63,12 @@ split_arm() {
     # The split seed is deliberately NOT the training seed. Bumping it would give each seed a
     # different eval set and destroy the shared trajectories every arm is scored on; the
     # sweep is meant to vary initialisation and batch order, nothing else.
-    local args=(--layers-per-token "$LAYERS_PER_TOKEN" --seed "$SPLIT_SEED")
+    local args=(--seed "$SPLIT_SEED")
+    if [ -n "$SINGLE_LAYER" ]; then
+        args+=(--single-layer "$SINGLE_LAYER")
+    else
+        args+=(--layers-per-token "$LAYERS_PER_TOKEN")
+    fi
     [ "$TOKENS_PER_TRAJ" = "all" ] || args+=(--tokens-per-trajectory "$TOKENS_PER_TRAJ")
     if [ -n "$EVAL_NAMES" ]; then
         args+=(--eval-names "$EVAL_NAMES")
