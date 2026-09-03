@@ -235,11 +235,18 @@ only the label differs**: `.745 → .862` mlp, **+11.7 pp**.
 
 ### 7e. Entry 49 — the missing cells (NEW)
 
-| probe | selection | label | eval-720 lr | eval-720 mlp | heldout-360 |
-| --- | --- | --- | --- | --- | --- |
-| `local_belief_baselines/random_belief` | random 20/traj | belief | **.6595** | **.7234** | *scoring in progress* |
-| `local_belief_baselines/logitlens_p1` | logitlens per-sentence (uncapped) | belief | **.5737** | **.6438** | *scoring in progress* |
-| `local_belief_baselines/logitlens_p2` | logitlens top-20 | belief | **.7297** | **.7963** | *scoring in progress* |
+| probe | selection | label | eval-720 lr | eval-720 mlp | heldout-360 vs local | vs final |
+| --- | --- | --- | --- | --- | --- | --- |
+| `local_belief_baselines/random_belief` | random 20/traj | belief | .6595 | .7234 | **.5274 / .5886** | .4129 / .4624 |
+| `local_belief_baselines/logitlens_p1` | logitlens per-sentence (uncapped) | belief | .5737 | .6438 | .4861 / .5483 | .3929 / .4370 |
+| `local_belief_baselines/logitlens_p2` | logitlens top-20 | belief | .7297 | .7963 | .5018 / .5498 | .3936 / .4379 |
+
+*(heldout-360 cells are lr / mlp, over all 87,221 tokens.)*
+
+**Regression check passed:** in the 16-probe rebuild, all ten entry-48 probes reproduce their
+published heldout-360 numbers to **4 dp, delta +0.0000 on every one**. That is the check that the
+six added arms sit on the same measurement rather than a shifted one. The join was clean: 0 mass
+mismatches, 0 final-label mismatches, 1 row of 87,221 with no valid rollout action.
 
 ### 7f. The 2×2 that entry 49 exists to produce (eval-720, identical 71,913 samples and split)
 
@@ -267,6 +274,44 @@ the label is worth more than the lens gap.
 At the matched per-sentence rule: jlens P1-full .606/.678 vs logitlens P1-full **.574/.644**, a
 stable −3.2/−3.4 pp.
 
+### 7h. ⚠ The ordering INVERTS on the held-out set — and that is distribution shift, not a defeat
+
+The same three belief-trained arms, same probes, read on **all 87,221 heldout-360 tokens** instead
+of on their own 20-per-trajectory regime:
+
+| selection (belief label) | eval-720 mlp *(its own loud regime)* | heldout-360 mlp *(every token)* |
+| --- | --- | --- |
+| random | .723 *(worst)* | **.5886** *(best of all 16)* |
+| logitlens top-20 | .796 | .5498 |
+| jlens top-20 | **.862** *(best)* | .5243 |
+
+**A perfect mirror image.** This is entry 37(d)'s effect, now reproduced with the belief label and
+with a third arm in the middle: a loud-selected probe only ever saw high-mass tokens and is
+*specialised* to them; the random-trained control saw a uniform draw and so generalises across the
+whole chain. The two orderings cross exactly where the training distributions do.
+
+Read them together, and the deployment question decides which one matters:
+
+- *"score a token the lens told me is loud"* → the jlens arm, and the jlens ordering (§7g).
+- *"score every token in the chain"* → the random arm.
+
+The **logit lens sits between random and jlens in BOTH orderings**, which is a useful consistency
+check: it is not that one population flatters one lens, it is that selection strength trades against
+coverage monotonically.
+
+The label effect, by contrast, **survives the population change intact** — on the same tokens and
+the disjoint tree:
+
+| pair (identical tokens, only the label differs) | heldout-360 mlp |
+| --- | --- |
+| random: final `.4870` → belief `.5886` | **+10.2 pp** |
+| jlens top-20: final `.4556` → belief `.5243` | **+6.9 pp** |
+| logitlens top-20 vs the jlens final-action baseline | `.4556` → `.5498`, **+9.4 pp** |
+
+So of the two axes entry 49 separated, **the label effect generalises and the selection effect is
+population-dependent.** Any claim about selection must name the population it was measured on;
+the label claim does not need that caveat.
+
 ---
 
 ## 8. Reports, artifacts and figures
@@ -278,7 +323,11 @@ stable −3.2/−3.4 pp.
 | `probe_loudness/` — *What Loudness Buys the Probe* | 46 | eval 720 | 20 | 18 | [2e873b12](https://claude.ai/code/artifact/2e873b12-7c49-4ac6-b861-9c2a7aa707f0) |
 | `probe_vs_rollout_lb/` — the belief-probe clone | 47 | heldout 360 | — | 12 | [95a74d99](https://claude.ai/code/artifact/95a74d99-bb0a-440f-839c-e6e4dbac8c65) |
 | `probe_loudness_heldout360/` — selection removed | 48 | heldout 360 | 20 | 18 | [a62f826d](https://claude.ai/code/artifact/a62f826d-34bd-44eb-a13f-606fe2d49c6c) |
-| `probe_loudness_heldout360_16probes/` | **49** | heldout 360 | pending | pending | not built yet |
+| `probe_loudness_heldout360_16probes/` | **49** | heldout 360 | not built | not built | report deferred |
+
+`probe_loudness_heldout360_16probes/` currently holds the two join artifacts only —
+`heldout360_16probes.csv` (87,221 rows x 16 probes) and `per_token.csv` (261,663 rows = 3 rowsets
+x 87,221). The tables/figures/HTML are deliberately not built yet.
 
 `probes/heldout360_all_probes.csv` (entry 38) holds all 26 count/mass-era probes on the 87,221
 tokens under **both** rankings.
@@ -300,7 +349,11 @@ tokens under **both** rankings.
 8. **The commitment happens inside one sentence**, and belief-trained probes open a switch sentence
    holding the *previous* answer, crossing over mid-sentence (entry 47 revised entry 39 here).
 9. **Entry 49: label and selection are separable and additive**, and lens quality orders
-   random < logitlens < jlens with the label held fixed.
+   random < logitlens < jlens with the label held fixed — *on the loud regime*.
+10. **Entry 49: the label effect generalises, the selection effect does not.** On all 87,221
+    heldout tokens the selection ordering inverts (random .589 > logitlens .550 > jlens .524 mlp)
+    because loud-selected probes are specialised to loud tokens, while the label is still worth
+    +6.9 to +10.2 pp on the same tokens. Name the population whenever claiming a selection effect.
 
 ---
 
