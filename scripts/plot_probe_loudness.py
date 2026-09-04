@@ -7,13 +7,15 @@ the same cuts as CSV. Balanced accuracy over the four actions everywhere, for th
 that script gives: the loud bins are direction-word-heavy and a plain accuracy would move
 with the class mix.
 
-Seven figures per run:
+Nine figures per run:
 
   loudness_distribution        where the selected tokens sit against every reasoning token
   {rs}_by_mass_decile          Q1, entry 37's monotonicity with the local-belief label
   {rs}_by_sentence_frac        Q2a, the same accuracy against position in the sentence
   {rs}_mass_x_position         Q2b, the 3x3 that separates the two
-  {rs}_by_rel_sentence         Q3, against the commitment boundary
+  {rs}_by_rel_sentence         Q3, against the LEGACY sentence-end commitment boundary
+  {rs}_by_rel_sentence_token   Q3, same axis, boundary located per token instead
+  {rs}_by_rel_token            Q3, signed TOKEN distance to the per-token boundary
   {rs}_follows_by_mass         Q5, local vs final on the disagreement rows, by loudness
   p2_label_comparison          the headline: ONE token set, three probes
 """
@@ -28,6 +30,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+# One definition of the rel_token bins, imported so the figure and the table it is read
+# beside can never drift apart.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from analyze_probe_loudness import REL_TOKEN_BINS, REL_TOKEN_LABELS  # noqa: E402
 
 ACTIONS = ["LEFT", "UP", "RIGHT", "DOWN"]
 PROBES = {
@@ -328,14 +335,44 @@ def main() -> int:
             args.out,
         )
         rel = d[d["rel_sentence"].notna()].copy()
+        n_fig = 4
         if len(rel):
             rel["rel_clipped"] = rel["rel_sentence"].clip(-6, 6).astype(int)
             fig_by_bin(rel, probes, rs, "rel_clipped", "sentence_idx - convinced_idx", "by_rel_sentence", args.out)
+            n_fig += 1
+        # The same boundary, located per token instead of at a sentence end. Drop the
+        # steps already committed at the no-reasoning cutoff: they have no pre-boundary
+        # side, so they would load the positive bins only.
+        live = d[(d["rel_token"].notna()) & (d["convinced_before_reasoning"] == 0)].copy()
+        if len(live):
+            live["rel_sent_tok_clipped"] = live["rel_sentence_token"].clip(-6, 6).astype(int)
+            fig_by_bin(
+                live,
+                probes,
+                rs,
+                "rel_sent_tok_clipped",
+                "sentence_idx - sentence of the PER-TOKEN boundary",
+                "by_rel_sentence_token",
+                args.out,
+            )
+            live["rel_token_bin"] = pd.cut(
+                live["rel_token"], bins=REL_TOKEN_BINS, labels=REL_TOKEN_LABELS, include_lowest=True
+            )
+            fig_by_bin(
+                live,
+                probes,
+                rs,
+                "rel_token_bin",
+                "tokens from the per-token commitment boundary",
+                "by_rel_token",
+                args.out,
+            )
+            n_fig += 2
         mlps = [p for p in probes if p.endswith("mlp")]
         fig_grid(d, mlps[0], rs, args.out)
         fig_follows(d, mlps, rs, args.out)
         fig_chain_length(d, mlps, rs, args.out)
-        print(f"{rs}: 6 figures", flush=True)
+        print(f"{rs}: {n_fig} figures", flush=True)
 
     d2 = df[df["rowset"] == "p2"]
     if len(d2):

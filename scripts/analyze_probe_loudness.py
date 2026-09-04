@@ -60,6 +60,29 @@ def boot_bal_acc(df: pd.DataFrame, truth_col: str, pred_col: str, n: int, rng) -
     return point, float(np.nanpercentile(draws, 2.5)), float(np.nanpercentile(draws, 97.5))
 
 
+# Bins for the signed TOKEN distance to the per-token commitment boundary. Token distances
+# run to +-2000 and are heavily skewed, so these are log-spaced rather than a clip: bin 0 is
+# the boundary token itself, negatives are before it, positives after.
+REL_TOKEN_BINS = [-(10**6), -500, -200, -100, -50, -20, -5, -1, 0, 5, 20, 50, 100, 200, 500, 10**6]
+REL_TOKEN_LABELS = [
+    "<=-500",
+    "-500..-200",
+    "-200..-100",
+    "-100..-50",
+    "-50..-20",
+    "-20..-5",
+    "-5..-1",
+    "0 (boundary)",
+    "1..5",
+    "6..20",
+    "21..50",
+    "51..100",
+    "101..200",
+    "201..500",
+    ">500",
+]
+
+
 def qbin(s: pd.Series, q: int, labels=None) -> pd.Series:
     """Quantile bins that survive ties (mass is heavy-tailed and has repeated floors)."""
     try:
@@ -279,11 +302,33 @@ def main() -> int:
         )
 
         # ---- Q3: the commitment boundary
+        # LEGACY axis: the boundary located on the sentence-end grid.
         rel = d[d["rel_sentence"].notna()].copy()
         if len(rel):
             rel["rel_clipped"] = rel["rel_sentence"].clip(-6, 6).astype(int)
             S["by_rel_sentence"] = by_bin(rel, "rel_clipped", probes, 0, rng)
             pd.DataFrame(S["by_rel_sentence"]).to_csv(args.out / "tables" / f"{rs}_by_rel_sentence.csv", index=False)
+
+        # PER-TOKEN boundary, two axes. The degenerate cohort is dropped from both: a step
+        # already committed at the no-reasoning cutoff has no pre-boundary side, so keeping
+        # it would fill the positive bins with rows that have no negative counterpart.
+        live = d[(d["rel_token"].notna()) & (d["convinced_before_reasoning"] == 0)].copy()
+        if len(live):
+            # Same +-6 SENTENCE axis as by_rel_sentence, so the two tables are read side by
+            # side and the only difference is where the boundary was placed.
+            live["rel_sent_tok_clipped"] = live["rel_sentence_token"].clip(-6, 6).astype(int)
+            S["by_rel_sentence_token"] = by_bin(live, "rel_sent_tok_clipped", probes, 0, rng)
+            pd.DataFrame(S["by_rel_sentence_token"]).to_csv(
+                args.out / "tables" / f"{rs}_by_rel_sentence_token.csv", index=False
+            )
+            # And the axis the redefinition actually buys: signed TOKEN distance. Token
+            # distances run to +-2000, so the bins are log-spaced rather than clipped --
+            # a +-6 clip would hold 4% of the rows.
+            live["rel_token_bin"] = pd.cut(
+                live["rel_token"], bins=REL_TOKEN_BINS, labels=REL_TOKEN_LABELS, include_lowest=True
+            )
+            S["by_rel_token"] = by_bin(live, "rel_token_bin", probes, 0, rng)
+            pd.DataFrame(S["by_rel_token"]).to_csv(args.out / "tables" / f"{rs}_by_rel_token.csv", index=False)
 
         # ---- Q4: the verbalization control, crossed with loudness
         S["by_direction_token"] = {}

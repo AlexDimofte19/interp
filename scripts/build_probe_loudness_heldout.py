@@ -46,6 +46,27 @@ it quietly destroys the loudness-vs-position control -- entry 46's result (c).
 ``n_switches`` is counted over the DENSE per-token action sequence, so it is a strictly
 larger number than entry 46's per-sentence count and the two are not comparable
 digit-for-digit.
+
+THE COMMITMENT BOUNDARY IS NOW PER-TOKEN. Every earlier script took the boundary from
+``convinced_sentence_idx``, which ran "first cutoff from which every later answer is
+correct" over SENTENCE ENDS only. The ``every_token`` arm evaluates the same rule at every
+reasoning token, so the boundary no longer has to be a sentence end, and ``convinced_token()``
+computes it here from the dense eval list. The sentence-end grid is wrong in both
+directions and neither is rare: on the 264 held-out steps where both boundaries are inside
+the chain it rounds a mid-sentence commitment UP to the next sentence end 70% of the time
+(median 3 tokens), and 23% of the time it reports a boundary that is TOO EARLY because the
+chain relapses between two sentence ends (median 29 tokens early). It also calls 96 of 360
+steps "committed before writing anything" against the dense grid's 56.
+
+Both coordinate families are written, so a figure can be rebuilt either way:
+
+  convinced_idx / rel_sentence / x_sentence          LEGACY, sentence-end grid
+  convinced_token_pos / rel_token / is_convinced     the per-token boundary
+
+``convinced_token_pos`` is a position in ``step["output_tokens"]``; ``NO_REASONING_POS``
+(-1) means the step was already committed at the no-reasoning cutoff -- the per-token twin
+of ``convinced_sentence_idx == 0`` and the cohort entries 41/42 drop. ``rel_token`` is
+``reasoning_pos - convinced_token_reasoning_pos``, signed, 0 AT the boundary token.
 """
 
 import argparse
@@ -121,6 +142,14 @@ BASE_FIELDS = [
     "convinced_idx",
     "rel_sentence",
     "x_sentence",
+    "convinced_token_pos",
+    "convinced_token_reasoning_pos",
+    "convinced_token_frac",
+    "convinced_before_reasoning",
+    "convinced_token_sentence_idx",
+    "rel_token",
+    "rel_sentence_token",
+    "is_convinced",
     "n_switches",
     "label_local",
     "label_final",
@@ -193,6 +222,77 @@ def read_probe_csv(
     return out, sorted(have)
 
 
+KIND_NO_REASONING = "no_reasoning"
+"""``cutoff_kind`` of the pre-reasoning cutoff, spelled here rather than imported: this
+script is a stdlib-only join and ``truncation_strategies`` pulls in the model stack."""
+
+NO_REASONING_POS = -1
+"""``convinced_token_pos`` for a step already committed before it wrote a reasoning token.
+
+A real boundary is an index into ``step["output_tokens"]`` and is therefore >= 0, so the
+sentinel cannot collide with one. It is the per-token twin of ``convinced_sentence_idx == 0``
+and marks the same cohort entries 41/42 drop.
+"""
+
+
+def convinced_index(corrects: list[bool]) -> int | None:
+    """Smallest index from which every later eval is correct; None if the last one is wrong.
+
+    Identical rule to ``run_inference.py::commitment_metrics``, restated here so the
+    per-token boundary is computed from the dense eval list rather than inherited from a
+    sentence-end grid.
+
+    >>> convinced_index([False, True, False, True, True])
+    3
+    >>> convinced_index([True, True])
+    0
+    >>> convinced_index([True, False]) is None
+    True
+    """
+    if not corrects or not corrects[-1]:
+        return None
+    for i in range(len(corrects) - 1, -1, -1):
+        if not corrects[i]:
+            return i + 1
+    return 0
+
+
+def convinced_token(evals: list[dict]) -> int | None:
+    """The per-token commitment boundary, as a position in ``step["output_tokens"]``.
+
+    ``evals`` is one step's whole cutoff list from the ``every_token`` arm: the
+    no-reasoning cutoff plus one eval per reasoning token. The boundary is the first
+    cutoff from which the truncated model answers correctly and never stops -- so
+    ``NO_REASONING_POS`` when that is the no-reasoning cutoff, and ``None`` when the
+    full chain itself answers wrong (no boundary exists).
+
+    THIS IS THE DEFINITION CHANGE. The old boundary ran the same rule over sentence ENDS
+    only, which is wrong in both directions: it rounds a mid-sentence commitment up to the
+    next sentence end, and it misses a relapse that happens between two sentence ends.
+    """
+    ordered = sorted(
+        (e for e in evals if e["cutoff_kind"] != KIND_NO_REASONING),
+        key=lambda e: e["eos_token_pos"],
+    )
+    no_reasoning = [e for e in evals if e["cutoff_kind"] == KIND_NO_REASONING]
+    positions = [NO_REASONING_POS] * len(no_reasoning) + [e["eos_token_pos"] for e in ordered]
+    corrects = [bool(e["correct"]) for e in no_reasoning] + [bool(e["correct"]) for e in ordered]
+    idx = convinced_index(corrects)
+    return None if idx is None else positions[idx]
+
+
+def ct_sentence(ct_pos: int, toks: dict[int, dict]) -> int:
+    """Sentence index of the per-token boundary, or -1 for the no-reasoning sentinel.
+
+    ``toks`` is the step's ``{token_id: coords}`` map, so the lookup is the boundary
+    token's own ``sentence_idx``. The sentinel sits before sentence 0 and gets -1, which
+    keeps ``rel_sentence_token`` a signed sentence offset for every row.
+    """
+    if ct_pos == NO_REASONING_POS:
+        return -1
+    return int(toks[ct_pos]["sentence_idx"])
+
+
 def read_rollouts(root: Path) -> dict[str, dict[int, dict]]:
     """``{name: {step: {"gt", "n_switches", "evals": {token_id: eval}}}}`` from the every_token arm.
 
@@ -212,6 +312,9 @@ def read_rollouts(root: Path) -> dict[str, dict[int, dict]]:
                 "gt": rec["ground_truth"],
                 "n_switches": sum(1 for a, b in zip(acts, acts[1:], strict=False) if a != b),
                 "evals": {e["eos_token_pos"]: e for e in evals},
+                # The commitment boundary, recomputed from THIS dense list rather than
+                # taken from the commitment CSV's sentence-end grid. See convinced_token().
+                "convinced_token_pos": convinced_token(evals),
             }
         out[path.stem] = per_step
     return out
@@ -341,6 +444,7 @@ def main() -> int:
                     continue
 
                 n_tok = len(toks)
+                first_tok = min(toks)
                 mass_rank = ranks({t: c["dir_logmass"] for t, c in toks.items()})
                 by_sentence: dict[str, dict[int, float]] = defaultdict(dict)
                 for t, c in toks.items():
@@ -365,6 +469,16 @@ def main() -> int:
 
                     lm = c["dir_logmass"]
                     rp = c["reasoning_pos"]
+                    # Per-token boundary, in the three coordinates the figures bin on.
+                    # reasoning_pos of the sentinel is -1, one step before the first
+                    # reasoning token, so `rel_token` stays a signed token offset.
+                    ct_pos = rstep["convinced_token_pos"]
+                    ct_rp = None if ct_pos is None else (-1 if ct_pos == NO_REASONING_POS else ct_pos - first_tok)
+                    ct_frac = None if ct_rp is None else (ct_rp / (n_tok - 1) if n_tok > 1 else 0.0)
+                    # Which SENTENCE the per-token boundary falls in, so the entry-41 axis
+                    # (+-6 sentences) can be redrawn around the corrected boundary instead
+                    # of around the sentence end that happened to follow it.
+                    ct_si = None if ct_pos is None else ct_sentence(ct_pos, toks)
                     frac = float(c["sentence_frac"])
                     conv = c["convinced_idx"]
                     si = int(c["sentence_idx"])
@@ -407,6 +521,14 @@ def main() -> int:
                         "convinced_idx": conv,
                         "rel_sentence": rel,
                         "x_sentence": "" if rel == "" else f"{rel - 1 + frac:.6f}",
+                        "convinced_token_pos": "" if ct_pos is None else ct_pos,
+                        "convinced_token_reasoning_pos": "" if ct_rp is None else ct_rp,
+                        "convinced_token_frac": "" if ct_frac is None else f"{ct_frac:.6f}",
+                        "convinced_before_reasoning": "" if ct_pos is None else int(ct_pos == NO_REASONING_POS),
+                        "convinced_token_sentence_idx": "" if ct_si is None else ct_si,
+                        "rel_token": "" if ct_rp is None else rp - ct_rp,
+                        "rel_sentence_token": "" if ct_si is None else si - ct_si,
+                        "is_convinced": "" if ct_pos is None else int(tok_id >= ct_pos),
                         "n_switches": rstep["n_switches"],
                         "label_local": label_local,
                         "label_final": label_final,

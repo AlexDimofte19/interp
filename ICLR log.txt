@@ -3263,3 +3263,97 @@ csv either, and that is what makes the direction number mean anything.
 	split + two trainings, ~10 min, no GPU rollout. (2) the +-k proximity window of
 	entry 42(e) is STILL the last uncontrolled confound. (3) no random-position
 	truncation arm (entry 44(d)'s matched control). (4) layer 15 only.
+
+
+50. THE CONVINCED LINE, REDEFINED PER TOKEN (2026-09-04)
+
+	Every "convinced" number in this file, back to entry 41, comes from one rule:
+	the first cutoff from which the truncated model answers correctly and never
+	stops. The rule is fine. The GRID it ran on was not -- it was sentence ENDS,
+	because that is all `trajectories_train_single_step_probs/` ever evaluated.
+	The `every_token` arm on the held-out 360 has evaluated the same rule at every
+	reasoning token since entry 48 and nothing was reading it. This entry moves
+	the boundary onto that grid. No new inference, no GPU: the rollouts, the probe
+	CSV and the commitment CSV all already existed, so it is the 6a join re-run.
+
+	    scripts/build_probe_loudness_heldout.py   convinced_token() <- the definition
+	    tests/test_convinced_boundary.py          <- new, pins both failure modes
+
+	THE SENTENCE-END GRID IS WRONG IN BOTH DIRECTIONS, and neither direction is
+	rare. On the 264 held-out steps whose boundary is inside the chain under both
+	definitions:
+
+	    signed error of the sentence-end boundary      steps        median
+	    exact                                             19  ( 7%)       0
+	    TOO LATE   rounded up to the next sentence end    185  (70%)   +3 tok
+	    TOO EARLY  missed a mid-sentence relapse           60  (23%)  -29 tok
+
+	    mean |error| 23.3 tokens; worst case 821 tokens too early.
+
+	  * TOO LATE is resolution: the commitment lands mid-sentence and a grid of
+	    sentence ends can only report the next one. Small and systematic.
+	  * TOO EARLY is a real error, not rounding. The chain is correct at two
+	    consecutive sentence ends and WRONG somewhere between them, so the old
+	    boundary certifies a commitment the model had not made. The dense grid sees
+	    8.6 action switches per step (median 3) against the per-sentence count.
+
+	(a) THE DEGENERATE COHORT SHRINKS BY A THIRD. "Committed before writing
+	    anything" -- the cohort entries 41/42 DROP, so this decides who is in the
+	    analysis at all:
+
+	        sentence-end definition, as recorded (eos arm)      95 / 360
+	        sentence-end rule recomputed on the dense rollout   96 / 360
+	        per-token definition                                56 / 360
+
+	    40 trajectories move from "already convinced" to a real boundary inside the
+	    chain. They were never committed; they were only correct at every sentence
+	    end. The 95-vs-96 pair is the endpoint noise floor of entry 44(c) and
+	    nothing else, which is the check that the 96 -> 56 drop is the DEFINITION
+	    and not the re-run.
+
+	(b) THE STEP AT THE BOUNDARY IS TWICE AS SHARP. p2_mlp (the belief-trained
+	    global top-20 probe) read on all 87,221 tokens, balanced accuracy vs the
+	    local belief across the boundary:
+
+	        axis                                  before        at 0     step
+	        sentence index, OLD boundary        .556 (-1)       .621    +6.5 pp
+	        sentence index, NEW boundary        .533 (-1)       .591    +5.8 pp
+	        TOKEN distance, NEW boundary        .519 (-5..-1)   .664   +14.5 pp
+
+	    Same probe, same rows. The old axis was smearing a step across a sentence
+	    of ~10 tokens; on the token axis it is a step, and it peaks just past the
+	    boundary (.708 at 6..20 tokens). This is entry 41(c) -- "the commitment
+	    lands on the FIRST tokens of the sentence" -- with the sentence removed
+	    from the statement.
+
+	(c) READ ONLY x < 0. Past the boundary the truncated answer is correct by
+	    definition, so local belief == final action == ground truth and the three
+	    comparators are ONE series. Every `vs local` / `vs final` pair at rel_token
+	    >= 0 above is the same number twice. The standing trap from entry 41,
+	    unchanged by the redefinition.
+
+	COORDINATES, both families written so any figure can be rebuilt either way:
+
+	    convinced_idx / rel_sentence / x_sentence              LEGACY, sentence ends
+	    convinced_token_pos / rel_token / is_convinced         per-token
+	    convinced_token_sentence_idx / rel_sentence_token      per-token boundary,
+	                                                           +-6 SENTENCE axis, so
+	                                                           it overlays the old one
+
+	`convinced_token_pos` indexes step["output_tokens"]; -1 (NO_REASONING_POS) is
+	the sentinel for the degenerate cohort, and `convinced_before_reasoning` flags
+	it. The two new figures drop that cohort -- it has no pre-boundary side, so
+	keeping it loads the positive bins only.
+
+	NOT DONE: this is the held-out 360 only. `build_sentence_loudness.py` (entry
+	42's 2,880-trajectory loudness line) still reads `convinced_sentence_idx` from
+	the eos arm, and cannot be moved -- there is no every_token rollout for that
+	tree. Entry 42's boundary step (+.0266 raw, +.0076 under the +-1 verbalization
+	window) is therefore still measured against the old line and (a) says ~11% of
+	its trajectories are in the wrong cohort. Re-running it needs an every_token
+	arm on the mass tree, which is GPU.
+
+	ARTIFACTS: /workspace/reasoning_theatre/probe_loudness_heldout360_16probes/
+	per_token{,_jlens_loudness,_logitlens_loudness}.csv rebuilt with the eight new
+	columns; tables/ 18 -> 24 per lens; plots/ and plots_logitlens_loudness/ gain
+	{rs}_by_rel_sentence_token.png and {rs}_by_rel_token.png. 321 tests pass.
