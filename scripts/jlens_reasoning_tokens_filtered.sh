@@ -17,7 +17,17 @@ JLENS_DIR=${JLENS_DIR:-/workspace/jlens/gridenv}
 ACTIVATIONS_DIR=${ACTIVATIONS_DIR:-/workspace/activations/jlens_reasoning_tokens}
 SIGNAL_JSON=${SIGNAL_JSON:-/workspace/jlens/direction_tokens_full.json}
 LAYERS=${LAYERS:-"7:23"}   # candidate pool; layers without a jlens matrix are unscorable
-PER_COMBO=${PER_COMBO:-100}
+# NAMES_FILE pins the trajectory set by NAME, and when it is given it is the SOLE authority:
+# PER_COMBO defaults off, because a balanced re-draw over an already-pinned list can only
+# narrow it -- and --per-combo/--seed does not reproduce a previous draw anyway (two runs
+# with identical flags overlapped by 348/3600). This is how a rebuild covers the same
+# trajectories the tree on disk was gathered from.
+NAMES_FILE=${NAMES_FILE:-}
+if [ -n "$NAMES_FILE" ]; then
+    PER_COMBO=${PER_COMBO-}
+else
+    PER_COMBO=${PER_COMBO-100}
+fi
 MAX_TRAJ=${MAX_TRAJ:-}     # global cap instead of PER_COMBO (mutually exclusive)
 SEED=${SEED:-0}            # trajectory-sampling seed; empty = lowest run indices
 SIZES=${SIZES:-}           # e.g. "11,15"; empty for all grid sizes
@@ -46,6 +56,7 @@ PROFILE=${PROFILE:-}
 
 uv run --project "$REPO" python "$REPO/scripts/jlens_reasoning_tokens.py" \
     --trajectory-paths "$TRAJECTORIES" \
+    ${NAMES_FILE:+--names-file "$NAMES_FILE"} \
     --jlens_dir "$JLENS_DIR" \
     --activations-dir "$ACTIVATIONS_DIR" \
     --layers "$LAYERS" \

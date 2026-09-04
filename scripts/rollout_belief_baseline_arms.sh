@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# ICLR entry 49: the three belief-label baselines the heldout-360 loudness report was missing.
+# The belief-baseline rollout arms: random replay, and the two logit-lens loud arms.
 #
-# Entry 48 reads ten probes on the heldout 360. In those ten, the LABEL axis and the
+# The three belief-label baselines the sixteen-probe loudness report was missing
+# (ICLR log entry 49).
+#
+# The ten-probe report reads ten probes on the heldout 360. In those ten, the LABEL axis and the
 # SELECTION axis are confounded: every local-belief probe was selected by the jlens, and the
 # only non-jlens selection (`random`) exists only with the final-action label. So "+11.7 pp
 # for the belief label" cannot be separated from "the jlens picked the tokens", and no second
@@ -33,9 +36,9 @@
 # jlens_top_k_global 3h55m over the same 3600). Every arm resumes from what is on disk.
 #
 # Usage:
-#   bash scripts/entry49_baseline_arms.sh            # all three, in order
-#   bash scripts/entry49_baseline_arms.sh random     # just the control arm
-#   DRY_RUN=1 bash scripts/entry49_baseline_arms.sh  # cutoffs only, no model
+#   bash scripts/rollout_belief_baseline_arms.sh            # all three, in order
+#   bash scripts/rollout_belief_baseline_arms.sh random     # just the control arm
+#   DRY_RUN=1 bash scripts/rollout_belief_baseline_arms.sh  # cutoffs only, no model
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

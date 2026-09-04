@@ -308,6 +308,41 @@ quietly destroys any loudness-vs-position control.
 low-confidence logits. See `rollout_strategies/RUN_STATE.md`. Do not read a few points of difference
 between arms as signal without checking it against that floor.
 
+## Closing the line: reproduce, publish, retrieve
+
+Three scripts wrap the whole project up. All three are dry-runnable and resumable, and none of
+them invents a path -- they drive the recorded invocations already in `scripts/`.
+
+- **`scripts/reproduce_all.sh`** rebuilds every result, in dependency order, one stage per
+  experiment. Each stage tests for its own output first, so on the host that produced the work
+  it is a no-op check: `LIST=1 ./scripts/reproduce_all.sh` prints the stage table with what
+  exists, what is missing, and what each costs. `DRY_RUN=1` prints every command;
+  `ONLY=`/`SKIP=`/`FROM=`/`FORCE=` select stages. Two rounds are opt-in because they are not
+  reproduction: `GRID_ROUND=1` (the grid-label round, which never produced a result) and
+  `UNRUN=1` (analyses that were written but never run). The header lists what the script
+  deliberately does not cover.
+- **`scripts/push_to_huggingface.sh`** pushes everything -- splits, trajectories, prepared
+  datasets, the activation trees, every resulting CSV, probes, results -- to one dataset repo.
+  Set `HF_ORG`; there is no default. Activation trees are packed into one uncompressed tar per
+  (tree, size), tensors and lens tables separately, each marked with a `.done` sidecar so a
+  re-run repacks nothing. The dataset card is generated from what was actually pushed.
+- **`scripts/pull_artifacts_to_laptop.sh`** runs *on the laptop* and rsyncs back everything a
+  laptop can use -- probes, results, tables, figures, reports, manifests, the direction-mass
+  tables and selection records -- but never the per-token `.pt` trees. `HOST` and `DEST` are
+  the only required knobs; tiers (`WITH_TRAJECTORIES`, `WITH_ANALYSIS_CSV`, ...) move the total
+  between ~4 GB and ~57 GB. It writes `README_PATHS.md` with the `activations_root` rewrite the
+  manifests need.
+
+**Sizes on the GPU host must be measured, never `du`'d.** `/workspace` is MooseFS and `du`
+reports allocated blocks: for a tree of millions of ~7 KB `.pt` files it overstates the real
+bytes by 5-40x (one tree reads 238 GiB by `du` and holds 2.3 GB). Size with
+`find -printf '%s'`, or `rsync --dry-run --stats`.
+
+**Scripts are named for what they do, never for a log entry.** Six were renamed off `entry49_*`
+-- see [RENAMES.md](RENAMES.md), which also records the three data directories that keep their
+original on-disk spelling behind `BELIEF_BASELINE_*` variables. An ICLR log number belongs in a
+header as a cross-reference, not in a filename.
+
 ## Conventions and gotchas
 
 - `configs/**/*.conf`, `script.sh`, `general_probe_train.sh`, `*.ps1` are **recorded `interp-cli`
@@ -325,4 +360,9 @@ between arms as signal without checking it against that floor.
 - `parse_grid_state` has no symbol for fog (`*`), so fogged cells are silently dropped and padded. Fine
   while every trajectory is `fully_observable: true`.
 - `spaces/trace-viewer` is a git submodule (a HuggingFace Space).
+- The signal vocabularies are committed at `data/jlens/` and deployed to `/workspace/jlens/` by
+  `reproduce_all.sh`. [data/jlens/README.md](data/jlens/README.md) records a live discrepancy: the
+  grid vocabulary on disk is the **pre-rule** version (1258 tokens, not the 927 of log entry 19).
+  Nothing published depends on it -- its only consumer, the grid round, never ran -- but settle it
+  before spending GPU there.
 - Pre-commit (ruff format + ruff, trailing whitespace, 2500 KB file size cap) runs on commit and push.

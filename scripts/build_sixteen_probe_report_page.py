@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Build the 16-probe loudness report, with FULL PROVENANCE under every figure.
+"""Build the sixteen-probe loudness report page, with FULL PROVENANCE under every figure.
 
-Entry 48's page was hand-written HTML. This generates it instead, from two registries:
+The ten-probe page it descends from was hand-written HTML (ICLR log entry 48). This
+generates it instead, from two registries:
 
 ``PROBES``   one entry per probe -- the .pt it came from, the activation tree and token
              selection it was TRAINED on, how many samples that was, and which label.
@@ -14,7 +15,7 @@ description: change the registry, and the caption changes with it.
 WHY THIS MATTERS HERE. Three things about this page are counter-intuitive enough that a
 reader who guesses will guess wrong:
 
-  1. THE ROWSET NAMES NO LONGER SELECT TOKENS. Since entry 48 ``p1_full``, ``p1_top20``
+  1. THE ROWSET NAMES NO LONGER SELECT TOKENS. Since the ten-probe page ``p1_full``, ``p1_top20``
      and ``p2`` hold IDENTICAL rows -- every reasoning token of the held-out 360. The name
      now selects WHICH PROBES ARE READ, nothing else. A caption that said "p1_full" and
      stopped would read as a token subset. Each one says so explicitly.
@@ -28,7 +29,7 @@ reader who guesses will guess wrong:
      cut point, not interchangeable.
 
 Usage:
-    python scripts/entry49_build_report.py            # -> <out>/report.html
+    python scripts/build_sixteen_probe_report_page.py            # -> <out>/report.html
 """
 
 import argparse
@@ -279,10 +280,30 @@ FIGURES: dict[str, dict] = {
         note="The control for entry 44(e): loudness and sentence position are correlated under <i>both</i> lenses, so the position axis must be read beside the loudness one.",
     ),
     "{rs}_by_rel_sentence.png": P(
-        title="Balanced accuracy around the commitment boundary",
+        title="Balanced accuracy around the commitment boundary (legacy, sentence-end)",
         shows="Accuracy by sentence index relative to the sentence where the model becomes convinced.",
         x="sentence_idx − convinced_idx, clipped to ±6",
-        note="Rows with no defined commitment sentence are dropped, so this figure uses a subset of the 87,221.",
+        note="The boundary here is located on a grid of SENTENCE ENDS, which entry 50 shows is wrong in "
+        "both directions: too late 70% of the time and too early 23%. Kept for continuity with entries "
+        "41-49; read the two figures below instead. Rows with no defined commitment sentence are dropped, "
+        "so this figure uses a subset of the 87,221.",
+    ),
+    "{rs}_by_rel_sentence_token.png": P(
+        title="The same axis, with the boundary located per token",
+        shows="Accuracy by sentence index relative to the sentence holding the PER-TOKEN commitment "
+        "boundary. Overlays the figure above: same rows, same axis, only the boundary moved.",
+        x="sentence_idx − sentence of the per-token boundary, clipped to ±6",
+        note="Steps already committed at the no-reasoning cutoff (56 of 360) are dropped: they have no "
+        "pre-boundary side, so keeping them would load the positive bins only.",
+    ),
+    "{rs}_by_rel_token.png": P(
+        title="Balanced accuracy by token distance to the commitment boundary",
+        shows="What the redefinition buys. The step at the boundary is +14.5 pp here against +6.5 pp on "
+        "the sentence axis, and it peaks 6-20 tokens past the boundary.",
+        x="tokens from the per-token boundary; log-spaced bins, 0 is the boundary token itself",
+        note="Read only the negative bins for the local-vs-final contrast. Past the boundary the "
+        "truncated answer is correct by definition, so local belief, final action and ground truth are "
+        "one series and the two curves are the same number twice.",
     ),
     "{rs}_mass_x_position.png": P(
         title="Loudness × position (one probe)",
@@ -664,6 +685,8 @@ def main() -> int:
             "{rs}_by_mass_decile.png",
             "{rs}_by_sentence_frac.png",
             "{rs}_by_rel_sentence.png",
+            "{rs}_by_rel_sentence_token.png",
+            "{rs}_by_rel_token.png",
             "{rs}_mass_x_position.png",
             "{rs}_follows_by_mass.png",
             "{rs}_chain_length_control.png",

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# ICLR entry 49, part 2: the six probes, from the three rollout arms of
-# scripts/entry49_baseline_arms.sh. Run AFTER those finish and the GPU is free.
+# The belief-baseline probes: label and selection separated.
+#
+# The six probes, from the three rollout arms of scripts/rollout_belief_baseline_arms.sh
+# (ICLR log entry 49). Run AFTER those finish and the GPU is free.
 #
 #   random_belief   random selection  -> belief   tokens: the recorded `random` control arm,
 #                                                 already on disk in the jlens tree, so no
@@ -12,9 +14,9 @@
 #   logitlens_p2    logitlens P2      -> belief   tokens: the logitlens global top-20, whose
 #                                                 .pt were written by the step-1 gather.
 #
-# Everything else is entry 45's recipe verbatim -- layer 15, next_action, lr+mlp, the SAME
+# Everything else is the local-belief recipe verbatim (ICLR log entry 45) -- layer 15, next_action, lr+mlp, the SAME
 # 2880/720 partition pinned by --eval-names -- so a difference between one of these arms and
-# entry 45's P2 is the token selection and nothing else, and a difference from the
+# the local-belief P2 is the token selection and nothing else, and a difference from the
 # next_action_mass_l15 baseline is the label and nothing else.
 #
 # NEVER an internal --eval-split here: train_cognitive_map_probe splits over ENTRIES, and one
@@ -24,7 +26,11 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 OUT_ROOT=${OUT_ROOT:-/workspace/reasoning_theatre/rollout_strategies_baselines}
-HERE=${HERE:-/workspace/reasoning_theatre/entry49_baselines}
+# The belief-baseline data dirs keep their original on-disk names (see RENAMES.md): only the
+# scripts were renamed, so the run already on disk stays readable and resumable.
+BELIEF_BASELINE_ROOT=${BELIEF_BASELINE_ROOT:-/workspace/reasoning_theatre/entry49_baselines}
+BELIEF_BASELINE_PREPARED_PREFIX=${BELIEF_BASELINE_PREPARED_PREFIX:-/workspace/prepared/entry49}
+HERE=${HERE:-$BELIEF_BASELINE_ROOT}
 LOGS=$HERE/logs
 PROBES=${PROBES:-/workspace/probes/local_belief_baselines}
 mkdir -p "$LOGS" "$PROBES"
@@ -49,7 +55,7 @@ relabel() {  # relabel <prepared-in> <rollout-dir> <prepared-out> <tag>
 }
 
 split_and_train() {  # split_and_train <tag> <prepared-local>
-    local tag=$1 prepared=$2 split="/workspace/prepared/entry49_${1}_split"
+    local tag=$1 prepared=$2 split="${BELIEF_BASELINE_PREPARED_PREFIX}_${1}_split"
     echo "[$(ts)] === $tag: split (eval pinned to the shared 720) ==="
     $UV python "$REPO/scripts/split_next_action_manifest.py" \
         "$prepared" --eval-names "$EVAL_NAMES" --single-layer 15 --seed "$SEED" \
@@ -71,8 +77,8 @@ split_and_train() {  # split_and_train <tag> <prepared-local>
 # The existing manifest already points at the control's .pt; only the label changes.
 relabel /workspace/prepared/next_action_mass_l15_random \
         "$OUT_ROOT/recorded_selection" \
-        /workspace/prepared/entry49_random_belief random_belief
-split_and_train random_belief /workspace/prepared/entry49_random_belief
+        "${BELIEF_BASELINE_PREPARED_PREFIX}_random_belief" random_belief
+split_and_train random_belief "${BELIEF_BASELINE_PREPARED_PREFIX}_random_belief"
 
 # ---- arm 2: logitlens P1 -> belief ------------------------------------------------------
 echo "[$(ts)] === logitlens_p1: gather L15 at the per-sentence-loudest cutoffs ==="
@@ -85,13 +91,13 @@ echo "[$(ts)] === logitlens_p1: prepare (token-selection all, layer 15) ==="
 $UV interp-cli prepare_activations_for_probing \
     --activations-dir "$ACT_P1" --trajectories-dir "$TRAJ" \
     --probe-type next_action --layers 15 --steps all --output-indices all \
-    --output-path /workspace/prepared/entry49_logitlens_p1_final --verbose \
+    --output-path "${BELIEF_BASELINE_PREPARED_PREFIX}_logitlens_p1_final" --verbose \
     2>&1 | tee "$LOGS/logitlens_p1_prepare.txt"
 
-relabel /workspace/prepared/entry49_logitlens_p1_final \
+relabel "${BELIEF_BASELINE_PREPARED_PREFIX}_logitlens_p1_final" \
         "$OUT_ROOT/jlens_argmax_per_sentence" \
-        /workspace/prepared/entry49_logitlens_p1_local logitlens_p1
-split_and_train logitlens_p1 /workspace/prepared/entry49_logitlens_p1_local
+        "${BELIEF_BASELINE_PREPARED_PREFIX}_logitlens_p1_local" logitlens_p1
+split_and_train logitlens_p1 "${BELIEF_BASELINE_PREPARED_PREFIX}_logitlens_p1_local"
 
 # ---- arm 3: logitlens P2 -> belief ------------------------------------------------------
 # The step-1 gather already saved these tokens' layer-15 .pt, so this only reads the record.
@@ -100,13 +106,13 @@ $UV interp-cli prepare_activations_for_probing \
     --activations-dir "$LOGITLENS_ROOT" --trajectories-dir "$TRAJ" \
     --probe-type next_action --layers 15 --steps all --output-indices all \
     --token-selection recorded_logitlens \
-    --output-path /workspace/prepared/entry49_logitlens_p2_final --verbose \
+    --output-path "${BELIEF_BASELINE_PREPARED_PREFIX}_logitlens_p2_final" --verbose \
     2>&1 | tee "$LOGS/logitlens_p2_prepare.txt"
 
-relabel /workspace/prepared/entry49_logitlens_p2_final \
+relabel "${BELIEF_BASELINE_PREPARED_PREFIX}_logitlens_p2_final" \
         "$OUT_ROOT/jlens_top_k_global" \
-        /workspace/prepared/entry49_logitlens_p2_local logitlens_p2
-split_and_train logitlens_p2 /workspace/prepared/entry49_logitlens_p2_local
+        "${BELIEF_BASELINE_PREPARED_PREFIX}_logitlens_p2_local" logitlens_p2
+split_and_train logitlens_p2 "${BELIEF_BASELINE_PREPARED_PREFIX}_logitlens_p2_local"
 
 echo "[$(ts)] === ALL DONE ==="
 for t in random_belief logitlens_p1 logitlens_p2; do for m in lr mlp; do

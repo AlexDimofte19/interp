@@ -1,6 +1,12 @@
 # MacOS
 .DS_Store
 data/**
+# ...except the signal vocabularies. They are 25 KB of JSON, they are an INPUT to every lens
+# run (--signal-json), and until now they existed only on the GPU host -- so a fresh clone could
+# not score a single token. See data/jlens/README.md.
+!data/jlens/
+!data/jlens/*.json
+!data/jlens/README.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

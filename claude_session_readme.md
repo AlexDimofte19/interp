@@ -505,6 +505,11 @@ Three traps to carry forward:
   `run_inference.py::commitment_metrics`. `per_token.csv` carries `n_switches` and
   `sent_model_action` if you want to rebuild the boundary from actual belief switches instead —
   that is the obvious next cut.
+- **This entry's boundary is still the sentence-end one.** Entry 50 moved the held-out 360 onto a
+  per-token boundary, but this loudness line runs on the 2,880-trajectory mass tree, which has no
+  `every_token` rollout, so it cannot follow. Entry 50(a) found ~11% of trajectories change cohort
+  under the new definition, so the boundary step above is measured against a line known to be wrong
+  in both directions. Re-running it needs a GPU rollout, not a re-join.
 
 ## Truncation strategies — cutting where the lens is loud (log entry 43)
 
@@ -981,14 +986,14 @@ ACTIVATIONS_DIR=/workspace/activations/logitlens_mass_l15 \
 NAMES_FILE=/workspace/reasoning_theatre/rollout_strategies/mass_l15_names.txt \
   bash scripts/jlens_mass_l15.sh                  # 1h55m, 3600/3600, exit 0
 
-bash scripts/entry49_baseline_arms.sh             # step 2, the three rollout arms
-bash scripts/entry49_baseline_probes.sh           # steps 3-4, gather/relabel/split/train
-bash scripts/entry49_baseline_report.sh           # steps 5-6, score 16 + rebuild the page
+bash scripts/rollout_belief_baseline_arms.sh             # step 2, the three rollout arms
+bash scripts/train_belief_baseline_probes.sh           # steps 3-4, gather/relabel/split/train
+bash scripts/build_sixteen_probe_loudness_report.sh           # steps 5-6, score 16 + rebuild the page
 
-watch -n 1 ./scripts/entry49_status.sh            # one line per stage, counts against 3600
+watch -n 1 ./scripts/belief_baselines_status.sh            # one line per stage, counts against 3600
 ```
 
-`entry49_baseline_report.sh` is deliberately **not** chained: read each arm's eval-720
+`build_sixteen_probe_loudness_report.sh` is deliberately **not** chained: read each arm's eval-720
 balanced accuracy beside entry 45's table first, because scoring 16 probes over the heldout
 360 costs ~2 h of GPU and the fix for a bad number is upstream.
 
@@ -1006,7 +1011,7 @@ balanced accuracy beside entry 45's table first, because scoring 16 probes over 
   sentence's loudest token"; the lens is a separate flag. So they run as
   `jlens_argmax_per_sentence` / `jlens_top_k_global` with `LENS=logitlens` and land in
   directories with those names under `rollout_strategies_baselines/`. Every result file records
-  `strategy.lens`, and `entry49_status.sh` prints it per arm. Nothing overwrites entry 43/44's
+  `strategy.lens`, and `belief_baselines_status.sh` prints it per arm. Nothing overwrites entry 43/44's
   jlens arms: those are under `rollout_strategies/` and still carry their September-1 mtimes.
 
 ### Where the artifacts go
@@ -1071,10 +1076,86 @@ which is the check that the six added arms sit on the same measurement.
   uncommitted working state, so committing them lands that too — left for a human to decide.
   Everything else of entry 49 is committed and pushed on `worktree-probe-loudness`.
 - The two logitlens arm directories are named `jlens_*`. A rename is a `mv` plus one path in
-  `entry49_baseline_probes.sh`; not done, to avoid touching a running arm.
+  `train_belief_baseline_probes.sh`; not done, to avoid touching a running arm.
 - **No logitlens P1-top20 arm**, so the logitlens per-sentence rule has no counterpart to the
   capped jlens row that beat the baseline. One split + two trainings, ~10 min, no GPU rollout.
 - Report: <https://claude.ai/code/artifact/cd8900f2-5bb4-4e56-b1e4-8e13ed80f47b>
   (source `probe_loudness_heldout360_16probes/report.html`), 20 figures, 18 tables. Built by
-  `scripts/entry49_build_report.py`, which assembles every caption from a `PROBES` and a
+  `scripts/build_sixteen_probe_report_page.py`, which assembles every caption from a `PROBES` and a
   `FIGURES` registry so a figure cannot drift from its description.
+
+## The convinced line is now per token (log entry 50)
+
+`convinced_sentence_idx` ran the commitment rule over sentence ENDS, because that is the only grid
+`trajectories_train_single_step_probs/` ever evaluated. The `every_token` arm on the held-out 360
+has run the same rule at every reasoning token since entry 48 and nothing read it. It does now:
+`build_probe_loudness_heldout.py::convinced_token` computes the boundary from the dense eval list.
+
+No GPU. Re-running step 6a of `build_sixteen_probe_loudness_report.sh` is the whole change, plus
+6b/6c for the tables and figures, once per lens:
+
+```bash
+python scripts/build_probe_loudness_heldout.py --probe-csv "$OUT/heldout360_16probes.csv" \
+    --out "$OUT/per_token.csv" --extra-probes "$EXTRA_BUILD"      # ~2 min
+```
+
+Three things to carry:
+
+- **The sentence-end grid errs in BOTH directions.** 70% of the time it rounds a mid-sentence
+  commitment up to the next sentence end (median 3 tokens). 23% of the time it is *too early*,
+  because the chain relapsed between two sentence ends and the grid could not see it (median 29
+  tokens, worst case 821). Only 7% are exact.
+- **It changes who is in the analysis.** "Committed before writing anything" — the cohort entries
+  41/42 drop — falls from 96 of 360 to 56. The 95-vs-96 pair between the eos arm on record and the
+  sentence-end rule recomputed on the dense rollout is entry 44(c)'s endpoint noise floor, which is
+  what shows the 96 → 56 drop is the definition and not the re-run.
+- **Read only x < 0, still.** Past the boundary the truncated answer is correct by definition, so
+  local belief, final action and ground truth are one series and every `vs local` / `vs final` pair
+  at `rel_token >= 0` is the same number twice.
+
+Both coordinate families are in the CSVs, so any figure can be rebuilt either way:
+`convinced_idx`/`rel_sentence`/`x_sentence` is the legacy sentence-end line;
+`convinced_token_pos`/`rel_token`/`is_convinced` is the per-token one; and
+`convinced_token_sentence_idx`/`rel_sentence_token` puts the per-token boundary back on the ±6
+sentence axis so the new figure overlays the old. `convinced_token_pos == -1` is the degenerate
+sentinel, flagged by `convinced_before_reasoning`, and the two new figures drop that cohort.
+
+The report page is rebuilt: `build_sixteen_probe_report_page.py` gained two `FIGURES` entries and
+`report.html` now carries 26 figures per lens pair, the legacy sentence-end boundary kept beside the
+two new ones and captioned as superseded. **The published artifact has not been re-uploaded** — the
+local `report.html` is ahead of
+<https://claude.ai/code/artifact/cd8900f2-5bb4-4e56-b1e4-8e13ed80f47b>.
+
+---
+
+## Closing the line: three scripts, and the renames (2026-09-04)
+
+The research is wrapped up. Three scripts now cover reproducing it, publishing it, and getting
+it onto a laptop; all three are dry-runnable, resumable, and drive the recorded invocations
+already in `scripts/` rather than inventing paths.
+
+```bash
+LIST=1 ./scripts/reproduce_all.sh                  # the stage table: what exists, what it cost
+DRY_RUN=1 ./scripts/reproduce_all.sh               # every command, run nothing
+HF_ORG=<org> DRY_RUN=1 ./scripts/push_to_huggingface.sh
+HOST=<ssh-alias> DRY_RUN=1 ./scripts/pull_artifacts_to_laptop.sh   # run this ON THE LAPTOP
+```
+
+`reproduce_all.sh` has 24 stages in dependency order, from fitting the Jacobian lens to the
+sixteen-probe report, each skipping itself when its output is already on disk — on this host all
+24 report `done`, which is the check that it is honest. Two more are opt-in and deliberately
+labelled as *not* reproduction: `GRID_ROUND=1` (never produced a result) and `UNRUN=1` (written
+but never run: the sentence-end token cap, the arm-vs-arm truncation comparison).
+
+**Six scripts lost their `entry49_` names** — see [RENAMES.md](RENAMES.md). The data directories
+keep their on-disk spelling behind `BELIEF_BASELINE_ROOT`, `BELIEF_BASELINE_PREPARED_PREFIX` and
+`BELIEF_BASELINE_LOGS`, so nothing already on disk moved. `build_sixteen_probe_loudness_report.sh`
+also absorbed the second-ruler pass that used to be run by hand, so the report now rebuilds in
+one command, both rulers and the direction-word isolation included.
+
+**One thing to settle before any grid work:** the grid vocabulary deployed at
+`/workspace/jlens/grid_tokens_full.json` is the *pre-rule* version — 1258 tokens, where log entry
+19 records 927 after the model-token-only rule. Both vocabularies are now committed at
+`data/jlens/`, and `data/jlens/README.md` explains what is wrong and why regenerating naively
+gives a third version rather than 927. Nothing published depends on it: its only consumer is the
+grid round, which never ran.

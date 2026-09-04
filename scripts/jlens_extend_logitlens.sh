@@ -51,7 +51,8 @@ BATCH_SIZE=${BATCH_SIZE:-256}
 IO_WORKERS=${IO_WORKERS:-16}
 FORWARD_BATCH_SIZE=${FORWARD_BATCH_SIZE:-4}
 DEVICE=${DEVICE:-cuda}
-APPLY=${APPLY:-1}                  # 1 to actually write; otherwise --dry-run
+APPLY=${APPLY:-1}            # 1 to actually write; otherwise --dry-run
+ASSUME_YES=${ASSUME_YES:-}   # skip the interactive confirm (for unattended reproduce runs)
 
 # --select-random-tokens 0: the control is inherited from the record, never redrawn.
 # --lens logitlens: the jlens CSV already exists and is not recomputed.
@@ -83,8 +84,12 @@ CMD=(
 
 if [ -n "$APPLY" ]; then
     echo "About to WRITE new activations under $ACT (arms: $METHODS)."
-    echo "Existing arms are preserved; nothing is deleted. Press Enter (Ctrl-C to abort)."
-    read -r _
+    if [ -n "$ASSUME_YES" ]; then
+        echo "Existing arms are preserved; nothing is deleted. ASSUME_YES set -- not asking."
+    else
+        echo "Existing arms are preserved; nothing is deleted. Press Enter (Ctrl-C to abort)."
+        read -r _
+    fi
 else
     CMD+=(--dry-run)
     echo "DRY RUN -- nothing will be written. Set APPLY=1 to extend."

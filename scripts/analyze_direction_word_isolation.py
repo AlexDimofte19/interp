@@ -7,10 +7,12 @@ those, "the residual carries the action" collapses into "the token says ``up``".
 
 It has been tested twice before and survived both times, but never like this:
 
-  * entry 37(2) split the SELECTED top-20 bucket and found identical accuracy (.6878 vs
-    .6884) -- but only inside the loud regime, and against the FINAL-action label.
-  * entry 46 dropped direction words entirely and the jlens-loudness gradient held -- but on
-    the eval-720 split, with the selection still truncating the loudness axis.
+  * the held-out per-token scoring split the SELECTED top-20 bucket and found identical
+    accuracy (.6878 vs .6884) -- but only inside the loud regime, and against the
+    FINAL-action label (ICLR log entry 37).
+  * probe accuracy read by loudness dropped direction words entirely and the jlens-loudness
+    gradient held -- but on the eval-720 split, with the selection still truncating the
+    loudness axis (ICLR log entry 46).
 
 Here the selection is gone (all 87,221 held-out tokens), the label is the at-token local
 belief, sixteen probes are in play, and -- the part no previous pass did -- **every question
@@ -36,7 +38,7 @@ Cells with fewer than MIN_N rows are reported but not plotted -- direction words
 the data and thin out fast in the quiet deciles, which is itself finding 1.
 
 Usage:
-    python scripts/entry49_direction_word_analysis.py
+    python scripts/analyze_direction_word_isolation.py
 """
 
 import argparse

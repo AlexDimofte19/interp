@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
-# One snapshot of the entry-49 round: gather -> rollout arms -> probes -> report.
+# Status of the belief-baseline round: one snapshot of
+# gather -> rollout arms -> probes -> report (ICLR log entry 49).
 #
-# Cheap enough for `watch -n 1 ./scripts/entry49_status.sh` -- it only does readdirs and
+# Cheap enough for `watch -n 1 ./scripts/belief_baselines_status.sh` -- it only does readdirs and
 # reads the head/tail of a few logs, never a recursive find. Everything it reads lives
 # under /workspace, so any session can run it; nothing is scoped to the one that started
 # the run.
 #
-#   watch -n 1 ./scripts/entry49_status.sh
-#   ./scripts/entry49_status.sh            # once, to find out where the round stopped
+#   watch -n 1 ./scripts/belief_baselines_status.sh
+#   ./scripts/belief_baselines_status.sh            # once, to find out where the round stopped
 set -uo pipefail
 
 ACT_LL=${ACT_LL:-/workspace/activations/logitlens_mass_l15}
 ACT_P1=${ACT_P1:-/workspace/activations/logitlens_argmax_per_sentence_l15}
 ARMS_ROOT=${ARMS_ROOT:-/workspace/reasoning_theatre/rollout_strategies_baselines}
 PROBES=${PROBES:-/workspace/probes/local_belief_baselines}
-PLOGS=${PLOGS:-/workspace/reasoning_theatre/entry49_baselines/logs}
+# The belief-baseline data dirs keep their original on-disk names (see RENAMES.md); only
+# the scripts were renamed, so an existing run stays readable and resumable.
+BELIEF_BASELINE_ROOT=${BELIEF_BASELINE_ROOT:-/workspace/reasoning_theatre/entry49_baselines}
+PLOGS=${PLOGS:-$BELIEF_BASELINE_ROOT/logs}
 REPORT=${REPORT:-/workspace/reasoning_theatre/probe_loudness_heldout360_16probes}
-LOGDIR=${LOGDIR:-/workspace/logs/entry49}
+BELIEF_BASELINE_LOGS=${BELIEF_BASELINE_LOGS:-/workspace/logs/entry49}
+LOGDIR=${LOGDIR:-$BELIEF_BASELINE_LOGS}
 EXPECTED=${EXPECTED:-3600}
 SIZES=${SIZES:-"5 7 9 11 13 15"}
 
@@ -29,7 +34,7 @@ echo "=== entry 49 @ $now_utc UTC / $now_loc CEST"
 # and this script's own name must never match itself (it mentions every process it looks for).
 # -ww: unlimited width. Without it ps truncates argv to the terminal width, and the
 # arm match (which looks for the output root inside --output-dir) silently fails.
-PS_SNAPSHOT=$(ps -ewwo pid,args --no-headers 2>/dev/null | grep -v entry49_status)
+PS_SNAPSHOT=$(ps -ewwo pid,args --no-headers 2>/dev/null | grep -v belief_baselines_status)
 alive() { printf '%s\n' "$PS_SNAPSHOT" | grep -F -- "$1" | grep -qF -- "${2:-}"; }
 state() { alive "$1" "${2:-}" && echo ALIVE || echo "-"; }
 
