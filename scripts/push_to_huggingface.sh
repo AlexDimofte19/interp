@@ -117,11 +117,12 @@ if [ -z "$DRY_RUN" ]; then
     x "$HF" repo create "$HF_REPO_ID" --repo-type dataset ${PRIVATE:+--private} || true
 fi
 
-mkdir -p "$STAGING"
+[ -n "$DRY_RUN" ] || mkdir -p "$STAGING"
 uploaded=""; failed=""; skipped=""
 
-# stage_dir <section> -> path, created
-sdir() { local d="$STAGING/$1"; mkdir -p "$d"; echo "$d"; }
+# stage_dir <section> -> path. Created only for a real run: a DRY_RUN must leave no trace, and
+# the copies that would fill it are themselves skipped by x().
+sdir() { local d="$STAGING/$1"; [ -n "$DRY_RUN" ] || mkdir -p "$d"; echo "$d"; }
 
 # upload <section>. Small sections go through `hf upload`; the big ones through
 # upload-large-folder, which keeps its own resume state inside the folder.

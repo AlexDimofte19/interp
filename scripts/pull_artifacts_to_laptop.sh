@@ -90,7 +90,8 @@ selected() {
 pull() {
     local label=$1 remote=$2 local_sub=$3; shift 3
     echo "   -- $label"
-    mkdir -p "$DEST/$local_sub"
+    # Only for a real run -- a DRY_RUN must leave no directories behind.
+    [ -n "$DRY_RUN" ] || mkdir -p "$DEST/$local_sub"
     local args=($RSYNC_OPTS "$@")
     [ -n "$DRY_RUN" ] && args+=(--dry-run --stats)
     [ -z "$DRY_RUN" ] && args+=(--info=progress2)
@@ -104,7 +105,7 @@ echo "#   from  ${HOST}:${REMOTE_ROOT}"
 echo "#   into  $DEST"
 [ -n "$DRY_RUN" ] && echo "#   DRY_RUN -- rsync --dry-run --stats, nothing written"
 echo "############################################################"
-mkdir -p "$DEST"
+[ -n "$DRY_RUN" ] || mkdir -p "$DEST"
 started_all=$(date +%s)
 pulled=""; failed=""; skipped=""
 
