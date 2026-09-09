@@ -4,7 +4,7 @@ Companion to `ICLR log.txt` (49 entries, chronological, append-only). That file 
 narrative; **this one is the inventory**: every probe, dataset, selection mechanism, rollout
 arm, report and figure set produced so far, with what each was trained on and what it scores.
 
-Written 2026-09-03 at the close of ICLR log entry 49; extended 2026-09-08 for entry 51. Where a number is not yet measured the
+Written 2026-09-03 at the close of ICLR log entry 49; extended 2026-09-08 for entry 51 and 2026-09-09 for entry 52 (which SUPERSEDES 7i and corrects finding 10 — read 7k first). Where a number is not yet measured the
 cell says so rather than being left blank.
 
 ---
@@ -322,6 +322,12 @@ the label claim does not need that caveat.
 
 ### 7i. Entry 51 — the per-sentence cadence completed, and position separated from loudness
 
+> ⚠ **SUPERSEDED BY 7k (entry 52).** These four arms did not hold the same sentences: a pick
+> landing on the chain's last token merged into the `end_of_reasoning` bookend and left the
+> dataset, which cost `eos` all 3,600 of its final-sentence rows and the others only 30 / 67 /
+> 776. The `random`-thinned row is also affected — it was ranked by loudness, not drawn. The
+> numbers below are what was measured; 7k is what they become once the arms are matched.
+
 Eight probes on the sentence-span grid, holding the grid fixed and varying only which token
 inside each span is taken. **Eval-720, balanced accuracy, uncapped:**
 
@@ -356,8 +362,19 @@ reference and eos alone gives no floor.
 > on a control draws uniformly, it does not rank. It is a **population** change: the cap
 > re-weights toward short chains (median 10 per-sentence tokens; only 29.6% of trajectories
 > exceed 20). Compare within a row.
+>
+> ⚠ **THE REASON GIVEN ABOVE IS FALSE, and entry 52 corrects the conclusion.** The control did
+> NOT draw uniformly: `random_per_sentence` records its cutoff's loudness as a covariate, and
+> `thin_tokens` inferred rank-vs-draw from whether a row carried a score, so it ranked. That is
+> why every arm gained a similar amount. With a true uniform control (`--thin-mode uniform`) the
+> control gains **+3.94 pp** and the loud arms +7.6 to +9.5 pp, so roughly half of their thinning
+> gain is genuine **selection**, not population. See 7k.
 
 ### 7j. Entry 51 — the held-out inversion is NOT about loudness
+
+> ✅ **CONFIRMED by entry 52** on equal-N arms: the uniform control is still the best of all 38
+> probes (.5914) and `eos` still the worst (.4428 mlp), so this finding does not depend on the
+> flaw 7i had. See 7k.
 
 All 24 probes on the same 87,221 tokens, vs the local belief, mlp:
 
@@ -384,6 +401,88 @@ same pass, max |delta| `0.000000`.
 
 
 ---
+
+### 7k. Entry 52 — the same cadences on EQUAL-N arms, and the corrected decomposition
+
+7i's arms differed in *how many sentences* they held, not just in which token inside each. Two
+independent causes, both silent:
+
+1. **A pick landing on the chain's final reasoning token** merged into the `end_of_reasoning`
+   bookend (`_dedupe`) and the sentence left the dataset, since no p1 dataset keeps that kind.
+   Only the last sentence can collide — `no_reasoning` sits at `eos[0]`, outside every span — so
+   at most one row per step, but the *rate* is a property of the rule: jlens 30, logitlens 67, a
+   uniform draw 776, and `eos` **all 3,600**, because its pick *is* each sentence's last token.
+   Those rows are the near-deterministic ones (99.8% agree with the final action at mean p 0.999
+   vs 68.2% / 0.865 elsewhere), so `eos` alone was graded with the easy rows stripped out.
+2. **`split_next_action_manifest.py` inferred rank-vs-draw from whether a row carried a direction
+   score**, and `random_per_sentence` records its cutoff's loudness as a *covariate* — so the
+   control was thinned by ranking on loudness (mean L15 mass −3.402 → −2.900, a shift as large as
+   the jlens arm's own ranking). `--thin-mode auto|rank|uniform` now states it; controls pass
+   `uniform`, and the choice is recorded in `split.thin_mode`.
+
+Repaired with no GPU beyond training: the `end_of_reasoning` label was always measured (3,600 per
+arm) and its activation is the step's last reasoning token, identical across arms, so
+`link_end_of_reasoning_activations.py` symlinks the 873 tensors out of the eos tree.
+`intersect_belief_arms.py` then cuts all four arms to the sentences they share — **75,032 rows
+each, identical `(name, step, cut_sentence_idx)` sets, 3,600 trajectories** — while they still
+disagree on which token to cut at 61–93% of sentences.
+
+**Eval-720, uncapped (old → new):**
+
+| in-span rule | lr | mlp |
+| --- | --- | --- |
+| random in span | .5117 → **.5136** | .5836 → **.5928** |
+| **eos — last token** | .5691 → **.5875** | .6495 → **.6651** |
+| logitlens loudest | .5737 → **.5739** | .6438 → **.6459** |
+| jlens loudest | .6055 → **.6059** | .6777 → **.6772** |
+
+**Thinned to 20/trajectory (old → new):**
+
+| in-span rule | lr | mlp |
+| --- | --- | --- |
+| random in span *(now drawn, not ranked)* | .5762 → **.5716** | .6520 → **.6322** |
+| logitlens loudest | .6518 → **.6564** | .7163 → **.7216** |
+| jlens loudest | .7098 → **.7094** | .7737 → **.7720** |
+
+Six of the eight superseded probes reproduce within ±0.005 across a fully rebuilt pipeline; only
+the two arms the bugs touched move. That is the control condition for the rebuild.
+
+**Finding 10 corrected — position vs loudness is ~86/14, not ~70/30:**
+
+| | random→eos *(position)* | eos→jlens *(loudness)* | total | split |
+| --- | --- | --- | --- | --- |
+| entry 51, mlp | +6.59 pp | +2.82 pp | 9.41 pp | 70% / 30% |
+| **entry 52, mlp** | **+7.23 pp** | **+1.21 pp** | 8.44 pp | **86% / 14%** |
+| entry 51, lr | +5.74 pp | +3.64 pp | 9.38 pp | 61% / 39% |
+| **entry 52, lr** | **+7.39 pp** | **+1.84 pp** | 9.23 pp | **80% / 20%** |
+
+The **total barely moves** — the correction reallocated the effect rather than creating or
+destroying one, which is the signature of a composition confound being removed. Loudness stays
+real and positive (jlens still beats logitlens at the matched rule) but is a minor term. An
+ordering also inverts: 7i had logitlens above `eos` on lr (loudness beating position); with equal
+N, `eos` .5875 > logitlens .5739, and lr now agrees with mlp.
+
+**The thinning caveat in 7i corrected — part population, part selection:**
+
+| mlp, uncapped → top-20 | entry 51 | entry 52 |
+| --- | --- | --- |
+| random *(control)* | +6.84 pp | **+3.94 pp** |
+| logitlens loudest | +7.25 pp | +7.57 pp |
+| jlens loudest | +9.60 pp | +9.48 pp |
+
+Entry 51 concluded the thinning gain was purely a population effect because *every* arm gained a
+similar +6.8 to +9.6 pp, control included. That clustering was the artifact of the ranked control.
+With a true uniform control the gains separate: the population component is the +3.94 pp the
+control gets, and the loud arms take +3.6 to +5.5 pp more, which is selection.
+
+**Held-out 360 — 7j survives unchanged.** All 24 previously-scored probes reproduce to
+**0.00000000**; every old→new pair moves under ±0.005 except `eos` mlp (+0.0116). The uniform
+control is still best of all 38 (.5914) and `eos` still worst (.4029 lr / .4428 mlp), so the
+inversion is about narrowness of the training distribution, not the missing rows. Three
+independently drawn uniform controls now sit at **.5914 / .5899 / .5886**.
+
+Probes: `probes/local_belief_equalN/{p1,p1-top20}/`, 14 files, written beside entries 45/49/51
+rather than over them so both rounds stay reproducible and the correction is measurable.
 
 ## 8. Reports, artifacts and figures
 
@@ -424,12 +523,18 @@ tokens under **both** rankings.
    holding the *previous* answer, crossing over mid-sentence (entry 47 revised entry 39 here).
 9. **Entry 49: label and selection are separable and additive**, and lens quality orders
    random < logitlens < jlens with the label held fixed — *on the loud regime*.
-10. **Entry 51: the per-sentence effect is ~70% position, ~30% loudness.** On identical spans,
-    random `.5836` → eos `.6495` → jlens loudest `.6777` (mlp, eval-720). Cutting once per
-    *sentence* buys more than cutting at the *loudest* token within it.
+10. ~~**Entry 51: the per-sentence effect is ~70% position, ~30% loudness.**~~ **Corrected by
+    entry 52 to ~86% / ~14%** (mlp; ~80/20 lr). The arms did not hold the same sentences: `eos`
+    had lost all 3,600 of its final-sentence rows to a `_dedupe` collision while the others lost
+    30 / 67 / 776, and those rows are near-deterministic. On equal-N arms, random `.5928` → eos
+    `.6651` → jlens `.6772`. The eos→jlens gap halves; the *total* barely moves, so the confound
+    reallocated the effect rather than inventing it. Cutting once per *sentence* buys far more
+    than cutting at the *loudest* token within it. See 7k.
 11. **Entry 51: the held-out inversion is about NARROWNESS, not loudness.** The eos arm carries
     no loudness and is last of all 24 on the full held-out population (`.4312`) while beating the
     random control by +6.6 pp on its own selection. Loudness was only the narrowing device.
+    **Confirmed by entry 52** on equal-N arms: still last of all 38 (`.4428` mlp) with the uniform
+    control still first (`.5914`), so it does not depend on finding 10's flaw.
 12. **Entry 49: the label effect generalises, the selection effect does not.** On all 87,221
     heldout tokens the selection ordering inverts (random .589 > logitlens .550 > jlens .524 mlp)
     because loud-selected probes are specialised to loud tokens, while the label is still worth
@@ -526,6 +631,30 @@ selection **+10.3 pp** (.4772 → .5806) and jlens top-20 **+6.6 pp** (.4440 →
 ---
 
 ## 10. Landmines
+
+- **`sentence_idx` in a rollout is NOT the sentence.** It is the cutoff's ordinal in
+  `sentence_evals` (`no_reasoning` is 0, then 1, 2, …), so under any strategy that appends an
+  `end_of_reasoning` bookend *on top of* its per-sentence picks the bookend holds the unique
+  maximum and the last sentence's own pick sits one below it. **`cut_sentence_idx` is the
+  sentence**, and it is what any per-sentence grouping, pairing or dedupe must key on. The two
+  coincide for `eos` alone (one cutoff per sentence, no extra bookend), so a mix-up passes an eos
+  spot-check and is wrong everywhere else — it cost entry 52 a dry run that reported 3,600 damaged
+  steps where 30 were.
+- **A control arm is not identified by the absence of a score.** `--thin-mode auto` infers
+  rank-vs-draw from whether any row carries `direction_count`, which reads "has a score" as "wants
+  to be ranked". A strategy can draw its cutoff uniformly and still record that cutoff's loudness
+  as a covariate (`random_per_sentence`, `every_token`, `recorded_selection` all do), and the
+  inference then promotes the control to a ranked arm with nothing raising. Pass `--thin-mode
+  uniform` explicitly for every control; the value lands in `split.thin_mode`.
+- **`eval_probe_per_token.py` strips `next_action_probe_` from the column key.** The column is
+  `<parent dir>.<stem minus that prefix>` — `local_belief_equalN/p1/next_action_probe_jlens_lr.pt`
+  becomes `p1.jlens_lr`, not `p1.next_action_probe_jlens_lr`. Getting it wrong fails the join
+  loudly (it names the missing columns), but only because `build_probe_loudness_heldout.py`
+  checks; do not assume the convention, read a header.
+- **`scripts/build_probe_inventory.py` used to read three JSONs from a session scratch dir**, so
+  the committed script could not be re-run once that dir was cleaned. It now derives everything
+  from disk. It needs `openpyxl`, which is not in `.venv`: run it as
+  `uv run --with openpyxl python scripts/build_probe_inventory.py`.
 
 - **Do not subsample an analysis over trajectories.** Entry 44(d)'s two arms were first read on ~100
   trajectories and both overstated the effect ~2×. Reproduced in entry 49: reading the first 40

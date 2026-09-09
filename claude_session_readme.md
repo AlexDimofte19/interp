@@ -6,15 +6,29 @@ while that was the working branch, so read "on `reasoning_theatre`" below as "be
 worktree".
 
 **Newest first, if you only read one thing:** the file is append-only and chronological, so
-the last section is the current state. As of 2026-09-08 that is *The per-sentence cadence
-completed: position and loudness, separated* (log entry 51) -- **done**, eight probes trained
-and read on the heldout 360. It holds the sentence grid fixed and varies only which token
-inside each span is taken (loudest / last / random), which splits the per-sentence selection
-effect into ~70% position and ~30% loudness, and shows the held-out inversion is driven by how
-NARROW a training distribution is rather than by loudness -- the eos arm carries none and
-transfers worst of all 24 probes. No figure report this round, by choice; the 24-probe
-`per_token.csv` is what steps 6b-8 of the report script need, so the page can be built later
-with no rework. See also **`research_summary.md`**, the inventory of every probe / dataset /
+the last section is the current state. As of 2026-09-09 that is *The per-sentence arms did not
+hold the same sentences* (log entry 52) -- **done**, fourteen probes in
+`probes/local_belief_equalN/{p1,p1-top20}/` and all 38 read on the heldout 360.
+
+It corrects entry 51, which held the sentence grid fixed and varied only which token inside
+each span is taken (loudest / last / random). Two silent bugs meant the arms did not hold the
+same sentences: a pick landing on the chain's LAST reasoning token merged into the
+`end_of_reasoning` bookend and left the dataset, which cost `eos` all 3,600 of its
+final-sentence rows and the others only 30 / 67 / 776; and the random top-20 "control" was
+ranked by loudness rather than drawn, because the thinning inferred rank-vs-draw from whether a
+row carried a score. On equal-N arms (75,032 rows each, identical
+`(name, step, cut_sentence_idx)` sets) the split is **~86% position / ~14% loudness**, not
+~70/30, and the top-20 thinning gain is **part population and part selection**, not purely
+population. The held-out finding SURVIVES unchanged -- the inversion is driven by how NARROW a
+training distribution is rather than by loudness; the eos arm carries none and still transfers
+worst of all 38, while the uniform control is still best. All 24 previously scored probes
+reproduce to 0.00000000 in the same pass.
+
+Three traps that cost time and are now in `research_summary.md` §10: `sentence_idx` in a rollout
+is the cutoff's ORDINAL, not the sentence (`cut_sentence_idx` is); a control is NOT identified by
+the absence of a score; and `eval_probe_per_token.py` strips `next_action_probe_` from its column
+keys. No figure report this round either, by choice; the per-token CSV is what steps 6b-8 of the
+report script need, so the page can be built later with no rework. See also **`research_summary.md`**, the inventory of every probe / dataset /
 arm / report the whole line has produced, and **`probe_inventory.xlsx`** in
 `/workspace/reasoning_theatre/`, the same inventory per probe as a spreadsheet. Before it:
 *the convinced line, redefined per token* (entry 50), *three more baselines* (entry 49),

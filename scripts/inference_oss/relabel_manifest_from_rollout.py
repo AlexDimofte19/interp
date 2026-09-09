@@ -158,8 +158,30 @@ def main() -> int:
                 }
             )
 
+    # One row per sentence, or the arm is not the arm it claims to be. A tree that holds both a
+    # sentence's interior pick AND its end_of_reasoning bookend -- which is what happens if the
+    # endpoint tensors are linked in without the interior pick having merged into them -- would
+    # double-count that sentence, and a per-sentence arm would quietly stop being one. Same class
+    # of silent miscount as the collision this guard was written alongside, so it fails loudly.
+    # cut_sentence_idx, NOT sentence_idx: the latter is the cutoff's ordinal in the rollout's
+    # eval list, so it counts cutoffs and would make every step look like it held one row per
+    # sentence even when a sentence is represented twice.
+    by_sentence: Counter = Counter()
+    for s in out_samples:
+        if s.get("cut_sentence_idx") is not None:
+            by_sentence[(s["name"], s["step"], s["cut_sentence_idx"])] += 1
+    dupes = [k for k, n in by_sentence.items() if n > 1]
+    if dupes:
+        shown = ", ".join(f"{n}/step{st}/sentence{si} x{by_sentence[(n, st, si)]}" for n, st, si in sorted(dupes)[:5])
+        raise SystemExit(
+            f"{len(dupes)} (trajectory, step, sentence) triple(s) have more than one row, e.g. {shown}. "
+            "A per-sentence arm must hold exactly one cutoff per sentence; check whether the tree "
+            "holds both a sentence's interior pick and its end_of_reasoning bookend."
+        )
+
     kept_names = set(per_traj_kept)
     print(f"kept {len(out_samples)}/{len(samples)} samples over {len(kept_names)} trajectories")
+    print(f"  distinct (trajectory, step, sentence): {len(by_sentence)}")
     print(
         f"  dropped: {n_no_cutoff} no matching cutoff, {n_null_action} null/invalid model_action"
         + (f", {n_wrong_kind} cutoff_kind not in {sorted(keep_kinds)}" if keep_kinds is not None else "")

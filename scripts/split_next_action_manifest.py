@@ -47,10 +47,19 @@ Three reshapes that all have to happen before `train_next_action_probe` sees the
    arms were scored on. Every listed name must be present, or it raises rather than
    quietly shrinking the shared test set.
 
-Throughout, a `random` control arm is recognised by carrying **no** direction counts, and
-is sampled uniformly wherever the jlens arm would be ranked. Ranking a control by a count
-that is always absent would collapse every trajectory onto its lowest index and quietly
-turn the comparison into a comparison of two jlens-shaped things.
+Throughout, a `random` control arm is *by default* recognised by carrying **no** direction
+counts, and is sampled uniformly wherever the jlens arm would be ranked. Ranking a control
+by a count that is always absent would collapse every trajectory onto its lowest index and
+quietly turn the comparison into a comparison of two jlens-shaped things.
+
+**That inference is a default, not the contract** -- `--thin-mode rank|uniform` overrides it,
+and a control arm should pass `uniform` explicitly. Absence of a score is a proxy for "this
+arm does not rank", and the two came apart once already: a truncation strategy may draw its
+cutoff uniformly and still *record* that cutoff's loudness as an analysis covariate, which is
+exactly what `random_per_sentence` does. Such an arm has a score on every row, so the
+inference promoted it to a ranked arm and the thinning silently selected the loudest of its
+uniform draws (mean layer-15 mass -3.402 -> -2.900, a shift as large as the jlens arm's own
+ranking). The control stopped being a control and nothing raised. Say which you mean.
 
 Token-major manifests copy no activations -- `act_path` is resolved against the absolute
 `activations_root` -- so each output is a lone manifest.json and costs nothing to write.
@@ -75,6 +84,55 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from telos_interp.jlens_utils import DEFAULT_SCORE  # noqa: E402
 
 ENTRY_KEYS = ("samples", "trajectories")
+
+THIN_MODES = ("auto", "rank", "uniform")
+
+
+def resolve_thin_mode(thin_mode: str, scored: bool) -> str:
+    """Resolve `--thin-mode` against whether any row carries a score: 'rank' or 'uniform'.
+
+    `auto` reproduces the historical inference -- rank if anything is scored, else draw
+    uniformly -- so every dataset already on disk keeps its meaning. The explicit modes exist
+    because that inference reads "has a score" as "wants to be ranked", and a control arm that
+    records loudness as a covariate satisfies the first without wanting the second.
+
+    `rank` with nothing to rank on is a mistake worth raising for: it would silently degrade to
+    a uniform draw and produce a control where the caller asked for a ranked arm.
+
+    >>> resolve_thin_mode("auto", True), resolve_thin_mode("auto", False)
+    ('rank', 'uniform')
+    >>> resolve_thin_mode("uniform", True)   # a scored arm the caller wants drawn, not ranked
+    'uniform'
+    >>> resolve_thin_mode("rank", False)
+    Traceback (most recent call last):
+    ValueError: --thin-mode rank needs direction scores, but no entry carries one
+    """
+    if thin_mode not in THIN_MODES:
+        raise ValueError(f"--thin-mode must be one of {THIN_MODES}, got {thin_mode!r}")
+    if thin_mode == "rank" and not scored:
+        raise ValueError("--thin-mode rank needs direction scores, but no entry carries one")
+    if thin_mode == "auto":
+        return "rank" if scored else "uniform"
+    return thin_mode
+
+
+def ranks_group(thin_mode: str, mode: str, rows: list[dict], field: str) -> bool:
+    """Whether this one group is ranked rather than drawn.
+
+    Under `auto` the decision is made per group, exactly as it was before `--thin-mode`
+    existed, so no dataset on disk changes meaning. An explicit mode is a statement about the
+    whole manifest and overrides the per-group look.
+
+    >>> ranks_group("auto", "rank", [{"direction_count": 2.0}], "direction_count")
+    True
+    >>> ranks_group("auto", "rank", [{}], "direction_count")        # unscored group, auto
+    False
+    >>> ranks_group("uniform", "uniform", [{"direction_count": 2.0}], "direction_count")
+    False
+    """
+    if thin_mode != "auto":
+        return mode == "rank"
+    return any(row.get(field) is not None for row in rows)
 
 
 def rank_key(score: float | None) -> tuple[bool, float]:
@@ -126,18 +184,22 @@ def load_manifest(prepared_dir: Path) -> dict:
     return manifest
 
 
-def thin_layers(samples: list[dict], layers_per_token: int, seed: int) -> list[dict]:
+def thin_layers(samples: list[dict], layers_per_token: int, seed: int, thin_mode: str = "auto") -> list[dict]:
     """Keep only the best `layers_per_token` rows of each distinct token.
 
     Mirrors `_pick_layers`: a jlens_direction arm ranks a token's layers by
     `layer_direction_count` descending, ties broken by ascending layer. A `random` arm
     records no counts, so it draws uniformly instead -- ranking those by a count that is
     always absent would silently collapse the control onto its lowest layer and destroy
-    the comparison.
+    the comparison. `thin_mode` overrides that inference; see `resolve_thin_mode`.
 
     The descending order is `rank_key`, which is score-mode agnostic: a count and a
     (negative) logprob are both "higher is better", and a missing score sorts last in both.
     """
+    # `auto` keeps the historical PER-GROUP inference, so no dataset on disk changes meaning;
+    # an explicit mode applies to the whole manifest, which is the point of stating it.
+    mode = resolve_thin_mode(thin_mode, any(row.get("layer_direction_count") is not None for row in samples))
+
     groups: dict[tuple, list[dict]] = {}
     for sample in samples:
         key = (sample.get("size"), sample["name"], sample["step"], sample["token_id"])
@@ -149,7 +211,7 @@ def thin_layers(samples: list[dict], layers_per_token: int, seed: int) -> list[d
         if len(rows) <= layers_per_token:
             kept.extend(rows)
             continue
-        if any(row.get("layer_direction_count") is not None for row in rows):
+        if ranks_group(thin_mode, mode, rows, "layer_direction_count"):
             rows = sorted(rows, key=lambda r: (rank_key(r.get("layer_direction_count")), r["layer"]))
         else:
             rows = random.Random(f"{seed}-{key}").sample(rows, layers_per_token)
@@ -177,7 +239,7 @@ def trajectory_strata(samples: list[dict]) -> dict[str, int]:
     return {name: counts.most_common(1)[0][0] for name, counts in labels_by_name.items()}
 
 
-def thin_tokens(samples: list[dict], tokens_per_trajectory: int, seed: int) -> list[dict]:
+def thin_tokens(samples: list[dict], tokens_per_trajectory: int, seed: int, thin_mode: str = "auto") -> list[dict]:
     """Keep each trajectory's best `tokens_per_trajectory` tokens, all their layers.
 
     Ranked by `(rank_key(direction_count), step, token_id)` -- the same tie-break
@@ -187,8 +249,12 @@ def thin_tokens(samples: list[dict], tokens_per_trajectory: int, seed: int) -> l
 
     A `random` control arm carries no `direction_count`, so it is sampled uniformly
     instead; ranking it by an always-absent count would take the lowest step/token index of
-    every trajectory and stop being a control.
+    every trajectory and stop being a control. That inference is only the default --
+    `thin_mode` states it outright, which a control arm that records loudness as a covariate
+    (rather than as a selector) has to do. See `resolve_thin_mode`.
     """
+    mode = resolve_thin_mode(thin_mode, any(row.get("direction_count") is not None for row in samples))
+
     groups: dict[tuple, dict[tuple, list[dict]]] = {}
     for sample in samples:
         token_key = (sample.get("size"), sample["name"], sample["step"], sample["token_id"])
@@ -197,9 +263,10 @@ def thin_tokens(samples: list[dict], tokens_per_trajectory: int, seed: int) -> l
     kept: list[dict] = []
     for name in sorted(groups):
         tokens = groups[name]
+        flat = [row for rows in tokens.values() for row in rows]
         if len(tokens) <= tokens_per_trajectory:
             keys = list(tokens)
-        elif any(row.get("direction_count") is not None for rows in tokens.values() for row in rows):
+        elif ranks_group(thin_mode, mode, flat, "direction_count"):
             keys = sorted(
                 tokens,
                 key=lambda k: (rank_key(tokens[k][0].get("direction_count")), k[2], k[3]),
@@ -369,6 +436,7 @@ def write_split(
     tokens_per_trajectory: int | None = None,
     key: str = "samples",
     single_layer: int | None = None,
+    thin_mode: str = "auto",
 ) -> None:
     """Write a copy of `manifest` carrying only `samples`, plus a record of the split."""
     out = dict(manifest)
@@ -385,6 +453,9 @@ def write_split(
         "tokens_per_trajectory": tokens_per_trajectory,
         "layers_per_token": layers_per_token,
         "single_layer": single_layer,
+        # Which way the thinning went, recorded rather than left to be re-inferred: an arm that
+        # carries scores but was deliberately drawn uniformly is indistinguishable afterwards.
+        "thin_mode": thin_mode,
     }
     out.pop("_source", None)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -421,6 +492,18 @@ def main() -> None:
         "Any layer but 15 also drops the tokens that never selected it. Pass the same "
         "explicit L to a control arm to keep the comparison matched",
     )
+    parser.add_argument(
+        "--thin-mode",
+        choices=THIN_MODES,
+        default="auto",
+        help="how --tokens-per-trajectory / --layers-per-token choose what to keep. 'auto' "
+        "(default) infers it as before -- rank if the entries carry direction scores, draw "
+        "uniformly if not -- so every dataset already on disk keeps its meaning. Say 'uniform' "
+        "for a CONTROL arm: a strategy may draw its cutoff uniformly and still record that "
+        "cutoff's loudness as a covariate, and 'auto' reads the recorded score as intent to "
+        "rank, which silently turns the control into a loudness-selected arm. 'rank' raises "
+        "rather than degrading to a draw when nothing is scored",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--eval-names",
@@ -448,11 +531,15 @@ def main() -> None:
         if args.tokens_per_trajectory < 1:
             raise ValueError(f"--tokens-per-trajectory must be >= 1, got {args.tokens_per_trajectory}")
         before = len(samples)
-        samples = thin_tokens(samples, args.tokens_per_trajectory, args.seed)
-        ranked = any(s.get("direction_count") is not None for s in samples)
+        scored = any(s.get("direction_count") is not None for s in samples)
+        mode = resolve_thin_mode(args.thin_mode, scored)
+        samples = thin_tokens(samples, args.tokens_per_trajectory, args.seed, args.thin_mode)
+        why = "--thin-mode auto, entries are scored" if args.thin_mode == "auto" else f"--thin-mode {args.thin_mode}"
+        if args.thin_mode == "auto" and not scored:
+            why = "--thin-mode auto, no entry carries a score"
         print(
             f"Tokens: kept {args.tokens_per_trajectory}/trajectory "
-            f"({'top-ranked' if ranked else 'uniform draw -- control arm'}), "
+            f"({'top-ranked' if mode == 'rank' else 'uniform draw -- control arm'}; {why}), "
             f"{before} -> {len(samples)} samples"
         )
 
@@ -463,7 +550,7 @@ def main() -> None:
         if args.layers_per_token < 1:
             raise ValueError(f"--layers-per-token must be >= 1, got {args.layers_per_token}")
         before = len(samples)
-        samples = thin_layers(samples, args.layers_per_token, args.seed)
+        samples = thin_layers(samples, args.layers_per_token, args.seed, args.thin_mode)
         print(f"Layers: kept {args.layers_per_token}/token, {before} -> {len(samples)} samples")
         print(f"  {layer_histogram(samples)}")
 
@@ -508,8 +595,17 @@ def main() -> None:
     train_out = args.train_out or prepared_dir.with_name(prepared_dir.name + "_train")
     eval_out = args.eval_out or prepared_dir.with_name(prepared_dir.name + "_eval")
     single = None if args.single_layer is None else chosen
-    write_split(manifest, train_samples, train_out, args.layers_per_token, args.tokens_per_trajectory, key, single)
-    write_split(manifest, eval_samples, eval_out, args.layers_per_token, args.tokens_per_trajectory, key, single)
+    for out_dir, split_rows in ((train_out, train_samples), (eval_out, eval_samples)):
+        write_split(
+            manifest,
+            split_rows,
+            out_dir,
+            args.layers_per_token,
+            args.tokens_per_trajectory,
+            key,
+            single,
+            args.thin_mode,
+        )
 
     num_trajectories = len(train_names) + len(eval_names)
     print(f"Source: {prepared_dir}  ({len(samples)} samples, {num_trajectories} trajectories)")

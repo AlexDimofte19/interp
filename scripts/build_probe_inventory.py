@@ -18,9 +18,94 @@ SCRATCH = Path(__file__).parent
 OUT = SCRATCH / "out"
 OUT.mkdir(exist_ok=True)
 
-probes = json.load(open(SCRATCH / "probes.json"))
-held26 = json.load(open(SCRATCH / "held_bal.json"))  # vs FINAL label, 26 probes
-held16 = json.load(open(SCRATCH / "held16.json"))  # vs local + vs final, the belief-round probes
+# Everything below is derived from what is on disk. An earlier version read three JSON files
+# from a session scratch directory, which meant the committed script could not be re-run once
+# that directory was cleaned up -- an inventory you cannot regenerate is not an inventory.
+PROBE_DIRS = (
+    Path("/workspace/probes"),
+    Path("/workspace/reasoning_theatre/local_belief_probes/probes"),
+)
+# newest first: a probe scored in several rounds takes its most recent number
+HELDOUT_BELIEF_JSONS = (
+    Path("/workspace/reasoning_theatre/probe_loudness_heldout360_equal_n/heldout_balanced_accuracy.json"),
+    Path("/workspace/reasoning_theatre/probe_loudness_heldout360_24probes/heldout_balanced_accuracy.json"),
+)
+HELDOUT_FINAL_CSV = Path("/workspace/probes/heldout360_all_probes.csv")
+
+
+def scan_probes() -> list[dict]:
+    """Every probe checkpoint on disk, with the facts the sheet needs read from the file itself.
+
+    `config` and `results` are written by `train_next_action_probe`, so nothing here is
+    hand-maintained: adding a probe to one of PROBE_DIRS adds a row.
+    """
+    import torch
+
+    out = []
+    for root in PROBE_DIRS:
+        for path in sorted(root.rglob("*.pt")):
+            ck = torch.load(path, map_location="cpu", weights_only=False)
+            cfg, res = ck.get("config", {}), ck.get("results", {})
+            out.append(
+                {
+                    "path": str(path),
+                    "train": cfg.get("train_data_path"),
+                    "eval": cfg.get("eval_data_path"),
+                    "mt": ck.get("model_type"),
+                    "seed": cfg.get("seed"),
+                    "acc": res.get("best_eval_accuracy"),
+                    "bal": res.get("best_balanced_accuracy"),
+                }
+            )
+    return out
+
+
+def load_heldout_belief() -> dict[str, dict]:
+    """{probe key: {vs_local, vs_final}} from the belief rounds' scoring JSONs.
+
+    Read oldest-first so a probe re-scored in a later round overwrites its earlier number --
+    which is what makes the entry-52 rebuilds show their own held-out result rather than the
+    one their superseded namesake got.
+    """
+    out: dict[str, dict] = {}
+    for jf in reversed(HELDOUT_BELIEF_JSONS):
+        if not jf.exists():
+            continue
+        for row in json.load(open(jf)):
+            if row.get("rowset"):  # the whole-population row only, not the loudness bins
+                continue
+            out[row["probe"]] = {"vs_local": row["bal_vs_belief"], "vs_final": row["bal_vs_final"]}
+    return out
+
+
+def load_heldout_final() -> dict[str, float]:
+    """{probe key: balanced accuracy vs the FINAL action} from the all-probes per-token CSV.
+
+    Balanced rather than raw accuracy, per class then averaged, matching
+    `train_next_action_probe::_evaluate`. csv.DictReader, never pandas: the decoded tokens in
+    this file include "NA", empty strings and embedded commas.
+    """
+    if not HELDOUT_FINAL_CSV.exists():
+        return {}
+    hits: dict[str, dict] = {}
+    with open(HELDOUT_FINAL_CSV, newline="") as f:
+        reader = csv.DictReader(f)
+        preds = [c for c in (reader.fieldnames or []) if c.endswith("_pred")]
+        for row in reader:
+            label = row.get("label")
+            if label in (None, ""):
+                continue
+            for col in preds:
+                key = col[: -len("_pred")]
+                per = hits.setdefault(key, {})
+                tot, ok = per.get(label, (0, 0))
+                per[label] = (tot + 1, ok + (row[col] == label))
+    return {key: sum(ok / tot for tot, ok in per.values()) / len(per) for key, per in hits.items() if per}
+
+
+probes = scan_probes()
+held26 = load_heldout_final()  # vs FINAL label
+held16 = load_heldout_belief()  # vs local + vs final, the belief-round probes
 
 # ---- prepared-manifest sample counts -------------------------------------------------
 man_n: dict[str, int] = {}
@@ -34,6 +119,75 @@ for d in sorted(Path("/workspace/prepared").iterdir()):
 # ---- per-training-dataset facts ------------------------------------------------------
 # tree, era, selection, lens, layer, label, entry
 DS = {
+    # --- entry 52: the same cadences rebuilt on EQUAL-N data ------------------------------
+    # Same trees, same rollouts, same label. Two things differ from entries 45/49/51: the
+    # collided final-sentence row is restored in every arm (so all four hold the same 75,042
+    # sentences, paired row for row), and the random top-20 arm is DRAWN rather than ranked.
+    # Absolute accuracies are not comparable to the earlier rounds -- ~4.8% of each arm is now
+    # the near-deterministic final-sentence row -- but the arm-to-arm gaps are.
+    "equal_n_jlens_split_train": (
+        "argmax_per_sentence_l15",
+        "mass-era 3600",
+        "loudest per sentence (equal-N, every sentence)",
+        "jlens",
+        "L15",
+        "local belief",
+        "52",
+    ),
+    "equal_n_logitlens_split_train": (
+        "logitlens_argmax_per_sentence_l15",
+        "mass-era 3600",
+        "loudest per sentence (equal-N, every sentence)",
+        "logitlens",
+        "L15",
+        "local belief",
+        "52",
+    ),
+    "equal_n_eos_split_train": (
+        "eos_mass3600_view",
+        "mass-era 3600",
+        "last token of each sentence (equal-N, every sentence)",
+        "none",
+        "L15",
+        "local belief",
+        "52",
+    ),
+    "equal_n_random_split_train": (
+        "random_per_sentence_l15",
+        "mass-era 3600",
+        "random token per sentence (equal-N, every sentence)",
+        "none (control)",
+        "L15",
+        "local belief",
+        "52",
+    ),
+    "equal_n_jlens_top20_split_train": (
+        "argmax_per_sentence_l15",
+        "mass-era 3600",
+        "loudest per sentence, RANKED to top-20/traj",
+        "jlens",
+        "L15",
+        "local belief",
+        "52",
+    ),
+    "equal_n_logitlens_top20_split_train": (
+        "logitlens_argmax_per_sentence_l15",
+        "mass-era 3600",
+        "loudest per sentence, RANKED to top-20/traj",
+        "logitlens",
+        "L15",
+        "local belief",
+        "52",
+    ),
+    "equal_n_random_top20_split_train": (
+        "random_per_sentence_l15",
+        "mass-era 3600",
+        "random per sentence, DRAWN to 20/traj (--thin-mode uniform)",
+        "none (control)",
+        "L15",
+        "local belief",
+        "52",
+    ),
     "local_belief_p1_split_train": (
         "argmax_per_sentence_l15",
         "mass-era 3600",
@@ -287,6 +441,24 @@ H16 = {
     "probes/local_belief_baselines/next_action_probe_logitlens_p2_lr.pt": "ll2_lr",
     "probes/local_belief_baselines/next_action_probe_logitlens_p2_mlp.pt": "ll2_mlp",
 }
+# Entry 52. These keys are the ones eval_equal_n_belief_arms.sh assigns via --extra-probes;
+# they must match it exactly. (The CSV column itself is "<parent dir>.<stem minus the
+# next_action_probe_ prefix>", e.g. "p1.jlens_lr" -- the prefix IS stripped.)
+for _arm, _key in (
+    ("jlens", "eq_p1_jlens"),
+    ("logitlens", "eq_p1_ll"),
+    ("eos", "eq_p1_eos"),
+    ("random", "eq_p1_rand"),
+):
+    for _mt in ("lr", "mlp"):
+        H16[f"probes/local_belief_equalN/p1/next_action_probe_{_arm}_{_mt}.pt"] = f"{_key}_{_mt}"
+for _arm, _key in (
+    ("jlens_top20", "eq_t20_jlens"),
+    ("logitlens_top20", "eq_t20_ll"),
+    ("random_top20", "eq_t20_rand"),
+):
+    for _mt in ("lr", "mlp"):
+        H16[f"probes/local_belief_equalN/p1-top20/next_action_probe_{_arm}_{_mt}.pt"] = f"{_key}_{_mt}"
 
 # analyses each probe appears in
 A26 = "26p, pvr, pvr-lb"
@@ -354,6 +526,7 @@ GROUPS = {
     ("local belief", "45"): "A - belief label, jlens (entry 45)",
     ("local belief", "49"): "B - belief label, baselines (entry 49)",
     ("local belief", "51"): "B2 - belief label, per-sentence cadence (entry 51)",
+    ("local belief", "52"): "B3 - belief label, EQUAL-N per-sentence cadence (entry 52, supersedes A/B2)",
     ("final action", "37/38"): "C - final label, mass-era",
     ("final action", "38"): "C - final label, mass-era",
     ("final action", "24/26"): "D - final label, count-era",

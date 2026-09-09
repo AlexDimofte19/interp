@@ -474,3 +474,81 @@ def test_a_row_missing_its_score_sorts_last_not_first():
     del rows[1]["layer_direction_count"]
     kept = split.thin_layers(rows, layers_per_token=1, seed=42)
     assert [r["layer"] for r in kept] == [7]
+
+
+# --- --thin-mode ------------------------------------------------------------------------
+#
+# The rank-vs-draw decision used to be inferred from whether any row carried a score, which
+# reads "has a score" as "wants to be ranked". Those came apart once already: a strategy can
+# draw its cutoff uniformly and still record that cutoff's loudness as an analysis covariate,
+# and the inference then promoted the control to a ranked arm with nothing raised. These pin
+# the override, and pin that `auto` still reproduces the old behaviour exactly.
+
+
+def scored_control_samples(num_trajectories=40, tokens=4, layers=(7, 15, 23)):
+    """A control arm that records loudness as a covariate: uniform picks, but every row scored.
+
+    Shaped like `random_per_sentence` after relabelling -- the case the old inference got
+    wrong. Token `t` scores `10 - t` exactly as the jlens fixture does, so a ranked thinning
+    is visibly a ranked thinning.
+    """
+    return [
+        sample(
+            f"traj_{i:03d}",
+            0,
+            token_id,
+            layer,
+            i % 4,
+            direction_count=10 - token_id,
+            layer_direction_count={7: 1, 15: 5, 23: 3}[layer],
+        )
+        for i in range(num_trajectories)
+        for token_id in range(tokens)
+        for layer in layers
+    ]
+
+
+def test_resolve_thin_mode_auto_matches_the_old_inference():
+    assert split.resolve_thin_mode("auto", True) == "rank"
+    assert split.resolve_thin_mode("auto", False) == "uniform"
+
+
+def test_resolve_thin_mode_rank_without_scores_raises():
+    """Silently degrading to a draw is how a ranked arm becomes a control by accident."""
+    with pytest.raises(ValueError, match="needs direction scores"):
+        split.resolve_thin_mode("rank", False)
+
+
+def test_resolve_thin_mode_rejects_unknown():
+    with pytest.raises(ValueError, match="must be one of"):
+        split.resolve_thin_mode("loudest", True)
+
+
+def test_uniform_overrides_a_scored_control():
+    """The bug: a scored control thinned under `auto` collapses onto its loudest tokens."""
+    rows = scored_control_samples()
+    ranked = split.thin_tokens(rows, tokens_per_trajectory=1, seed=42, thin_mode="auto")
+    drawn = split.thin_tokens(rows, tokens_per_trajectory=1, seed=42, thin_mode="uniform")
+    assert {t for _, _, t in tokens_of(ranked)} == {0}, "auto ranks it -- this is the flaw"
+    assert len({t for _, _, t in tokens_of(drawn)}) > 1, "uniform must actually draw"
+    assert len(tokens_of(ranked)) == len(tokens_of(drawn)), "only WHICH tokens differs, not how many"
+
+
+def test_rank_forces_ranking_on_an_unscored_group():
+    """`rank` is global, so a trajectory with no score still ranks (missing sorts last).
+
+    The two fixtures share trajectory names, so the control rows are renamed here -- merging
+    them under one name would make this a two-trajectory test that happens to pass.
+    """
+    unscored = [dict(r, name=r["name"].replace("traj_", "ctrl_")) for r in control_samples(num_trajectories=2)]
+    kept = split.thin_tokens(jlens_samples(num_trajectories=2) + unscored, 1, seed=42, thin_mode="rank")
+    assert len(tokens_of(kept)) == 4, "one token from each of the four trajectories"
+    assert {t for n, _, t in tokens_of(kept) if n.startswith("traj_")} == {0}, "scored ones rank"
+
+
+def test_layer_thinning_honours_thin_mode():
+    rows = scored_control_samples(num_trajectories=40)
+    ranked = split.thin_layers(rows, layers_per_token=1, seed=42, thin_mode="auto")
+    drawn = split.thin_layers(rows, layers_per_token=1, seed=42, thin_mode="uniform")
+    assert {r["layer"] for r in ranked} == {15}, "every row scores 5 at L15 and ranks there"
+    assert len({r["layer"] for r in drawn}) > 1, "uniform must spread over layers"

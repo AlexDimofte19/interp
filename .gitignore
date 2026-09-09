@@ -220,4 +220,4 @@ __marimo__/
 
 
 # Don't store activations saved under data/activations
-data/activations/
+data/activations/scripts/out/

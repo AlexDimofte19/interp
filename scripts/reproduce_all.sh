@@ -106,7 +106,8 @@ STAGES="host_setup deploy_vocabularies fit_jacobian_lens cognitive_map_probes
         heldout_every_token_rollout probe_loudness_heldout
         logitlens_mass_gather belief_baseline_rollout_arms belief_baseline_probes
         sixteen_probe_loudness_report
-        more_belief_rollout_arms more_belief_probes more_belief_heldout_eval"
+        more_belief_rollout_arms more_belief_probes more_belief_heldout_eval
+        equal_n_belief_datasets equal_n_belief_probes equal_n_belief_heldout_eval"
 [ -n "$GRID_ROUND" ] && STAGES="$STAGES grid_probing_round"
 [ -n "$UNRUN" ] && STAGES="$STAGES unrun_analyses"
 
@@ -140,6 +141,9 @@ meta() {
     more_belief_rollout_arms) echo "GPU|~12h|Sentence-end and random-per-sentence rollouts on the mass-era 3,600";;
     more_belief_probes)      echo "GPU|~1h gather + ~5h train|The per-sentence cadence completed: eight more belief probes";;
     more_belief_heldout_eval) echo "GPU|~2h + CPU|Those eight on all 87,221 held-out tokens -- numbers, no figures";;
+    equal_n_belief_datasets) echo "no|~30min|Restore the collided final-sentence rows; pair the four p1 arms row for row";;
+    equal_n_belief_probes)   echo "GPU|~7h|The p1 and p1-top20 arms retrained on equal-N data, control drawn not ranked";;
+    equal_n_belief_heldout_eval) echo "GPU|~2h + CPU|Those fourteen plus the earlier 24 on all 87,221 held-out tokens";;
     grid_probing_round)      echo "GPU|not recorded|Grid-label twin of the arms -- NEVER RAN, no result exists";;
     unrun_analyses)          echo "mixed|~1h|Written but never run: NEW work, not reproduction";;
     esac
@@ -173,6 +177,9 @@ done_sixteen_probe_loudness_report() { [ -s "$RT/probe_loudness_heldout360_16pro
 done_more_belief_rollout_arms() { nfiles "$RT/rollout_strategies_baselines/random_per_sentence" '*.json' 1 2; }
 done_more_belief_probes()      { nfiles "$PROBES/local_belief_baselines" '*.pt' 14; }
 done_more_belief_heldout_eval() { [ -s "$RT/probe_loudness_heldout360_24probes/heldout_balanced_accuracy.csv" ]; }
+done_equal_n_belief_datasets() { [ -s "/workspace/prepared/equal_n_random_local_eq/manifest.json" ]; }
+done_equal_n_belief_probes()   { [ "$(find "$PROBES/local_belief_equalN" -name '*.pt' 2>/dev/null | wc -l)" -ge 14 ]; }
+done_equal_n_belief_heldout_eval() { [ -s "$RT/probe_loudness_heldout360_equal_n/heldout_balanced_accuracy.csv" ]; }
 done_grid_probing_round()      { nfiles "$PROBES/grid" '*.pt' 1; }
 done_unrun_analyses()          { [ -s "$RT/rollout_strategies/truncation_comparison/summary.json" ]; }
 
@@ -584,6 +591,34 @@ run_sixteen_probe_loudness_report(){ x bash "$REPO/scripts/build_sixteen_probe_l
 run_more_belief_rollout_arms() { x bash "$REPO/scripts/rollout_more_belief_arms.sh"; }
 run_more_belief_probes()       { x bash "$REPO/scripts/train_more_belief_arms.sh"; }
 run_more_belief_heldout_eval() { x bash "$REPO/scripts/eval_more_belief_arms.sh"; }
+
+# ---- stage 23c: the p1 arms rebuilt so they hold the same sentences ---------------------------
+# Two bugs found while asking why four arms that select one token per sentence had four
+# different train_n. (1) A pick landing on the chain's LAST reasoning token merged into the
+# end_of_reasoning bookend and left the dataset, at a rate set by the rule rather than the data
+# -- jlens 30, logitlens 67, a uniform draw 776, eos all 3600 -- so arms meant to differ only in
+# which token inside a span they cut differed in how many spans they held, by up to 4.8%.
+# (2) split_next_action_manifest.py inferred rank-vs-draw from whether a row carried a direction
+# score, and random_per_sentence records its cutoff's loudness as a COVARIATE, so the "control"
+# was thinned by ranking on loudness (mean -3.402 -> -2.900). --thin-mode now states it.
+#
+# Needs no rollout and no gather: the end_of_reasoning cutoff was always evaluated (the label is
+# on disk, measured, not assumed) and its activation is the step's last reasoning token, the same
+# position in every arm, so it is symlinked out of the eos tree.
+#
+# This SUPERSEDES the p1/p1-top20 probes of entries 45, 49 and 51, which stay on disk so their
+# published numbers remain reproducible. Absolute accuracies are not comparable across the two
+# rounds -- ~4.8% of every arm is now near-deterministic by construction -- but the gaps are.
+run_equal_n_belief_datasets() {
+    x bash "$REPO/scripts/train_equal_n_belief_arms.sh" link
+    x bash "$REPO/scripts/train_equal_n_belief_arms.sh" prepare
+    x bash "$REPO/scripts/train_equal_n_belief_arms.sh" intersect
+}
+run_equal_n_belief_probes() {
+    x bash "$REPO/scripts/train_equal_n_belief_arms.sh" p1
+    x bash "$REPO/scripts/train_equal_n_belief_arms.sh" p1-top20
+}
+run_equal_n_belief_heldout_eval() { x bash "$REPO/scripts/eval_equal_n_belief_arms.sh"; }
 
 # ---- stage 24 (opt-in): the grid-label round ------------------------------------------------
 # NEVER RAN, and produced no result. Two unresolved problems before spending GPU here: the grid

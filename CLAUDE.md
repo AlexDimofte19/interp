@@ -177,7 +177,17 @@ The filter keeps one arm per method. The unscored one is not optional: after pru
 uniformly" can only draw from the survivors, so the matched control has to be reserved before the rest is
 deleted, and the record is the only place it survives. Its entries deliberately carry **no** direction
 counts — `scripts/split_next_action_manifest.py` keys off that absence to sample rather than rank, and a
-control that recorded counts would silently collapse onto its lowest layer. `arm_seed()` freezes its draw
+control that recorded counts would silently collapse onto its lowest layer.
+
+**That absence rule is now only the default, and it has already failed once.** It reads "has a score" as
+"wants to be ranked", and the two come apart for a *truncation strategy* that draws its cutoff uniformly
+and still records that cutoff's loudness as an analysis covariate — which `random_per_sentence` does, and
+`every_token` / `recorded_selection` do too. Every row then carries a `direction_count`, so
+`--tokens-per-trajectory` ranked the control instead of drawing it (layer-15 mass −3.402 → −2.900, a shift
+as large as the jlens arm's own ranking) and nothing raised. `--thin-mode auto|rank|uniform` states it
+outright; `auto` is the old inference so nothing on disk changes meaning, and **every control arm passes
+`uniform` explicitly**. The value lands in the split manifest's `split.thin_mode`, because an arm that
+carries scores but was deliberately drawn is otherwise indistinguishable afterwards. `arm_seed()` freezes its draw
 formula for the same reason: the tree was pruned to controls drawn with it. Layer 15 is force-kept for
 every selected token of every arm so a fixed-layer baseline stays available (`--layers 15`) without
 another gather — it is a guarantee, not a method.
@@ -295,6 +305,15 @@ lets two arms be compared in the same sentence coordinates. The endpoint cutoffs
 `end_of_reasoning`) are added to every arm on purpose so its first and last eval is the same prompt as
 every other arm's — `--no-endpoint-cutoffs` drops them and makes final accuracy and the commitment indices
 incomparable across arms.
+
+**`sentence_idx` is not the sentence.** In `sentence_evals` it is the cutoff's **ordinal in the eval
+list** — `no_reasoning` is 0, then 1, 2, … — so under any strategy that appends an `end_of_reasoning`
+bookend *in addition to* its per-sentence picks, the bookend holds the unique maximum and the last
+sentence's own pick sits one below it. **`cut_sentence_idx` is the sentence the cut lands in**, and it is
+what any per-sentence grouping, pairing or dedupe must key on; the bookend shares it with that sentence's
+pick, which is exactly the case such code has to detect. The two coincide for `eos` alone, which emits one
+cutoff per sentence and no extra bookend — so a mix-up passes an eos spot-check and is wrong everywhere
+else. It cost one round: a repair keyed on `sentence_idx` reported 3,600 damaged steps where 30 were.
 
 **Coordinate traps, both silent.** `abs_pos` in the lens CSVs and the per-token joins is
 **prompt-inclusive**; the `output_tokens` index — what `eos_token_pos` and the probe-loudness `token_id`
