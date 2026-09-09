@@ -12,7 +12,9 @@ emitted when its reasoning was truncated at that token (`model_action`). Samples
 with no matching cutoff, or a cutoff whose `model_action` is null, are dropped.
 
 The original label is kept as `final_label`, plus `rollout_answer_prob`,
-`rollout_correct`, `cutoff_kind` and `dir_logmass` for later analysis. Nothing
+`rollout_correct`, `cutoff_kind` and `dir_logmass` for later analysis. `--keep-kinds`
+restricts which cutoff kinds survive, for arms built off a tree that holds more
+positions than the arm wants. Nothing
 else about the manifest changes -- it stays token-major, `activations_root` is
 untouched, no activations move -- so `split_next_action_manifest.py` and
 `train_next_action_probe` read it unchanged.
@@ -60,6 +62,18 @@ def main() -> int:
     ap.add_argument("rollout_dir", type=Path, help="dir of run_inference.py per-trajectory JSONs")
     ap.add_argument("out_dir", type=Path, help="output manifest dir")
     ap.add_argument(
+        "--keep-kinds",
+        nargs="+",
+        default=None,
+        metavar="KIND",
+        help="keep only samples whose matched cutoff has one of these cutoff_kind values "
+        "(default: keep every kind). Needed when the activation tree holds more positions "
+        "than the arm wants -- the eos tree carries every sentence end including the last, "
+        "whose cutoff is end_of_reasoning and whose belief label is the final action at "
+        "p~1.0 by construction, so keeping it would inflate the arm with rows that are "
+        "trivially decodable and break comparability with the interior-only arms.",
+    )
+    ap.add_argument(
         "--report-csv",
         type=Path,
         default=None,
@@ -84,6 +98,8 @@ def main() -> int:
     rows: list[dict] = []
     n_no_cutoff = 0
     n_null_action = 0
+    n_wrong_kind = 0
+    keep_kinds = set(args.keep_kinds) if args.keep_kinds else None
     n_flipped = 0
     agree_final = 0
     per_traj_kept: Counter = Counter()
@@ -91,6 +107,9 @@ def main() -> int:
         ev = evals.get((s["name"], s["step"], s["token_id"]))
         if ev is None:
             n_no_cutoff += 1
+            continue
+        if keep_kinds is not None and ev.get("cutoff_kind") not in keep_kinds:
+            n_wrong_kind += 1
             continue
         ma = ev.get("model_action")
         if ma is None or ma not in NEXT_ACTION_TO_ID:
@@ -141,7 +160,10 @@ def main() -> int:
 
     kept_names = set(per_traj_kept)
     print(f"kept {len(out_samples)}/{len(samples)} samples over {len(kept_names)} trajectories")
-    print(f"  dropped: {n_no_cutoff} no matching cutoff, {n_null_action} null/invalid model_action")
+    print(
+        f"  dropped: {n_no_cutoff} no matching cutoff, {n_null_action} null/invalid model_action"
+        + (f", {n_wrong_kind} cutoff_kind not in {sorted(keep_kinds)}" if keep_kinds is not None else "")
+    )
     denom = n_flipped + agree_final
     if denom:
         print(
@@ -152,10 +174,15 @@ def main() -> int:
     fc = Counter(s["final_label"] for s in out_samples if s["final_label"] is not None)
     print("  local  label dist:", {id_to_action.get(k, k): v for k, v in sorted(lc.items())})
     print("  final  label dist:", {id_to_action.get(k, k): v for k, v in sorted(fc.items())})
-    print(
-        f"  per-traj kept: min {min(per_traj_kept.values())} mean "
-        f"{sum(per_traj_kept.values()) / len(per_traj_kept):.1f} max {max(per_traj_kept.values())}"
-    )
+    if per_traj_kept:
+        print(
+            f"  per-traj kept: min {min(per_traj_kept.values())} mean "
+            f"{sum(per_traj_kept.values()) / len(per_traj_kept):.1f} max {max(per_traj_kept.values())}"
+        )
+    else:
+        # An empty join is a real outcome to report, not a crash: a --keep-kinds that matches
+        # nothing, or a rollout dir that does not cover these trajectories, lands here.
+        print("  per-traj kept: NOTHING KEPT -- check --keep-kinds and the rollout dir")
 
     out = dict(manifest)
     out[key] = out_samples
@@ -167,6 +194,8 @@ def main() -> int:
         "n_out": len(out_samples),
         "n_dropped_no_cutoff": n_no_cutoff,
         "n_dropped_null_action": n_null_action,
+        "keep_kinds": sorted(keep_kinds) if keep_kinds is not None else None,
+        "n_dropped_wrong_kind": n_wrong_kind,
     }
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "manifest.json").write_text(json.dumps(out))

@@ -347,3 +347,149 @@ def test_build_strategy_wires_the_arm_and_the_record_root(record, tmp_path):
     assert (
         ts.build_strategy("recorded_selection", lens_root=record, selection_root=tmp_path).selection_root == tmp_path
     )
+
+
+# ---------------------------------------------------------------------------------------
+# random_per_sentence: the matched control for jlens_argmax_per_sentence
+# ---------------------------------------------------------------------------------------
+
+
+def _spans_of_step() -> list[tuple[int, int]]:
+    return ts.sentence_spans(ts.reasoning_eos_positions(_step()["output_tokens"]))
+
+
+def test_random_per_sentence_covers_every_span_including_the_last(lens_root):
+    """One interior pick per span INCLUDING the last -- the argmax convention, not eos's.
+
+    ``eos`` folds the final span into the loop and calls it ``end_of_reasoning``, so its
+    interior count is one LOWER than the number of sentences. The loud arms instead emit an
+    interior pick for every span and append the bookend separately, and ``_dedupe`` merges
+    the two only when the pick happens to land on the last token. Inheriting eos's
+    convention here would leave this arm covering a different set of spans from the arm it
+    controls for -- a discrepancy that shows up only as a per-trajectory count, never as an
+    error. Asserted with the endpoints off, so the dedupe collapse cannot mask it.
+    """
+    spans = _spans_of_step()
+    argmax = ts.build_strategy("jlens_argmax_per_sentence", lens_root=lens_root, include_endpoints=False)
+    assert len(_cuts(argmax)) == len(spans)
+    for seed in range(12):
+        strategy = ts.build_strategy("random_per_sentence", lens_root=lens_root, seed=seed, include_endpoints=False)
+        cuts = strategy.cutoffs(_trajectory(), _step(), NAME)
+        assert [c.kind for c in cuts] == [ts.KIND_RANDOM_IN_SENTENCE] * len(spans)
+        assert [c.sentence_idx for c in cuts] == list(range(1, len(spans) + 1))
+    # eos, for contrast: the same grid, but the last span is spent on the bookend.
+    eos_interior = [k for _, k in _cuts(ts.EosStrategy()) if k == ts.KIND_SENTENCE_END]
+    assert len(eos_interior) == len(spans) - 1
+
+
+def test_random_per_sentence_collapses_into_the_bookend_like_the_argmax_arm(lens_root):
+    """A pick landing on the chain's last token is one cutoff, not two -- as for argmax."""
+    cuts = _cuts(ts.build_strategy("random_per_sentence", lens_root=lens_root, seed=42))
+    assert cuts == [
+        (2, ts.KIND_NO_REASONING),
+        (5, ts.KIND_RANDOM_IN_SENTENCE),
+        (9, ts.KIND_RANDOM_IN_SENTENCE),
+        (11, ts.KIND_END_OF_REASONING),
+    ]
+    # seed 7 draws 10 rather than 11 in the last span, so that span keeps its own cutoff.
+    assert _cuts(ts.build_strategy("random_per_sentence", lens_root=lens_root, seed=7)) == [
+        (2, ts.KIND_NO_REASONING),
+        (6, ts.KIND_RANDOM_IN_SENTENCE),
+        (8, ts.KIND_RANDOM_IN_SENTENCE),
+        (10, ts.KIND_RANDOM_IN_SENTENCE),
+        (11, ts.KIND_END_OF_REASONING),
+    ]
+
+
+def test_random_per_sentence_picks_inside_its_own_sentence(lens_root):
+    spans = _spans_of_step()
+    for seed in range(12):
+        strategy = ts.build_strategy("random_per_sentence", lens_root=lens_root, seed=seed)
+        for cut in strategy.cutoffs(_trajectory(), _step(), NAME):
+            if cut.kind != ts.KIND_RANDOM_IN_SENTENCE:
+                continue
+            start, end = spans[cut.sentence_idx - 1]
+            assert start <= cut.pos <= end
+            assert cut.pos_in_sentence == cut.pos - start
+            assert cut.sentence_len == end - start + 1
+
+
+def test_random_per_sentence_is_reproducible(lens_root):
+    """Two independent instances at one seed draw the same tokens.
+
+    The draw is keyed on (seed, trajectory, step, sentence) rather than taken from a shared
+    stream, so a resumed run or a reordered trajectory list cannot move any other pick.
+    """
+    a = _cuts(ts.build_strategy("random_per_sentence", lens_root=lens_root, seed=42))
+    b = _cuts(ts.build_strategy("random_per_sentence", lens_root=lens_root, seed=42))
+    assert a == b
+
+
+def test_random_per_sentence_draws_do_not_depend_on_call_order(lens_root):
+    """Drawing step 1 first must not move step 0's pick, which a shared RNG stream would."""
+    strategy = ts.build_strategy("random_per_sentence", lens_root=lens_root, seed=42)
+    first = [c.pos for c in strategy.cutoffs(_trajectory(), _step(0), NAME)]
+    strategy.cutoffs(_trajectory(), _step(1), NAME)
+    strategy.cutoffs(_trajectory(), _step(1), "some_other_trajectory")
+    assert [c.pos for c in strategy.cutoffs(_trajectory(), _step(0), NAME)] == first
+
+
+def test_random_per_sentence_seed_changes_the_draw(lens_root):
+    seen = {tuple(_cuts(ts.build_strategy("random_per_sentence", lens_root=lens_root, seed=s))) for s in range(12)}
+    assert len(seen) > 1
+
+
+def test_random_per_sentence_records_loudness_without_ranking_on_it(lens_root):
+    """logmass is carried as a covariate -- how loud the random pick happened to be."""
+    strategy = ts.build_strategy("random_per_sentence", lens_root=lens_root)
+    picks = [c for c in strategy.cutoffs(_trajectory(), _step(), NAME) if c.kind == ts.KIND_RANDOM_IN_SENTENCE]
+    assert picks and all(c.logmass == MASS[c.pos - 3] for c in picks)
+    # ...and it is not the loudest of its sentence in general, which is the whole point.
+    assert not strategy.needs_loudness
+
+
+def test_random_per_sentence_survives_a_missing_mass_table(lens_root):
+    """needs_loudness is False, so the grid is unchanged and only the covariate is lost."""
+    strategy = ts.build_strategy("random_per_sentence", lens_root=lens_root, seed=42)
+    with_table = _cuts(strategy)
+    bare = ts.RandomPerSentenceStrategy(ts.MassTableLoudness(lens_root=lens_root / "nope"), seed=42)
+    assert _cuts(bare) == with_table
+    assert all(c.logmass is None for c in bare.cutoffs(_trajectory(), _step(), NAME))
+
+
+def test_random_per_sentence_handles_a_one_token_sentence():
+    """randint is inclusive at both ends, so a span of one returns that token."""
+    tokens = [
+        ("<|channel|>", "template"),
+        ("analysis", "template"),
+        ("<|message|>", "template"),
+        (".", "analysis"),
+        ("ĠSo", "analysis"),
+        (".", "analysis"),
+        ("<|end|>", "template"),
+    ]
+    output_tokens = [
+        {"id": i, "token": t, "token_id": 100 + i, "token_groups": ["output", g]} for i, (t, g) in enumerate(tokens)
+    ]
+    step = {"step_id": 0, "agent_action": "UP", "output_tokens": output_tokens}
+    # Token 3 is a period immediately after the analysis header, so its span is one token wide.
+    assert ts.sentence_spans(ts.reasoning_eos_positions(output_tokens)) == [(3, 3), (4, 5)]
+    for seed in range(12):
+        cuts = ts.RandomPerSentenceStrategy(seed=seed).cutoffs(_trajectory(), step, NAME)
+        one_token = next(c for c in cuts if c.sentence_idx == 1)
+        assert (one_token.pos, one_token.sentence_len, one_token.pos_in_sentence) == (3, 1, 0)
+
+
+def test_random_per_sentence_endpoints_can_be_dropped(lens_root):
+    strategy = ts.RandomPerSentenceStrategy(include_endpoints=False)
+    assert all(k == ts.KIND_RANDOM_IN_SENTENCE for _, k in _cuts(strategy))
+
+
+def test_build_strategy_forwards_the_seed(lens_root):
+    """The generic fallback forwards no extra kwargs, so a missing dispatch branch would
+    construct the default and silently ignore --seed."""
+    strategy = ts.build_strategy("random_per_sentence", lens_root=lens_root, seed=7)
+    assert isinstance(strategy, ts.RandomPerSentenceStrategy)
+    assert strategy.seed == 7
+    assert strategy.config()["seed"] == 7
+    assert ts.build_strategy("random_per_sentence", lens_root=lens_root).seed == 42

@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import csv
 import json
+import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from math import exp
@@ -72,6 +73,7 @@ KIND_NO_REASONING = "no_reasoning"
 KIND_SENTENCE_END = "sentence_end"
 KIND_END_OF_REASONING = "end_of_reasoning"
 KIND_LOUDEST_IN_SENTENCE = "loudest_in_sentence"
+KIND_RANDOM_IN_SENTENCE = "random_in_sentence"
 KIND_LOUD_TOP_K = "loud_top_k"
 KIND_EVERY_TOKEN = "every_token"
 KIND_RECORDED = "recorded"
@@ -410,6 +412,94 @@ class JlensArgmaxPerSentenceStrategy(LoudnessStrategy):
         return _dedupe(out)
 
 
+def _random_per_sentence_seed(seed: int, traj_name: str, step_id: int, sentence_idx: int) -> str:
+    """Deterministic key for one sentence's uniform draw.
+
+    >>> _random_per_sentence_seed(42, "traj_1", 0, 1)
+    '42-traj_1-step0-sentence1-random_per_sentence'
+    """
+    return f"{seed}-{traj_name}-step{step_id}-sentence{sentence_idx}-random_per_sentence"
+
+
+class RandomPerSentenceStrategy(LoudnessStrategy):
+    """One cutoff per sentence, at a uniformly random token inside that sentence.
+
+    The matched control for :class:`JlensArgmaxPerSentenceStrategy` (loudest token in the
+    span) and for :class:`EosStrategy` (last token of the span): all three walk the same
+    ``sentence_spans(reasoning_eos_positions(...))`` grid, so a difference between the arms
+    is the position inside the sentence and nothing else.
+
+    It is NOT the same control as ``recorded_selection --selection-arm random``, which draws
+    a fixed count uniformly over the WHOLE chain with no sentence awareness -- there a long
+    sentence can take several picks and a short one none. Here every sentence contributes
+    exactly one, which is what makes it comparable span for span.
+
+    Follows this class's bookend convention, not ``eos``'s: one interior pick per span
+    INCLUDING the last, then a separate ``end_of_reasoning``, collapsed by ``_dedupe`` only
+    when they coincide. ``eos`` instead folds the final span into the loop, so its interior
+    count is one lower. Inheriting the wrong one would silently break the matched-control
+    claim, since the two arms would no longer cover the same spans.
+
+    Each sentence's draw is keyed on ``(seed, trajectory, step, sentence_idx)`` rather than
+    taken from one shared stream, so a resumed run (``--skip-existing``), a reordered
+    trajectory list, or re-running a single step alone cannot move any other sentence's pick.
+
+    ``needs_loudness`` is False, as for ``every_token``: loudness is recorded per cutoff as a
+    covariate -- which is exactly the comparison this arm supports, how loud the random pick
+    happened to be against the loud one on the same span -- but never selects anything, so a
+    trajectory with no mass table still yields the full grid with ``logmass=None``.
+    """
+
+    name = "random_per_sentence"
+    needs_loudness = False
+
+    def __init__(
+        self,
+        loudness: MassTableLoudness | None = None,
+        *,
+        seed: int = 42,
+        include_endpoints: bool = True,
+    ) -> None:
+        super().__init__(loudness or MassTableLoudness(), include_endpoints=include_endpoints)
+        self.seed = seed
+
+    def config(self) -> dict:
+        return {**super().config(), "seed": self.seed}
+
+    def _scores(self, step: dict, traj_name: str) -> tuple[dict[int, float], list[int]]:
+        """As the parent, but a missing or unreadable mass table costs the covariate, not the run."""
+        try:
+            return super()._scores(step, traj_name)
+        except LoudnessUnavailable:
+            return {}, reasoning_eos_positions(step["output_tokens"])
+
+    def cutoffs(self, trajectory: dict, step: dict, traj_name: str) -> list[Cutoff]:
+        scores, eos = self._scores(step, traj_name)
+        if not eos:
+            return []
+        spans = sentence_spans(eos)
+        out: list[Cutoff] = []
+        if self.include_endpoints:
+            out.append(Cutoff(pos=eos[0], kind=KIND_NO_REASONING))
+        for si, (start, end) in enumerate(spans, start=1):
+            rng = random.Random(_random_per_sentence_seed(self.seed, traj_name, step["step_id"], si))
+            # randint is inclusive at both ends, so a one-token span returns that token.
+            pos = rng.randint(start, end)
+            out.append(
+                Cutoff(
+                    pos=pos,
+                    kind=KIND_RANDOM_IN_SENTENCE,
+                    sentence_idx=si,
+                    pos_in_sentence=pos - start,
+                    sentence_len=end - start + 1,
+                    logmass=scores.get(pos),
+                )
+            )
+        if self.include_endpoints:
+            out.append(self._end_of_reasoning(spans, scores))
+        return _dedupe(out)
+
+
 class JlensTopKGlobalStrategy(LoudnessStrategy):
     """The K loudest reasoning tokens of the step, wherever in the chain they fall.
 
@@ -667,6 +757,7 @@ def _dedupe(cutoffs: list[Cutoff]) -> list[Cutoff]:
 STRATEGIES: dict[str, type[TruncationStrategy]] = {
     EosStrategy.name: EosStrategy,
     JlensArgmaxPerSentenceStrategy.name: JlensArgmaxPerSentenceStrategy,
+    RandomPerSentenceStrategy.name: RandomPerSentenceStrategy,
     JlensTopKGlobalStrategy.name: JlensTopKGlobalStrategy,
     EveryTokenStrategy.name: EveryTokenStrategy,
     RecordedSelectionStrategy.name: RecordedSelectionStrategy,
@@ -684,13 +775,14 @@ def build_strategy(
     include_endpoints: bool = True,
     selection_arm: str = "random",
     selection_root: Path | None = None,
+    seed: int = 42,
 ) -> TruncationStrategy:
     """Instantiate a strategy by name, wiring loudness only for the ones that use it.
 
     >>> build_strategy("eos").name
     'eos'
-    >>> sorted(STRATEGIES)
-    ['eos', 'every_token', 'jlens_argmax_per_sentence', 'jlens_top_k_global', 'recorded_selection']
+    >>> print(" ".join(sorted(STRATEGIES)))
+    eos every_token jlens_argmax_per_sentence jlens_top_k_global random_per_sentence recorded_selection
     """
     try:
         cls = STRATEGIES[name]
@@ -699,6 +791,11 @@ def build_strategy(
     if not cls.uses_loudness:
         return cls()
     loudness = MassTableLoudness(lens_root=Path(lens_root), lens=lens, layer=layer)
+    # Each branch below exists because the fallback forwards no extra kwargs; a strategy with
+    # its own knob that is missing from here is constructed with the default and the CLI flag
+    # is silently ignored.
+    if cls is RandomPerSentenceStrategy:
+        return RandomPerSentenceStrategy(loudness, seed=seed, include_endpoints=include_endpoints)
     if cls is JlensTopKGlobalStrategy:
         return JlensTopKGlobalStrategy(loudness, top_k=top_k, include_endpoints=include_endpoints)
     if cls is EveryTokenStrategy:

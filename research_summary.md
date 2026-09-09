@@ -4,7 +4,7 @@ Companion to `ICLR log.txt` (49 entries, chronological, append-only). That file 
 narrative; **this one is the inventory**: every probe, dataset, selection mechanism, rollout
 arm, report and figure set produced so far, with what each was trained on and what it scores.
 
-Written 2026-09-03, at the close of ICLR log entry 49. Where a number is not yet measured the
+Written 2026-09-03 at the close of ICLR log entry 49; extended 2026-09-08 for entry 51. Where a number is not yet measured the
 cell says so rather than being left blank.
 
 ---
@@ -75,6 +75,7 @@ Three canonical sets, verified mutually disjoint by `scripts/audit_trajectory_se
 | `random` | seeded uniform draw, **no scores recorded** | the matched control — its absence of scores is what makes `split_next_action_manifest.py` sample rather than rank |
 | `eos` | every sentence end | entry 29/30 — the punctuation baseline |
 | `every_token` | no selection | entry 48's dense heldout grid |
+| `random_per_sentence` | **one uniformly random token of each sentence**, seeded per (trajectory, step, sentence) | entry 51's chance control -- NOT the same as `random`, which draws a fixed count over the whole chain with no sentence awareness |
 
 **Score modes** (`--direction-score`): `count` (original) · `logprob_mass` (top-k window) ·
 `logprob_sum` (literal but wrong — it multiplies probabilities) · `logprob_mass_full` (the
@@ -104,6 +105,8 @@ direction-mass table, whole vocabulary).
 | **`logitlens_argmax_per_sentence_l15`** | L15 | **new (entry 49)** — 74,975 `.pt`, 0 NaN, 66 min | 49 |
 | `heldout360_l15` | L15 | every reasoning token of the 360 (87,221) | 37 |
 | `heldout360_lens` | 7:23 | both lenses' CSVs + both mass tables, no `.pt` | 37 |
+| **`random_per_sentence_l15`** | L15 | **new (entry 51)** — 74,264 `.pt`, one random token per sentence | 51 |
+| **`eos_mass3600_view`** | L15 | **new (entry 51)** — a symlink VIEW of the round-1 eos tree at the mass-era names. No gather: `activations_train_single_step_reasoning_eos` already covers all 36,000 trajectories, and only the older `eos_lens3600_view` was restricted to count-era names | 51 |
 | `activations_train_single_step*` | — | round-1 legacy trees | 1 |
 
 ---
@@ -122,6 +125,8 @@ any difference **is** the cut points.
 | **`rollout_strategies_baselines/recorded_selection`** | replay recorded picks | jlens (recorded only) | 3600 | 3600 | **4h05m** |
 | **`rollout_strategies_baselines/jlens_argmax_per_sentence`** | per-sentence loudest | **logitlens** | 3600 | 3600 | **6h01m** |
 | **`rollout_strategies_baselines/jlens_top_k_global`** | global top-20 | **logitlens** | 3600 | 3600 | **4h07m** |
+| **`rollout_strategies_baselines/eos`** | every sentence end | n/a | 3600 | 3600 | **5h54m** (entry 51) |
+| **`rollout_strategies_baselines/random_per_sentence`** | one random token per sentence | n/a | 3600 | 3600 | **5h54m** (entry 51) |
 
 > **Naming trap.** The two logitlens arms *reuse the jlens strategy names* — the strategy is "cut
 > at each sentence's loudest token", the lens is a separate flag — so their directories say
@@ -158,6 +163,8 @@ The 1.000 is the anchor — with the full chain the model always reproduces the 
 | **`entry49_random_belief`** | **71,913** | 20 | **belief** | jlens_mass_l15 |
 | **`entry49_logitlens_p1_local`** | **74,972** | 20.8 | **belief** | logitlens_argmax_per_sentence_l15 |
 | **`entry49_logitlens_p2_local`** | **71,913** | 20 | **belief** | logitlens_mass_l15 |
+| **`more_belief_eos_belief_local`** | **71,439** | 19.8 | **belief** | eos_mass3600_view |
+| **`more_belief_random_sentence_belief_local`** | **74,264** | 20.6 | **belief** | random_per_sentence_l15 |
 
 Relabel joins were exact: **0 rows with no matching cutoff** in any of the three entry-49 arms
 (3 rows dropped in P1 for a null `model_action`, out of 74,975).
@@ -312,6 +319,70 @@ So of the two axes entry 49 separated, **the label effect generalises and the se
 population-dependent.** Any claim about selection must name the population it was measured on;
 the label claim does not need that caveat.
 
+
+### 7i. Entry 51 — the per-sentence cadence completed, and position separated from loudness
+
+Eight probes on the sentence-span grid, holding the grid fixed and varying only which token
+inside each span is taken. **Eval-720, balanced accuracy, uncapped:**
+
+| in-span rule | lr | mlp |
+| --- | --- | --- |
+| random in span *(new)* | .5117 | .5836 |
+| **eos — last token** *(new)* | .5691 | .6495 |
+| logitlens loudest | .5737 | .6438 |
+| jlens loudest | .6055 | .6777 |
+
+**Thinned to 20/trajectory:**
+
+| in-span rule | lr | mlp |
+| --- | --- | --- |
+| random in span *(new)* | .5762 | .6520 |
+| **logitlens loudest** *(new)* | .6518 | .7163 |
+| jlens loudest | .7098 | .7737 |
+
+**THE DECOMPOSITION, which no earlier arm could make** (mlp, uncapped, identical spans):
+
+| step | Δ | what it buys |
+| --- | --- | --- |
+| random `.5836` → eos `.6495` | **+6.6 pp** | cutting at a **sentence boundary** |
+| eos `.6495` → jlens loudest `.6777` | **+2.8 pp** | cutting at the **loudest** point instead |
+
+So ~70% of the per-sentence gain is **positional** and ~30% is **loudness**. Every prior arm
+confounded the two; both new controls were needed, since random alone gives no positional
+reference and eos alone gives no floor.
+
+> **⚠ Do not compare the two rows.** Thinning to 20 gains +6.8 to +9.6 pp for *every* arm,
+> including the random one where selection cannot be doing any work — `--tokens-per-trajectory`
+> on a control draws uniformly, it does not rank. It is a **population** change: the cap
+> re-weights toward short chains (median 10 per-sentence tokens; only 29.6% of trajectories
+> exceed 20). Compare within a row.
+
+### 7j. Entry 51 — the held-out inversion is NOT about loudness
+
+All 24 probes on the same 87,221 tokens, vs the local belief, mlp:
+
+| probe | eval-720 *(own tokens)* | heldout-360 *(all tokens)* |
+| --- | --- | --- |
+| **random in span** *(new)* | .5836 *(worst)* | **.5899** *(best of all 24)* |
+| random, whole chain (entry 49) | .7234 | .5886 |
+| logitlens loudest top-20 *(new)* | .7163 | .5189 |
+| jlens loudest, per sentence | .6777 | .5276 |
+| **eos — last token** *(new)* | .6495 | **.4312** *(worst of all 24)* |
+
+Entry 49 read the inversion as loud-selected probes specialising to loud tokens. **This arm has
+no loudness in it at all and specialises harder than any loud arm.** Sentence ends are a narrow,
+structurally distinctive position (punctuation); a probe trained only there transfers worst of
+anything measured. The mechanism is the **narrowness of the training distribution** — loudness
+was only ever the narrowing device.
+
+Consistency check worth keeping: the two independently drawn uniform controls — entry 51's
+per-sentence draw and entry 49's whole-chain draw — land at `.5899` and `.5886`, within `.0013`,
+from different draws, cadences and rollouts.
+
+**Regression:** all 16 earlier probes reproduce their published heldout numbers to 4 dp in the
+same pass, max |delta| `0.000000`.
+
+
 ---
 
 ## 8. Reports, artifacts and figures
@@ -324,6 +395,7 @@ the label claim does not need that caveat.
 | `probe_vs_rollout_lb/` — the belief-probe clone | 47 | heldout 360 | — | 12 | [95a74d99](https://claude.ai/code/artifact/95a74d99-bb0a-440f-839c-e6e4dbac8c65) |
 | `probe_loudness_heldout360/` — selection removed | 48 | heldout 360 | 20 | 18 | [a62f826d](https://claude.ai/code/artifact/a62f826d-34bd-44eb-a13f-606fe2d49c6c) |
 | `probe_loudness_heldout360_16probes/` | **49** | heldout 360 | 20 | 18 | [cd8900f2](https://claude.ai/code/artifact/cd8900f2-5bb4-4e56-b1e4-8e13ed80f47b) |
+| `probe_loudness_heldout360_24probes/` | **51** | heldout 360 | — | 1 | numbers only, no figure report this round |
 
 The entry-49 page is the only one whose **every figure carries its own provenance underneath** —
 which probes, the tree and selection each was trained on, the training label and n, its eval-720 and
@@ -352,7 +424,13 @@ tokens under **both** rankings.
    holding the *previous* answer, crossing over mid-sentence (entry 47 revised entry 39 here).
 9. **Entry 49: label and selection are separable and additive**, and lens quality orders
    random < logitlens < jlens with the label held fixed — *on the loud regime*.
-10. **Entry 49: the label effect generalises, the selection effect does not.** On all 87,221
+10. **Entry 51: the per-sentence effect is ~70% position, ~30% loudness.** On identical spans,
+    random `.5836` → eos `.6495` → jlens loudest `.6777` (mlp, eval-720). Cutting once per
+    *sentence* buys more than cutting at the *loudest* token within it.
+11. **Entry 51: the held-out inversion is about NARROWNESS, not loudness.** The eos arm carries
+    no loudness and is last of all 24 on the full held-out population (`.4312`) while beating the
+    random control by +6.6 pp on its own selection. Loudness was only the narrowing device.
+12. **Entry 49: the label effect generalises, the selection effect does not.** On all 87,221
     heldout tokens the selection ordering inverts (random .589 > logitlens .550 > jlens .524 mlp)
     because loud-selected probes are specialised to loud tokens, while the label is still worth
     +6.9 to +10.2 pp on the same tokens. Name the population whenever claiming a selection effect.

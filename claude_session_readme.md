@@ -6,17 +6,23 @@ while that was the working branch, so read "on `reasoning_theatre`" below as "be
 worktree".
 
 **Newest first, if you only read one thing:** the file is append-only and chronological, so
-the last section is the current state. As of 2026-09-03 that is *Three more baselines for the
-heldout-360 loudness page* (log entry 49) -- **done**, six probes trained and read on the
-heldout 360; the report page is deliberately not built. See also **`research_summary.md`**,
-the inventory of every probe/dataset/arm/report the whole line has produced. Before it: *What loudness
-buys the probe, with the selection removed* (log entry 48): entry 46 re-run on the **heldout 360** over every
-reasoning token, with a new dense `every_token` rollout arm behind it. Before it: *the
-commitment boundary re-read by the belief-trained probes* (entry 47), *probe loudness*
-(entry 46), *the local-belief probes* (entry 45), *the truncation-strategy arms* (entries
-43-44 — all now built **and run**), *loudness through a sentence* (entry 42) and *probe vs.
-rollout* (entries 39-41). The "Resuming — start here" section below is the round-2
-grid-probing thread and is older than all of them.
+the last section is the current state. As of 2026-09-08 that is *The per-sentence cadence
+completed: position and loudness, separated* (log entry 51) -- **done**, eight probes trained
+and read on the heldout 360. It holds the sentence grid fixed and varies only which token
+inside each span is taken (loudest / last / random), which splits the per-sentence selection
+effect into ~70% position and ~30% loudness, and shows the held-out inversion is driven by how
+NARROW a training distribution is rather than by loudness -- the eos arm carries none and
+transfers worst of all 24 probes. No figure report this round, by choice; the 24-probe
+`per_token.csv` is what steps 6b-8 of the report script need, so the page can be built later
+with no rework. See also **`research_summary.md`**, the inventory of every probe / dataset /
+arm / report the whole line has produced, and **`probe_inventory.xlsx`** in
+`/workspace/reasoning_theatre/`, the same inventory per probe as a spreadsheet. Before it:
+*the convinced line, redefined per token* (entry 50), *three more baselines* (entry 49),
+*what loudness buys the probe with the selection removed* (entry 48), *the commitment boundary
+re-read by the belief-trained probes* (entry 47), *probe loudness* (entry 46), *the
+local-belief probes* (entry 45), *the truncation-strategy arms* (entries 43-44), *loudness
+through a sentence* (entry 42) and *probe vs. rollout* (entries 39-41). The "Resuming — start
+here" section below is the round-2 grid-probing thread and is older than all of them.
 
 **What is committed, as of entry 48.** The truncation-strategy line is now in the repo:
 `scripts/inference_oss/{truncation_strategies.py, run_inference.py, run_inference_strategies.sh,

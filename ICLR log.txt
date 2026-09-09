@@ -3357,3 +3357,138 @@ csv either, and that is what makes the direction number mean anything.
 	per_token{,_jlens_loudness,_logitlens_loudness}.csv rebuilt with the eight new
 	columns; tables/ 18 -> 24 per lens; plots/ and plots_logitlens_loudness/ gain
 	{rs}_by_rel_sentence_token.png and {rs}_by_rel_token.png. 321 tests pass.
+
+=====================================================================
+
+51. THE PER-SENTENCE CADENCE COMPLETED: POSITION AND LOUDNESS, SEPARATED
+    (2026-09-08)
+
+	Entry 49 crossed label x selection at the GLOBAL top-20 cadence and found the
+	two axes separable and additive. The PER-SENTENCE cadence was left half
+	empty: `jlens_argmax_per_sentence` and its logitlens twin existed, but neither
+	of the two controls did. So "cutting at each sentence's loudest token is worth
+	something" could not be split into how much comes from CUTTING ONCE PER
+	SENTENCE and how much from CUTTING AT THE LOUD ONE. This entry adds the two
+	controls that separate them, plus the logitlens thinning that closes the row.
+
+	Eight probes, four arms, all layer 15 / seed 42 / the pinned 2880-720 split:
+
+	    eos_belief                    the LAST token of each sentence   ~71.4k
+	    random_sentence_belief        a RANDOM token of each sentence   ~74.3k
+	    random_sentence_belief_top20  ^ thinned to 20/trajectory        ~41.0k
+	    logitlens_p1_top20            logitlens loudest, thinned to 20  ~41.6k
+
+	All three per-sentence rules walk the identical
+	`sentence_spans(reasoning_eos_positions(...))` grid, so a difference between
+	them is the position inside the span and nothing else. That is the whole
+	design: the sentence grid is held fixed and only the in-span rule moves.
+
+	NEW CODE. `RandomPerSentenceStrategy` (KIND_RANDOM_IN_SENTENCE), seeded per
+	(trajectory, step, sentence) via arm_seed()'s convention so a resumed run or a
+	reordered trajectory list cannot move any other sentence's draw; `--seed` on
+	run_inference.py, which had none. `--interior-kinds` on
+	gather_local_belief_activations.py and `--keep-kinds` on
+	relabel_manifest_from_rollout.py, both defaulting to the old behaviour.
+	358 tests pass.
+
+(a) THE EOS ARM HAD TO BE RE-RUN, AND THE 17.9% IS WHY. A finished sentence-end
+    rollout covering all 36,000 trajectories has sat at
+    trajectories_train_single_step_probs/ since round 1, so the labels looked
+    free. They are not usable. On the 10 trajectories where both it and a
+    current-code eos rollout exist (rollout_strategies_smoke/eos), the interior
+    sentence_end cutoffs DISAGREE ON THE ACTION 17.9% of the time (7/39, mean
+    |dp| .076, max .41) while end_of_reasoning agrees to 0.0000 -- the confident
+    case, exactly as RUN_STATE.md predicted. ~18% label noise is the same order
+    as the effects being measured (label movement is 19-30%), so the old arm
+    cannot be a label source for anything compared against the others.
+    RUN_STATE.md's open question is now settled in the negative, on the 39
+    cutoffs that decided it.
+
+    THE ACTIVATIONS, by contrast, WERE free.
+    activations_train_single_step_reasoning_eos holds layer-15 tensors at every
+    sentence end of all 36,000 -- only the eos_lens3600_view SYMLINK VIEW was
+    ever restricted to the count-era names, which is what made the tree look
+    unusable. Of the 75,042 sentence-end positions of the mass-era 3,600, 75,039
+    already had a tensor; the 3,600 "missing" are the no_reasoning bookend, not a
+    reasoning token. So arm 1 cost a view, not a GPU pass.
+
+(b) THE PER-SENTENCE EFFECT IS ~70% POSITION, ~30% LOUDNESS. Eval-720, balanced
+    accuracy, uncapped, identical spans throughout:
+
+        in-span rule                    lr      mlp
+        random in span                .5117   .5836
+        eos -- last token             .5691   .6495
+        logitlens loudest             .5737   .6438
+        jlens loudest                 .6055   .6777
+
+    Reading the mlp column as a decomposition:
+
+        random -> eos           +6.6 pp   cutting at a SENTENCE BOUNDARY
+        eos -> jlens loudest    +2.8 pp   cutting at the LOUDEST point instead
+
+    No previous arm could make this split, because none held the sentence grid
+    fixed while varying only the in-span choice. Both controls were needed:
+    random alone gives no positional reference, eos alone gives no floor.
+
+    Thinned to 20/trajectory, the row is monotone and random is strictly worst:
+
+        random in span                .5762   .6520
+        logitlens loudest             .6518   .7163
+        jlens loudest                 .7098   .7737
+
+(c) DO NOT COMPARE THE TWO ROWS. Thinning to 20 gains +6.8 to +9.6 pp for EVERY
+    arm, including the random one where selection cannot be doing any work --
+    --tokens-per-trajectory on a control draws uniformly, it does not rank. The
+    gain is a POPULATION change: the cap re-weights toward short chains, since
+    only 29.6% of trajectories have more than 20 per-sentence tokens (median 10,
+    max 230). Compare within a row. This is entry 49's "name the population"
+    with a different cause.
+
+(d) THE INVERSION IS NOT ABOUT LOUDNESS. All 24 probes on all 87,221 held-out
+    tokens, balanced accuracy vs the local belief, mlp:
+
+        random in span (per sentence)   .5899   <- BEST of all 24
+        random (whole chain, entry 49)  .5886
+        random in span, top-20          .5672
+        logitlens loudest, top-20       .5498
+        logitlens loudest, per sentence .5483
+        jlens loudest, per sentence     .5276
+        jlens loudest, top-20           .5243
+        ...
+        eos -- last token               .4312   <- WORST of all 24
+
+    On its own selection eos BEAT the random control by +6.6 pp; on every token
+    of the disjoint tree it is LAST and random is FIRST, a swing of ~16 pp.
+    Entry 49 read the inversion as loud-selected probes specialising to loud
+    tokens. This arm has NO LOUDNESS IN IT AT ALL and specialises harder than any
+    loud arm: sentence ends are a narrow, structurally distinctive position
+    (punctuation), and a probe trained only there transfers worst of anything
+    measured. The mechanism is the NARROWNESS of the training distribution.
+    Loudness was only ever the narrowing device.
+
+    Consistency check worth keeping: the two independently drawn uniform controls
+    -- this round's per-sentence draw and entry 49's whole-chain draw -- land at
+    .5899 and .5886, within .0013, from different draws, cadences and rollouts.
+
+(e) REGRESSION: ALL 16 EXISTING PROBES REPRODUCE TO 4 dp, max |delta| 0.000000,
+    in the same pass that scored the eight new ones. Every join was clean: 0 rows
+    with no matching cutoff in either new arm.
+
+	A COUNT THAT IS NOT A BUG. The random arm emits 20.63 interior cutoffs/traj
+	against the argmax arm's 20.84. Both emit one pick per span; _dedupe then
+	merges the final span's pick into end_of_reasoning whenever it lands on that
+	span's last token, which a random pick does with probability 1/L and an argmax
+	pick almost never (776 collapses vs 30). The invariant that holds is one pick
+	per span BEFORE dedupe, which is what tests/test_truncation_strategies.py
+	asserts with the endpoints off. The planning note that predicted an exact
+	20.84 match was wrong about this and has been corrected here.
+
+	ARTIFACTS: probes in /workspace/probes/local_belief_baselines/ (14 now);
+	/workspace/reasoning_theatre/probe_loudness_heldout360_24probes/
+	{heldout360_24probes.csv, per_token.csv, heldout_balanced_accuracy.csv};
+	scripts/{rollout,train,eval}_more_belief_arms.sh, scripts/build_eos_view.sh,
+	scripts/score_probes_heldout.py; three stages in reproduce_all.sh
+	(more_belief_rollout_arms, more_belief_probes, more_belief_heldout_eval).
+	NOT DONE: no figure report this round -- the 24-probe per_token.csv is the
+	input build_sixteen_probe_loudness_report.sh's steps 6b-8 need, so the page
+	can be rebuilt later with no rework.

@@ -105,7 +105,8 @@ STAGES="host_setup deploy_vocabularies fit_jacobian_lens cognitive_map_probes
         probe_loudness_eval720 belief_probes_commitment
         heldout_every_token_rollout probe_loudness_heldout
         logitlens_mass_gather belief_baseline_rollout_arms belief_baseline_probes
-        sixteen_probe_loudness_report"
+        sixteen_probe_loudness_report
+        more_belief_rollout_arms more_belief_probes more_belief_heldout_eval"
 [ -n "$GRID_ROUND" ] && STAGES="$STAGES grid_probing_round"
 [ -n "$UNRUN" ] && STAGES="$STAGES unrun_analyses"
 
@@ -136,6 +137,9 @@ meta() {
     belief_baseline_rollout_arms) echo "GPU|14h13m|Belief-baseline rollout arms: random replay, two logit-lens arms";;
     belief_baseline_probes)  echo "GPU|~2h|Belief-baseline probes: label and selection separated";;
     sixteen_probe_loudness_report) echo "GPU|~2h + CPU|Sixteen probes on the held-out 360, under both loudness rulers";;
+    more_belief_rollout_arms) echo "GPU|~12h|Sentence-end and random-per-sentence rollouts on the mass-era 3,600";;
+    more_belief_probes)      echo "GPU|~1h gather + ~5h train|The per-sentence cadence completed: eight more belief probes";;
+    more_belief_heldout_eval) echo "GPU|~2h + CPU|Those eight on all 87,221 held-out tokens -- numbers, no figures";;
     grid_probing_round)      echo "GPU|not recorded|Grid-label twin of the arms -- NEVER RAN, no result exists";;
     unrun_analyses)          echo "mixed|~1h|Written but never run: NEW work, not reproduction";;
     esac
@@ -166,6 +170,9 @@ done_logitlens_mass_gather()   { nfiles "$ACT/logitlens_mass_l15" '*_direction_m
 done_belief_baseline_rollout_arms() { nfiles "$RT/rollout_strategies_baselines/recorded_selection" '*.json' 1 2; }
 done_belief_baseline_probes()  { nfiles "$PROBES/local_belief_baselines" '*.pt' 6; }
 done_sixteen_probe_loudness_report() { [ -s "$RT/probe_loudness_heldout360_16probes/report.html" ]; }
+done_more_belief_rollout_arms() { nfiles "$RT/rollout_strategies_baselines/random_per_sentence" '*.json' 1 2; }
+done_more_belief_probes()      { nfiles "$PROBES/local_belief_baselines" '*.pt' 14; }
+done_more_belief_heldout_eval() { [ -s "$RT/probe_loudness_heldout360_24probes/heldout_balanced_accuracy.csv" ]; }
 done_grid_probing_round()      { nfiles "$PROBES/grid" '*.pt' 1; }
 done_unrun_analyses()          { [ -s "$RT/rollout_strategies/truncation_comparison/summary.json" ]; }
 
@@ -213,6 +220,11 @@ run_cognitive_map_probes() {
 # The arm every later "sentence-end answer" is read from, over the whole 36,000. --skip-existing
 # makes it resumable; the rollout root is a FUSE mount, so it is addressed by name and never
 # globbed.
+# NOTE: this writes to trajectories_train_single_step_probs WITH --skip-existing, and that tree is
+# already full -- so re-running this stage skips all 36,000 files and refreshes nothing. What is on
+# disk predates truncation_strategies.py: it has no `cutoff_kind` field and was produced by different
+# batching. Anything needing current-code sentence-end labels must write elsewhere, which is what
+# rollout_more_belief_arms.sh does (stage more_belief_rollout_arms).
 run_sentence_end_rollout() {
     x $UV python "$REPO/scripts/inference_oss/run_inference.py" \
         --strategy eos --trajectory-paths "$TRAJ" \
@@ -302,22 +314,8 @@ run_count_era_next_action_arms() {
 
 # A symlink view: 3600 activation dirs and 3600 trajectory JSONs, no bytes copied. Rebuilt only
 # when the link count is short, so a resumed run costs one readdir.
-build_eos_view() {
-    local view="$ACT/eos_lens3600_view"
-    local src="$ACT/activations_train_single_step_reasoning_eos"
-    if [ "$(find "$view" -maxdepth 3 -type l 2>/dev/null | head -7200 | wc -l)" -ge 7200 ]; then
-        echo "      (eos view already complete)"
-        return 0
-    fi
-    echo "      + build $view (3600 activation + 3600 trajectory symlinks)"
-    [ -n "$DRY_RUN" ] && return 0
-    while read -r name; do
-        [ -z "$name" ] && continue
-        local size=${name#*_size}; size="size${size%%_*}"
-        mkdir -p "$view/activations/$size" "$view/trajectories/$size"
-        ln -sfn "$src/$size/$name" "$view/activations/$size/$name"
-        ln -sfn "$TRAJ/$size/$name.json" "$view/trajectories/$size/$name.json"
-    done < "$COUNT_NAMES"
+build_eos_view() {  # build_eos_view [names-file] [view-dir]
+    x bash "$REPO/scripts/build_eos_view.sh" "${1:-$COUNT_NAMES}" "${2:-$ACT/eos_lens3600_view}"
 }
 
 # ---- stage 8: the mass-era gather ----------------------------------------------------------
@@ -573,6 +571,19 @@ run_logitlens_mass_gather() {
 run_belief_baseline_rollout_arms() { x bash "$REPO/scripts/rollout_belief_baseline_arms.sh"; }
 run_belief_baseline_probes()       { x bash "$REPO/scripts/train_belief_baseline_probes.sh"; }
 run_sixteen_probe_loudness_report(){ x bash "$REPO/scripts/build_sixteen_probe_loudness_report.sh"; }
+
+# ---- stages 25-27: the per-sentence cadence completed ---------------------------------------
+# Entry 49 crossed label x selection at the GLOBAL top-20 cadence. These fill the PER-SENTENCE
+# one: eos (the last token of each sentence) and random_per_sentence (a uniformly random token
+# of each) are the positional and chance controls for jlens_argmax_per_sentence, on the identical
+# sentence_spans grid, so a difference between the arms is the position inside the sentence and
+# nothing else. The eos arm is RE-RUN rather than read off the 36k rollout at
+# trajectories_train_single_step_probs: that one predates truncation_strategies.py, and on the ten
+# trajectories where both exist its interior cutoffs disagree on the action 17.9% of the time.
+# See the header of rollout_more_belief_arms.sh.
+run_more_belief_rollout_arms() { x bash "$REPO/scripts/rollout_more_belief_arms.sh"; }
+run_more_belief_probes()       { x bash "$REPO/scripts/train_more_belief_arms.sh"; }
+run_more_belief_heldout_eval() { x bash "$REPO/scripts/eval_more_belief_arms.sh"; }
 
 # ---- stage 24 (opt-in): the grid-label round ------------------------------------------------
 # NEVER RAN, and produced no result. Two unresolved problems before spending GPU here: the grid

@@ -23,6 +23,9 @@
 #                              control's draw is taken before the tree is pruned and can never
 #                              be re-made, so an arm that must label the same tokens a probe
 #                              trained on has to read them rather than re-draw them.
+#   random_per_sentence        a uniformly random token of each sentence -- the matched control
+#                              for jlens_argmax_per_sentence, on the same sentence grid. SEED
+#                              picks the draw and is recorded in the arm's strategy config.
 #   every_token                no selection: cut at EVERY reasoning token (or every STRIDE-th).
 #                              The three arms above each sample the chain somewhere, so a
 #                              downstream join only has a measured belief where that arm chose
@@ -62,6 +65,7 @@ LOUDNESS_LAYER=${LOUDNESS_LAYER:-15}
 TOP_K=${TOP_K:-20}
 STRIDE=${STRIDE:-1}                  # every_token only: 1 = dense grid, 2 = every other token
 SELECTION_ARM=${SELECTION_ARM:-random}   # recorded_selection only: which arm of the record to replay
+SEED=${SEED:-42}                     # random_per_sentence only: seeds the per-sentence draw
 SELECTION_ROOT=${SELECTION_ROOT:-}       # recorded_selection only: defaults to LENS_ROOT
 
 # Throughput. gpt-oss has no SDPA kernel and flash-attn is not installed here, so without
@@ -111,7 +115,7 @@ for STRATEGY in "${STRATEGIES[@]}"; do
     echo "=== $STRATEGY -> $OUTPUT_DIR (log: $LOG_FILE)"
     {
         echo "=== START: $(date -u +'%Y-%m-%dT%H:%M:%SZ') (UTC) / $(date +'%H:%M %Z')"
-        echo "=== strategy=$STRATEGY top_k=$TOP_K stride=$STRIDE layer=$LOUDNESS_LAYER lens=$LENS"
+        echo "=== strategy=$STRATEGY top_k=$TOP_K stride=$STRIDE layer=$LOUDNESS_LAYER lens=$LENS seed=$SEED"
     } > "$LOG_FILE"
 
     set +e
@@ -126,6 +130,7 @@ for STRATEGY in "${STRATEGIES[@]}"; do
         --top-k "$TOP_K" \
         --stride "$STRIDE" \
         --selection-arm "$SELECTION_ARM" \
+        --seed "$SEED" \
         ${SELECTION_ROOT:+--selection-root "$SELECTION_ROOT"} \
         --batch-size "$BATCH_SIZE" \
         --max-batch-tokens "$MAX_BATCH_TOKENS" \

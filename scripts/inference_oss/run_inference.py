@@ -624,7 +624,9 @@ def main() -> None:
         choices=sorted(STRATEGIES),
         help="Where to place the truncation cutoffs (see truncation_strategies.py). "
         "eos: every reasoning sentence end. jlens_argmax_per_sentence: the loudest token of "
-        "each sentence. jlens_top_k_global: the --top-k loudest tokens of the whole chain. "
+        "each sentence. random_per_sentence: a uniformly random token of each sentence -- the "
+        "matched control for that arm, on the same sentence grid. jlens_top_k_global: the --top-k "
+        "loudest tokens of the whole chain. "
         "every_token: no selection at all -- every reasoning token, or every --stride-th. "
         "recorded_selection: replay the --selection-arm picks of an existing gather's record.",
     )
@@ -647,6 +649,14 @@ def main() -> None:
         default=None,
         help="recorded_selection only: tree holding the selection records (default: --lens-root, "
         "since one gather writes the record beside the mass table it ranked with).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="random_per_sentence only: seed for the per-(trajectory, step, sentence) uniform draw. "
+        "Recorded in the arm's strategy config, because a control's draw is the one thing that "
+        "cannot be reconstructed after the fact.",
     )
     parser.add_argument(
         "--names-file",
@@ -699,6 +709,7 @@ def main() -> None:
         stride=args.stride,
         selection_arm=args.selection_arm,
         selection_root=Path(args.selection_root) if args.selection_root else None,
+        seed=args.seed,
     )
 
     paths = expand_paths(args.trajectory_paths)

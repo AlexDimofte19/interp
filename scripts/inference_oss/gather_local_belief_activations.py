@@ -7,7 +7,8 @@ Those cut positions are one per sentence (`cutoff_kind == "loudest_in_sentence"`
 ~22 per trajectory, and the pruned `/workspace/activations/jlens_mass_l15` tree
 only has `.pt` files for ~36% of them (its intersection with the global top-20).
 
-This walks the rollout output, and for every `loudest_in_sentence` cutoff does one
+This walks the rollout output, and for every cutoff whose kind is in `--interior-kinds`
+(default `loudest_in_sentence`, so the original tree reproduces byte for byte) does one
 full forward pass per trajectory (prefix + grid + suffix + the WHOLE reasoning
 chain, exactly as `gather_activations` builds it) and saves the layer-15
 residual stream at those token positions, in the standard activation-tree layout:
@@ -46,7 +47,25 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 LAYER = 15
 CATEGORY = "output"
-INTERIOR_KIND = "loudest_in_sentence"
+DEFAULT_INTERIOR_KINDS: tuple[str, ...] = ("loudest_in_sentence",)
+ENDPOINT_KINDS = ("no_reasoning", "end_of_reasoning")
+
+
+def resolve_kinds(interior_kinds: list[str] | tuple[str, ...], include_endpoints: bool) -> set[str]:
+    """The ``cutoff_kind`` values to gather: the interior kinds asked for, plus the shared
+    endpoint kinds when ``--include-endpoints`` is set. A union, never a replacement.
+
+    >>> sorted(resolve_kinds(["loudest_in_sentence"], False))
+    ['loudest_in_sentence']
+    >>> sorted(resolve_kinds(["sentence_end"], True))
+    ['end_of_reasoning', 'no_reasoning', 'sentence_end']
+    >>> sorted(resolve_kinds(["end_of_reasoning"], True))
+    ['end_of_reasoning', 'no_reasoning']
+    """
+    kinds = set(interior_kinds)
+    if include_endpoints:
+        kinds |= set(ENDPOINT_KINDS)
+    return kinds
 
 
 def positions_by_step(rollout_doc: dict, kinds: set[str]) -> dict[int, list[int]]:
@@ -103,6 +122,18 @@ def main() -> int:
         help="Whitespace-separated trajectory stems to process (defaults to the rollout's own names file).",
     )
     ap.add_argument(
+        "--interior-kinds",
+        nargs="+",
+        default=list(DEFAULT_INTERIOR_KINDS),
+        metavar="KIND",
+        help="cutoff_kind value(s) whose eos_token_pos to gather, from truncation_strategies.py's "
+        "KIND_* set: 'loudest_in_sentence' (default) for a jlens_argmax_per_sentence rollout, "
+        "'sentence_end' for an eos one, 'random_in_sentence' for random_per_sentence. GIVE EACH "
+        "KIND ITS OWN --out: already_done() checks only that a .pt exists, not which kind wrote "
+        "it, so pointing a second kind at the first one's tree skips every write and leaves a "
+        "silently wrong tree.",
+    )
+    ap.add_argument(
         "--include-endpoints",
         action="store_true",
         help="Also save the no_reasoning / end_of_reasoning cutoff positions (default: interior only).",
@@ -113,9 +144,7 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="Report coverage and the work plan, load no model.")
     args = ap.parse_args()
 
-    kinds = {INTERIOR_KIND}
-    if args.include_endpoints:
-        kinds |= {"no_reasoning", "end_of_reasoning"}
+    kinds = resolve_kinds(args.interior_kinds, args.include_endpoints)
 
     keep = set(args.names_file.read_text().split()) if args.names_file and args.names_file.exists() else None
 
