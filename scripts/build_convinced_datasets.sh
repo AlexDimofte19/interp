@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# The four loudness -> convinced datasets, as produced. A record, like configs/**/*.conf.
+# The three loudness -> convinced datasets, as produced. A record, like configs/**/*.conf.
 #
-#   train        2880 train trajectories, uniform random 20 tokens each
-#   validation1  the 720 eval trajectories, SAME uniform-random selection as training
-#   validation2  the 720 eval trajectories, jlens top-20 by logprob_mass_full ("P2")
-#   evaluation   360 held-out trajectories, EVERY reasoning token
+#   train   2880 train trajectories, EVERY reasoning token
+#   val      720 eval trajectories,  EVERY reasoning token
+#   eval     360 held-out trajectories, EVERY reasoning token
 #
-# validation1 and validation2 cover the same trajectories and differ only in HOW their tokens
-# were chosen; train and validation1 share a selection mechanism and differ only in the split.
+# Every token everywhere, so the three differ only by which trajectories they cover. An earlier
+# version of this script thinned train/val to 20 tokens per trajectory (a uniform-random arm and
+# a jlens top-20 arm); that thinning is gone. With no selection the two 720-trajectory arms would
+# have been the same rows, so there is one val set, not two.
 #
 # THE SPLIT LIST IS NOT INTERCHANGEABLE. /workspace/splits/eval_trajectories_720.txt and
 # lens_trajectories_3600.txt belong to the older count-era tree and overlap this one by only
@@ -23,18 +24,14 @@ OUT=${OUT:-/workspace/reasoning_theatre/convinced_classifier}
 
 mkdir -p "$OUT"
 
-uv run python build_convinced_dataset.py \
+$PY scripts/build_convinced_dataset.py \
     --lens-root "$LENS_ROOT" --exclude-names "$EVAL_NAMES" \
-    --selection-arm random --out "$OUT/train_random20.csv"
+    --selection-arm none --out "$OUT/train_all.csv"
 
-uv run python build_convinced_dataset.py \
+$PY scripts/build_convinced_dataset.py \
     --lens-root "$LENS_ROOT" --names "$EVAL_NAMES" \
-    --selection-arm random --out "$OUT/val1_random20.csv"
+    --selection-arm none --out "$OUT/val_all.csv"
 
-uv run python build_convinced_dataset.py \
-    --lens-root "$LENS_ROOT" --names "$EVAL_NAMES" \
-    --selection-arm jlens --out "$OUT/val2_jlens20.csv"
-
-uv run python build_convinced_dataset.py \
+$PY scripts/build_convinced_dataset.py \
     --lens-root "$HELDOUT_ROOT" \
     --selection-arm none --out "$OUT/eval_heldout360_all.csv"

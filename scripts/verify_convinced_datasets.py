@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Check the four convinced-classifier datasets against artifacts built by other code.
+"""Check the three convinced-classifier datasets against artifacts built by other code.
 
-The first two checks are cheap; the last two are the ones worth having. Both re-derive the same
+The disjointness check is cheap; the last two are the ones worth having. Both re-derive the same
 numbers through a *different* script written months earlier, so agreement is evidence the join is
 right rather than evidence it is self-consistent:
 
   * ``loudness/per_token.csv`` (entry 42, ``build_sentence_loudness.py``) covers every reasoning
-    token of the same 2880 training trajectories at L15. Every training row must appear in it
-    with the same loudness, sentence placement and convinced index.
+    token of the same 2880 training trajectories at L15 -- which, now that nothing is thinned to
+    20 tokens, is exactly the training set. So the two must agree row for row in BOTH directions,
+    on loudness, sentence placement and convinced index.
   * ``probe_vs_rollout/per_token.csv`` (entry 39, ``build_probe_rollout_join.py``) covers all
     87,221 held-out tokens and carries its own ``is_after_convinced`` and ``jlens_mass_L15``,
     derived independently -- including via the hardcoded ``reasoning_pos = token_idx - 3`` this
@@ -48,35 +49,27 @@ def main() -> int:
     args = ap.parse_args()
     passed = True
 
-    train = args.root / "train_random20.csv"
-    val1 = args.root / "val1_random20.csv"
-    val2 = args.root / "val2_jlens20.csv"
+    train = args.root / "train_all.csv"
+    val = args.root / "val_all.csv"
     ev = args.root / "eval_heldout360_all.csv"
 
     print("SPLIT DISJOINTNESS", flush=True)
-    n_train, n_val1, n_val2, n_ev = (names_of(p) for p in (train, val1, val2, ev))
+    n_train, n_val, n_ev = (names_of(p) for p in (train, val, ev))
     passed &= check("train n=2880", len(n_train) == 2880, f"{len(n_train)}")
-    passed &= check("val1 n=720", len(n_val1) == 720, f"{len(n_val1)}")
-    passed &= check("train n val1 empty", not (n_train & n_val1), f"{len(n_train & n_val1)} shared")
-    passed &= check("val1 == val2 names", n_val1 == n_val2, f"{len(n_val1 ^ n_val2)} differ")
+    passed &= check("val n=720", len(n_val) == 720, f"{len(n_val)}")
+    passed &= check("train n val empty", not (n_train & n_val), f"{len(n_train & n_val)} shared")
     passed &= check("eval n=360", len(n_ev) == 360, f"{len(n_ev)}")
     passed &= check(
-        "eval disjoint from train+val", not (n_ev & (n_train | n_val1)), f"{len(n_ev & (n_train | n_val1))} shared"
+        "eval disjoint from train+val", not (n_ev & (n_train | n_val)), f"{len(n_ev & (n_train | n_val))} shared"
     )
-
-    print("\nVAL1 / VAL2 COVER THE SAME TRAJECTORIES, DIFFERENTLY SELECTED", flush=True)
-    r1, r2 = read_rows(val1, {"name", "abs_pos"}), read_rows(val2, {"name", "abs_pos"})
-    passed &= check("same row count", len(r1) == len(r2), f"{len(r1)} vs {len(r2)}")
-    k1 = {(r["name"], r["abs_pos"]) for r in r1}
-    k2 = {(r["name"], r["abs_pos"]) for r in r2}
-    print(f"         overlap {len(k1 & k2)} of {len(k1)} tokens -- the selections really differ", flush=True)
 
     print("\nTRAINING ROWS vs loudness/per_token.csv (entry 42, different script)", flush=True)
     cols = {"name", "step", "reasoning_pos", "dir_logmass_L15", "sentence_idx", "convinced_idx", "is_direction_token"}
     want = {(r["name"], r["step"], r["reasoning_pos"]): r for r in read_rows(train, cols | {"is_convinced"})}
-    found, mismatch = 0, []
+    found, n_loudness, mismatch = 0, 0, []
     with open(args.loudness, encoding="utf-8", newline="") as f:
         for r in csv.DictReader(f):
+            n_loudness += 1
             key = (r["name"], r["step"], r["reasoning_pos"])
             mine = want.get(key)
             if mine is None:
@@ -90,6 +83,9 @@ def main() -> int:
             if expect != int(mine["is_convinced"]):
                 mismatch.append((key, "is_convinced", rel, mine["is_convinced"]))
     passed &= check("every training row present", found == len(want), f"{found}/{len(want)}")
+    # With no selection both cover every reasoning token of the same 2880 trajectories, so this
+    # is set EQUALITY, not just containment -- a token in one and not the other is a bug.
+    passed &= check("and no extra rows there", found == n_loudness, f"{n_loudness - found} only in loudness")
     passed &= check("all shared columns agree", not mismatch, f"{len(mismatch)} mismatches {mismatch[:2]}")
 
     print("\nHELD-OUT ROWS vs probe_vs_rollout/per_token.csv (entry 39, different script)", flush=True)

@@ -2666,3 +2666,60 @@ csv either, and that is what makes the direction number mean anything.
 	ARTIFACTS: /workspace/reasoning_theatre/convinced_classifier/{train_random20,
 	val1_random20,val2_jlens20,eval_heldout360_all}.csv, each with a .meta.json
 	recording tree, split list, arm, vocabulary and counts.
+
+47. ENTRY 46's DATASETS, REBUILT WITHOUT THE 20-TOKEN THINNING (2026-09-09)
+
+	SUPERSEDES ENTRY 46. A first classifier on the entry-46 datasets did not work,
+	so the token thinning is gone: every reasoning token of every trajectory, in all
+	three splits. Same feature (17-layer direction mass), same label rule, same
+	splits, same verification. Only the token universe changed.
+
+	FOUR DATASETS BECOME THREE. Entry 46's val1/val2 differed only in HOW 20 tokens
+	were drawn from the same 720 trajectories -- uniform vs jlens top-20. With no
+	thinning they would be the same rows, so there is one val set.
+
+	*** THE THREE *** (/workspace/reasoning_theatre/convinced_classifier/)
+
+	  file                      traj      rows   positive   cohorts (rows)
+	  train_all.csv             2880   776,191     52.9%    imm 64251 / never 866
+	  val_all.csv                720   186,013     56.7%    imm 20059
+	  eval_heldout360_all.csv    360    87,221     50.8%    imm 9122
+
+	(a) *** THE THINNING WAS PUTTING A 73% PRIOR IN THE TRAINING SET. *** Entry 46's
+	    train was 73.3% convinced and its val 74.1%; the same trajectories, untinned,
+	    are 52.9% and 56.7%. Nothing about the label changed -- 20-per-chain caps a
+	    440-token chain and a 5-token chain at the same 20 rows, so the long
+	    uncommitted PREFIXES of long chains were being thrown away while short chains
+	    (which are mostly convinced, often at index 0) kept everything. The old
+	    datasets could be beaten by predicting "convinced" and little else. That is a
+	    plausible part of why the first classifier failed, though this entry does not
+	    establish it -- no model was fit here.
+
+	(b) THE THREE SPLITS NOW HAVE COMPARABLE BASE RATES (52.9 / 56.7 / 50.8), which
+	    entry 46(a)/(b) explicitly did not: there the jlens arm sat at 79.2% and the
+	    held-out set at 50.8%, so val and eval numbers could not be read against each
+	    other. They now can.
+
+	(c) 776,191 IS ENTRY 42's NUMBER, EXACTLY. The training set is now the same token
+	    universe as loudness/per_token.csv -- same 2880 trajectories, every token --
+	    so the check strengthens from containment to SET EQUALITY in both directions:
+	    776,191/776,191 present, 0 rows only in loudness, 0 column mismatches on
+	    dir_logmass_L15, sentence_idx, convinced_idx, is_direction_token and label.
+	    The held-out check is unchanged and still exact: 87,221/87,221 against entry
+	    39's probe_vs_rollout/per_token.csv, 0 label disagreements, 0 loudness
+	    differences at 1e-6.
+
+	COST: ~1.05M rows, 288 MB of CSV, one CPU pass. scripts/build_convinced_dataset.py
+	is unchanged from entry 46 -- this is `--selection-arm none` three times, which is
+	what build_convinced_datasets.sh now records. The selection-arm code path is kept
+	because it is what entry 46's numbers were made with.
+
+	STILL NOT DONE: no classifier. Entry 46's closing caveat stands and matters more
+	now that the prior is gone -- loudness is mostly a statement about position in a
+	sentence (42(a)), so a loudness-only model has to be compared against a
+	position-only baseline built from the sentence_frac / reasoning_frac columns that
+	ride along in every row. Without that comparison a good score still does not mean
+	the lens sees the commitment.
+
+	ARTIFACTS: the three CSVs above, each with a .meta.json. Entry 46's four
+	*_random20 / *_jlens20 files are left in place, superseded.
