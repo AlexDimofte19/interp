@@ -9,6 +9,20 @@ import it without pulling in the model stack, and so the selection is unit-testa
 laptop. See README.md for how the pieces fit together.
 """
 
+from .commitment import (
+    COHORT_IMMEDIATE,
+    COHORT_NEVER,
+    COHORT_NORMAL,
+    Placement,
+    cohort,
+    convinced_label,
+    eos_positions,
+    place_token,
+    read_rollout_steps,
+    reasoning_offset,
+    rollout_path,
+    sentence_of_token,
+)
 from .jlens_csv import (
     DEFAULT_JLENS_CSV_SUFFIX,
     DIRECTION_CLASSES,
@@ -80,6 +94,9 @@ from .top_filter import (
 )
 
 __all__ = [
+    "COHORT_IMMEDIATE",
+    "COHORT_NEVER",
+    "COHORT_NORMAL",
     "DEFAULT_ALWAYS_LAYERS",
     "DEFAULT_JLENS_CSV_SUFFIX",
     "DEFAULT_METHODS",
@@ -96,6 +113,7 @@ __all__ = [
     "DirectionScore",
     "KeptTokens",
     "LayerProfile",
+    "Placement",
     "SelectionMethod",
     "TokenPick",
     "TokenScore",
@@ -103,9 +121,12 @@ __all__ = [
     "arm_seed",
     "artifact_layers",
     "build_record",
+    "cohort",
+    "convinced_label",
     "csv_has_logprobs",
     "csv_layers",
     "direction_mass_path",
+    "eos_positions",
     "format_profile",
     "get_method",
     "get_score",
@@ -122,6 +143,7 @@ __all__ = [
     "normalize_record",
     "output_start",
     "parse_methods",
+    "place_token",
     "rank_layers_by_direction",
     "rank_tokens",
     "read_direction_counts",
@@ -129,12 +151,16 @@ __all__ = [
     "read_direction_scores",
     "read_mass_meta",
     "read_raw_record",
+    "read_rollout_steps",
     "read_selection_record",
+    "reasoning_offset",
     "record_path",
     "require_logprob_columns",
+    "rollout_path",
     "score_artifact_path",
     "score_names",
     "scored_methods",
+    "sentence_of_token",
     "step_folder_index",
     "to_disk_coords",
     "top_filter",

@@ -2582,3 +2582,87 @@ csv either, and that is what makes the direction number mean anything.
 	ARTIFACTS: /workspace/activations/argmax_per_sentence_l15/ (75,012 .pt),
 	/workspace/prepared/local_belief_p{1,2}_* , probes + logs under
 	/workspace/reasoning_theatre/local_belief_probes/.
+
+46. A LOUDNESS -> CONVINCED DATASET: FOUR SPLITS, NO PROBE (2026-09-09)
+
+	Data only. Entry 42 established that full-vocabulary direction mass steps at the
+	commitment boundary but is dominated by where a token sits in its sentence; this
+	builds the four datasets needed to ask the question directly as a supervised
+	problem -- from loudness at ONE token, can you tell the model has committed?
+
+	  scripts/build_convinced_dataset.py     <- new
+	  scripts/build_convinced_datasets.sh    <- the four recorded invocations
+	  scripts/verify_convinced_datasets.py   <- new
+	  telos_interp/jlens_utils/commitment.py <- new, stdlib only
+
+	THE FEATURE is the direction-mass table, all 17 layers (L7..L23), not just L15 --
+	the columns are already on disk, so a per-layer model costs nothing extra later.
+	THE LABEL is `int(sentence_idx >= convinced_sentence_idx)`. Reasoning tokens always
+	land in sentence_idx >= 1, so that one expression covers all three regimes: a
+	never-convinced chain labels every token 0, a convinced-at-0 chain labels every
+	token 1, and an ordinary boundary splits the chain. Nothing is filtered -- a
+	`cohort` column (never / immediate / normal) records which, so the cuts entries
+	41/42 made can be reproduced without a rebuild.
+
+	*** THE FOUR DATASETS *** (/workspace/reasoning_theatre/convinced_classifier/)
+
+	  file                       traj    rows   positive   cohorts (rows)
+	  train_random20.csv         2880   57522     73.3%    imm 14976 / never 20
+	  val1_random20.csv           720   14391     74.1%    imm 3513
+	  val2_jlens20.csv            720   14391     79.2%    imm 3513
+	  eval_heldout360_all.csv     360   87221     50.8%    imm 9122
+
+	train/val1 share a selection mechanism and differ only by split; val1/val2 share
+	the 720 trajectories and differ only by selection. They overlap on just 3,595 of
+	14,391 tokens, so the two mechanisms genuinely pick different tokens.
+
+	(a) THE JLENS ARM IS ALREADY BIASED TOWARD THE COMMITTED SIDE. Same 720
+	    trajectories, same 14,391 rows, only the selection differs: uniform draws are
+	    74.1% convinced, jlens top-20 is 79.2%. +5.1 pp before any model is fit. This
+	    is entry 42(e) showing up as a base rate -- loud tokens sit later relative to
+	    the boundary -- and it means val2 must be scored against its OWN base rate,
+	    not val1's. A classifier that reads only the prior would look 5 points better
+	    on val2 while having learned nothing.
+
+	(b) THE HELD-OUT SET IS THE ONLY BALANCED ONE (50.8%), because it is every token
+	    rather than 20 per chain: long chains contribute their long uncommitted
+	    prefixes instead of being thinned to the same 20 rows as short ones. So the
+	    train -> eval shift is a distribution shift in BOTH the label prior and the
+	    token-length composition, and eval numbers are not comparable to val numbers.
+
+	(c) THE SPLIT LIST IS A LANDMINE. /workspace/splits/eval_trajectories_720.txt and
+	    lens_trajectories_3600.txt look like the right files for the mass tree and are
+	    not -- they belong to the count-era jlens_reasoning_tokens tree and overlap
+	    this one by 63 and 348 names. The mass tree's split is
+	    /workspace/prepared/next_action_mass_l15_eval_names.txt (720/720 present).
+	    Using the wrong one puts ~657 eval trajectories into training and raises
+	    nothing. Recorded in the .sh header too.
+
+	(d) VERIFIED AGAINST TWO SCRIPTS THAT KNEW NOTHING ABOUT THIS ONE, which is the
+	    only reason to believe the joins. All 57,522 training rows appear in entry
+	    42's loudness/per_token.csv with identical dir_logmass_L15, sentence_idx,
+	    convinced_idx, is_direction_token and label -- 0 mismatches. All 87,221
+	    held-out rows appear in entry 39's probe_vs_rollout/per_token.csv with
+	    identical is_after_convinced and jlens_mass_L15 -- 0 disagreements, 0 loudness
+	    differences at 1e-6. That second one also retires a standing worry: that file
+	    derives reasoning_pos with the hardcoded `token_idx - 3`, and this one reads
+	    `eos[0] + 1` per trajectory. They agree on all 360 held-out trajectories.
+	    A third check is internal but load-bearing: for the jlens arm the recorded
+	    pick score equals dir_logmass_L15 exactly, which is what `candidate_layers:
+	    [15]` should mean.
+
+	ROW COUNTS ARE NOT 20x THE TRAJECTORY COUNT (57,522 not 57,600; 14,391 not
+	14,400): a chain shorter than 20 reasoning tokens yields fewer picks. 14,391 is
+	the same eval count entry 45 reports, and 87,221 the same held-out token count as
+	entries 37/39 -- both fall out rather than being matched to.
+
+	NOT DONE HERE: no classifier is trained. The obvious confound is untouched and is
+	entry 42(a)'s -- loudness is mostly a statement about position in sentence, and
+	`sentence_frac` / `reasoning_frac` ride along in every row precisely so that a
+	loudness-only model can be compared against a position-only one. Until that
+	comparison exists, a good score on these datasets does not mean the lens sees the
+	commitment.
+
+	ARTIFACTS: /workspace/reasoning_theatre/convinced_classifier/{train_random20,
+	val1_random20,val2_jlens20,eval_heldout360_all}.csv, each with a .meta.json
+	recording tree, split list, arm, vocabulary and counts.
