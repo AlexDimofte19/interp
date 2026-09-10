@@ -501,7 +501,7 @@ Three stdlib+pandas scripts, no GPU, all reading artifacts that already exist:
 
 ```bash
 .venv/bin/python scripts/build_sentence_loudness.py    # -> loudness/per_token.csv  (~1m45s)
-.venv/bin/python scripts/plot_sentence_loudness.py     # -> loudness/plots|tables   (22 figures)
+.venv/bin/python telos_interp/loudness_analysis/plotting/figures.py     # -> loudness/plots|tables   (22 figures)
 .venv/bin/python telos_interp/loudness_analysis/analysis/loudness_distribution.py  # -> loudness/summary.json
 ```
 
@@ -771,7 +771,7 @@ Report: <https://claude.ai/code/artifact/2e873b12-7c49-4ac6-b861-9c2a7aa707f0>
 ```bash
 python scripts/build_probe_loudness.py     # -> probe_loudness/per_token.csv  (~15 min)
 python telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py   # -> summary.json, tables/ (18 CSVs)
-python scripts/plot_probe_loudness.py      # -> plots/ (20 figures)
+python telos_interp/loudness_analysis/plotting/figures.py      # -> plots/ (20 figures)
 ```
 
 The probe-side twin of the `build_/plot_/analyze_sentence_loudness.py` trio, reusing entry
@@ -961,7 +961,7 @@ python telos_interp/loudness_analysis/score_probes_per_token.py --probe ...x10 -
 # 3. join -> entry 46's exact schema, then analyze/plot UNEDITED
 python telos_interp/loudness_analysis/join_rollouts.py
 python telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py --per-token <out>/per_token.csv --out <out>
-python scripts/plot_probe_loudness.py    --per-token <out>/per_token.csv --out <out>/plots
+python telos_interp/loudness_analysis/plotting/figures.py    --per-token <out>/per_token.csv --out <out>/plots
 ```
 
 **`every_token` is the 4th truncation strategy**, the dense grid entry 43 named and never

@@ -455,7 +455,7 @@ run_sentence_loudness() {
         --lens-root "$ACT/jlens_mass_l15" --probs-root "$RT/trajectories_train_single_step_probs" \
         --eval-names "$MASS_EVAL_NAMES" --direction-tokens-path "$SIGNAL_JSON" \
         --out "$RT/loudness/per_token.csv"
-    x $UVC python "$REPO/scripts/plot_sentence_loudness.py" \
+    x $UVC python "$REPO/telos_interp/loudness_analysis/plotting/figures.py" \
         --per-token "$RT/loudness/per_token.csv" --out "$RT/loudness"
     x $UVC python "$REPO/telos_interp/loudness_analysis/analysis/loudness_distribution.py" \
         --per-token "$RT/loudness/per_token.csv" --out "$RT/loudness"
@@ -537,7 +537,7 @@ run_probe_loudness_eval720() {
     x $UV python "$REPO/scripts/build_probe_loudness.py" --out "$RT/probe_loudness/per_token.csv"
     x $UVC python "$REPO/telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py" \
         --per-token "$RT/probe_loudness/per_token.csv" --out "$RT/probe_loudness"
-    x $UVC python "$REPO/scripts/plot_probe_loudness.py" \
+    x $UVC python "$REPO/telos_interp/loudness_analysis/plotting/figures.py" \
         --per-token "$RT/probe_loudness/per_token.csv" --out "$RT/probe_loudness/plots"
 }
 
@@ -584,7 +584,7 @@ run_probe_loudness_heldout() {
     x $UVC python "$REPO/telos_interp/loudness_analysis/join_rollouts.py" \
         --probe-csv "$out/heldout360_10probes.csv" --out "$out/per_token.csv"
     x $UVC python "$REPO/telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py" --per-token "$out/per_token.csv" --out "$out"
-    x $UVC python "$REPO/scripts/plot_probe_loudness.py" --per-token "$out/per_token.csv" --out "$out/plots"
+    x $UVC python "$REPO/telos_interp/loudness_analysis/plotting/figures.py" --per-token "$out/per_token.csv" --out "$out/plots"
 }
 
 # ---- stage 20: the logit-lens mass tree ----------------------------------------------------
