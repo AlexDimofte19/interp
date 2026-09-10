@@ -885,7 +885,7 @@ Report: <https://claude.ai/code/artifact/95a74d99-bb0a-440f-839c-e6e4dbac8c65>
 
 ```bash
 # 1. score the 2 new probes on the same held-out tokens (GPU, ~2 h; the cost is 87k .pt reads)
-python scripts/eval_probe_per_token.py \
+python telos_interp/loudness_analysis/score_probes_per_token.py \
     --probe /workspace/probes/local_belief/next_action_probe_p1_mlp.pt \
     --probe /workspace/probes/local_belief/next_action_probe_p2_mlp.pt \
     --activations-dir /workspace/activations/heldout360_l15 \
@@ -957,7 +957,7 @@ LENS_ROOT=/workspace/activations/heldout360_lens \
 OUT_ROOT=/workspace/reasoning_theatre/rollout_strategies_heldout360 \
   bash scripts/inference_oss/run_inference_strategies.sh every_token
 # 2. all ten probes in one pass                                      (1h40m)
-python scripts/eval_probe_per_token.py --probe ...x10 --full-probs ...
+python telos_interp/loudness_analysis/score_probes_per_token.py --probe ...x10 --full-probs ...
 # 3. join -> entry 46's exact schema, then analyze/plot UNEDITED
 python scripts/build_probe_loudness_heldout.py
 python scripts/analyze_probe_loudness.py --per-token <out>/per_token.csv --out <out>
@@ -1237,7 +1237,8 @@ interp-cli train_cognitive_map_probe --model-type {lr,mlp} --class-weight balanc
     --normalize --cache-activations ...                             # .4051 / .5400
 
 # 3. score EVERY reasoning token of heldout360, then bin by loudness
-python grid_cell_analysis/eval_grid_probe_per_token.py --probe <lr.pt> --probe <mlp.pt> \
+python telos_interp/loudness_analysis/score_probes_per_token.py --probe-type grid_tile \
+    --probe <lr.pt> --probe <mlp.pt> \
     --activations-dir /workspace/activations/heldout360_l15 \
     --lens-dir /workspace/activations/heldout360_lens \
     --signal-json /workspace/jlens/direction_tokens_full.json --layer 15 ...
@@ -1250,7 +1251,7 @@ Two trees on purpose: `heldout360_l15` holds the layer-15 `.pt` for every reason
 
 ### New scripts (merged into `reasoning_theatre`)
 
-- `grid_cell_analysis/eval_grid_probe_per_token.py` — grid twin of `eval_probe_per_token.py`. One row
+- `telos_interp/loudness_analysis/score_probes_per_token.py --probe-type grid_tile` — the grid label. One row
   per (trajectory, step, token), **not** per cell: a token owns C cells, so each row carries
   `n_true_{c}` / `correct_{c}` per class and balanced accuracy for any bucket is a group-by
   over per-class counts. Per-cell rows would multiply the file ~100× and buy nothing.

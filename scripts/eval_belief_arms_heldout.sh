@@ -122,7 +122,7 @@ else
         args+=(--probe "$p")
     done
     echo "    ${#args[@]} flags = $(( ${#args[@]} / 2 )) probes"
-    $UV python "$REPO/scripts/eval_probe_per_token.py" "${args[@]}" \
+    $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" "${args[@]}" \
         --activations-dir "$ACT/heldout360_l15" --lens-dir "$ACT/heldout360_lens" \
         --trajectories-dir "$TRAJ" --signal-json "$SIGNAL_JSON" \
         --layer 15 --full-probs --out "$CSV" \

@@ -104,7 +104,7 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | Script | Does | Reads | Writes |
 |---|---|---|---|
 | `eval_probe_per_token.py` (310L) | Scores a `next_action` probe on **every** reasoning token of a set, carrying each token's loudness. | `--probe`, `--activations-dir`, `--trajectories-dir`, `--signal-json` | `--out` per-token CSV |
-| `grid_cell_analysis/eval_grid_probe_per_token.py` (437L) | The `grid_tile` twin — the specificity control. | same + `--max-cells`, `--pad-to-size` | `--out` per-token CSV |
+| `telos_interp/loudness_analysis/score_probes_per_token.py` (437L) | The `grid_tile` twin — the specificity control. | same + `--max-cells`, `--pad-to-size` | `--out` per-token CSV |
 | `eval_belief_arms_heldout.sh` (146L) | Reads every belief probe of a round on all 87,221 held-out tokens. `24probes` = the entry-49/50 round; `equal_n` = those plus the 14 that supersede them. *(merged from `eval_more_belief_arms.sh` + `eval_equal_n_belief_arms.sh`, which were 83% identical)* | `PROBES/{local_belief*,local_belief_equalN,next_action_mass_l15}`, `ACT/heldout360_lens` | `RT/probe_loudness_heldout360_{24probes,equal_n}` |
 | `score_probes_heldout.py` (111L) | Balanced accuracy per probe against both label definitions. | a per-token CSV | table + optional JSON |
 | `compare_equal_n_arms.py` (116L) | Old arms vs. their equal-N rebuilds, from `results.best_balanced_accuracy` in each checkpoint. **Unreferenced.** | `PROBES/**/*.pt` | stdout + optional JSON |
@@ -203,8 +203,8 @@ top-level function bodies. Re-run it after any merge.
 ### Left, and why
 
 **Five duplicated lens-IO helpers.** `find_act_folder`, `read_lens_tables`, `read_mass_columns`,
-`load_trajectory` and `trajectory_dirs` are byte-identical in `scripts/eval_probe_per_token.py`
-and `grid_cell_analysis/eval_grid_probe_per_token.py`. The obvious fix is one module in
+`load_trajectory` and `trajectory_dirs` are byte-identical in `telos_interp/loudness_analysis/score_probes_per_token.py`
+and `telos_interp/loudness_analysis/score_probes_per_token.py`. The obvious fix is one module in
 `telos_interp/`. It is deliberately not done here: the grid round is dormant and pulling its
 evaluator back across the folder boundary would undo the separation that was just made. Do it
 when the grid round is next touched — or, better, fold the grid evaluator into

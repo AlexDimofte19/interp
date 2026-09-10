@@ -33,11 +33,13 @@ __all__ = [
     "AMBIGUOUS",
     "LENS_LABEL",
     "axis_label",
+    "legacy_score_columns",
     "loudness_column",
     "membership_column",
     "prob_column",
     "resolve",
     "resolve_ambiguous",
+    "score_columns",
 ]
 
 # How a lens is spelled in a figure. The registry key is the code name; this is the prose one.
@@ -184,3 +186,36 @@ def axis_label(lens: str, signal: str, layer: int | str | None = None) -> str:
     """
     base = f"{LENS_LABEL.get(lens, lens)} {signal} logmass"
     return f"{base} (L{layer})" if layer is not None else base
+
+
+def score_columns(lens: str, signal: str, layer: int | str) -> list[str]:
+    """The four columns an evaluator writes per lens, canonical spelling.
+
+    `count` is the top-k score (how many of the lens' top-20 predictions were signal words);
+    the three `logmass` columns come from the full-vocabulary mass table. `best` is the
+    token's argmax layer, which is NOT the same question as the fixed-layer cell -- a token
+    can be quiet at layer 15 and loud somewhere else.
+
+    >>> score_columns("jlens", "direction", 15)
+    ['jlens_direction_count', 'jlens_direction_logmass_L15', 'jlens_direction_logmass_best_layer', 'jlens_direction_logmass_best']
+    """
+    return [
+        f"{lens}_{signal}_count",
+        loudness_column(lens, signal, layer),
+        f"{lens}_{signal}_logmass_best_layer",
+        f"{lens}_{signal}_logmass_best",
+    ]
+
+
+def legacy_score_columns(lens: str, layer: int | str) -> list[str]:
+    """The same four as `eval_probe_per_token.py` wrote them, for reading old CSVs.
+
+    >>> legacy_score_columns("jlens", 15)
+    ['jlens_count', 'jlens_mass_L15', 'jlens_mass_best_layer', 'jlens_mass_best']
+    """
+    return [
+        f"{lens}_count",
+        f"{lens}_mass_L{layer}",
+        f"{lens}_mass_best_layer",
+        f"{lens}_mass_best",
+    ]

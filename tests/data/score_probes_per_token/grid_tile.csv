@@ -1,0 +1,7 @@
+name,size,complexity,step,abs_pos,token_idx,token,n_cells,n_true_0,n_true_1,n_true_2,n_true_3,n_true_4,n_true_5,n_true_6,n_true_7,jlens_count,jlens_mass_L15,jlens_mass_best_layer,jlens_mass_best,logitlens_count,logitlens_mass_L15,logitlens_mass_best_layer,logitlens_mass_best,probes.arm_lr_n_correct,probes.arm_lr_acc,probes.arm_lr_mean_p_true,probes.arm_lr_correct_0,probes.arm_lr_correct_1,probes.arm_lr_correct_2,probes.arm_lr_correct_3,probes.arm_lr_correct_4,probes.arm_lr_correct_5,probes.arm_lr_correct_6,probes.arm_lr_correct_7
+together_ai_openai_gpt-oss-20b_size3_comp1.0_1,3,1.0,0,3,0, the,9,1,2,1,5,0,0,0,0,0,-1.0,15,-1.0,,,,,0,0.000000,0.040955,0,0,0,0,0,0,0,0
+together_ai_openai_gpt-oss-20b_size3_comp1.0_1,3,1.0,0,4,1, up,9,1,2,1,5,0,0,0,0,2,-1.5,15,-1.5,,,,,0,0.000000,0.027299,0,0,0,0,0,0,0,0
+together_ai_openai_gpt-oss-20b_size3_comp1.0_1,3,1.0,0,5,2, agent,9,1,2,1,5,0,0,0,0,0,-2.0,15,-2.0,,,,,0,0.000000,0.020621,0,0,0,0,0,0,0,0
+together_ai_openai_gpt-oss-20b_size3_comp1.0_1,3,1.0,0,6,3, left,9,1,2,1,5,0,0,0,0,2,-2.5,15,-2.5,,,,,0,0.000000,0.018063,0,0,0,0,0,0,0,0
+together_ai_openai_gpt-oss-20b_size3_comp1.0_1,3,1.0,0,7,4, moves,9,1,2,1,5,0,0,0,0,0,-3.0,15,-3.0,,,,,0,0.000000,0.017721,0,0,0,0,0,0,0,0
+together_ai_openai_gpt-oss-20b_size3_comp1.0_1,3,1.0,0,8,5, now,9,1,2,1,5,0,0,0,0,0,-3.5,15,-3.5,,,,,0,0.000000,0.018560,0,0,0,0,0,0,0,0

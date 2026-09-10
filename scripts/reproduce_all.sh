@@ -405,7 +405,7 @@ run_score_probes_on_heldout() {
              "$PROBES"/next_action_mass_l15/*.pt; do
         [ -e "$p" ] && args+=(--probe "$p")
     done
-    x $UV python "$REPO/scripts/eval_probe_per_token.py" "${args[@]}" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" "${args[@]}" \
         --activations-dir "$ACT/heldout360_l15" --lens-dir "$ACT/heldout360_lens" \
         --trajectories-dir "$TRAJ" --signal-json "$SIGNAL_JSON" \
         --layer 15 --out "$PROBES/heldout360_all_probes.csv"
@@ -434,7 +434,7 @@ run_probe_vs_rollout() {
 
     # Commitment at token resolution. The probabilities are the readout that shows a sentence
     # opening on the PREVIOUS belief; the mlp arm is near one-hot, so read the lr arm.
-    x $UV python "$REPO/scripts/eval_probe_per_token.py" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" \
         --probe "$PROBES/next_action_mass_l15/next_action_probe_jlens_topall_lr.pt" \
         --probe "$PROBES/next_action_mass_l15/next_action_probe_jlens_topall_mlp.pt" \
         --probe "$PROBES/next_action_mass_l15/next_action_probe_random_topall_lr.pt" \
@@ -546,7 +546,7 @@ run_probe_loudness_eval720() {
 # HEADLINE in analyze_probe_rollout.py must not be edited -- --headline-extra is the seam.
 run_belief_probes_commitment() {
     local lbp="$RT/local_belief_probes/probes"
-    x $UV python "$REPO/scripts/eval_probe_per_token.py" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" \
         --probe "$lbp/local_belief_p1_mlp.pt" --probe "$lbp/local_belief_p2_mlp.pt" \
         --activations-dir "$ACT/heldout360_l15" --lens-dir "$ACT/heldout360_lens" \
         --trajectories-dir "$TRAJ" --signal-json "$SIGNAL_JSON" \
@@ -577,7 +577,7 @@ run_probe_loudness_heldout() {
     for p in "$lbp"/*.pt "$PROBES"/next_action_mass_l15/next_action_probe_{jlens,random}_topall_{lr,mlp}.pt; do
         [ -e "$p" ] && args+=(--probe "$p")
     done
-    x $UV python "$REPO/scripts/eval_probe_per_token.py" "${args[@]}" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" "${args[@]}" \
         --activations-dir "$ACT/heldout360_l15" --lens-dir "$ACT/heldout360_lens" \
         --trajectories-dir "$TRAJ" --signal-json "$SIGNAL_JSON" \
         --layer 15 --full-probs --out "$out/heldout360_10probes.csv"

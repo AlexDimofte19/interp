@@ -55,7 +55,7 @@ ll2_lr=logitlens P2 (belief), lr;ll2_mlp=logitlens P2 (belief), mlp"
 
 if [ ! -s "$CSV" ]; then
     echo "=== step 5: score 16 probes over every reasoning token of the heldout 360 (~2 h)"
-    $UV python "$REPO/scripts/eval_probe_per_token.py" \
+    $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" \
         --probe "$LB/local_belief_p1_lr.pt"        --probe "$LB/local_belief_p1_mlp.pt" \
         --probe "$LB/local_belief_p1_top20_lr.pt"  --probe "$LB/local_belief_p1_top20_mlp.pt" \
         --probe "$LB/local_belief_p2_lr.pt"        --probe "$LB/local_belief_p2_mlp.pt" \

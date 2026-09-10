@@ -77,6 +77,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from telos_interp.loudness_analysis import columns as cols
+
 # csv.DictReader everywhere, never pandas: decoded tokens include "NA", empty strings,
 # embedded commas and newlines, which pandas' NA handling silently corrupts.
 csv.field_size_limit(10**9)
@@ -345,7 +347,9 @@ def register_extra_probes(spec: str, rowset: str) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     out_default = Path("/workspace/reasoning_theatre/probe_loudness_heldout360")
-    ap.add_argument("--probe-csv", type=Path, default=out_default / "heldout360_10probes.csv")
+    ap.add_argument("--table",
+        "--probe-csv",
+        dest="probe_csv", type=Path, default=out_default / "heldout360_10probes.csv")
     ap.add_argument(
         "--rollout-dir",
         type=Path,
@@ -384,17 +388,46 @@ def main() -> int:
     )
     ap.add_argument("--mass-tol", type=float, default=1e-6, help="max |probe CSV mass - commitment CSV mass|.")
     ap.add_argument(
+        "--lens",
+        default="jlens",
+        help="Which lens's loudness becomes the axis every downstream figure bins on "
+        "(default: %(default)s, which is what every page before entry 49 used). Say WHICH "
+        "LENS in any caption built from the output -- at layer 15 the two lenses' top-20 "
+        "sets overlap only about half, so an unqualified 'loudness' is not a quantity.",
+    )
+    ap.add_argument(
+        "--signal-name",
+        default="direction",
+        help="Which vocabulary the loudness was taken over (default: %(default)s). With "
+        "--lens and --layer this builds the column read from the input table.",
+    )
+    ap.add_argument("--layer", type=int, default=15, help="Layer the loudness is read at (default 15).")
+    ap.add_argument(
         "--mass-column",
-        default="jlens_mass_L15",
-        choices=["jlens_mass_L15", "logitlens_mass_L15"],
-        help="Which lens's layer-15 direction mass becomes `dir_logmass`, i.e. the loudness axis "
-        "every downstream figure bins on. Default jlens_mass_L15, which is what every page before "
-        "entry 49 used. Say WHICH LENS in any caption built from the output.",
+        default=None,
+        help="Read this column as the loudness axis instead of the one --lens/--signal-name/"
+        "--layer imply. Needed only for a table whose columns follow none of the known "
+        "spellings; the legacy ones (dir_logmass, dir_logmass_L15, {lens}_mass_L15) are "
+        "resolved automatically.",
     )
     ap.add_argument("--limit", type=int, default=None, help="first N trajectories (smoke test).")
     args = ap.parse_args()
 
-    print(f"loudness axis: {args.mass_column}", flush=True)
+    # The column is resolved against the table's OWN header rather than assumed, so a table
+    # from either evaluator generation joins. An explicit --mass-column wins.
+    if args.mass_column is None:
+        with open(args.probe_csv, newline="", encoding="utf-8") as _fh:
+            _fields = next(csv.reader(_fh))
+        try:
+            args.mass_column = cols.resolve(_fields, args.lens, args.signal_name, args.layer)
+        except KeyError as exc:
+            raise SystemExit(
+                f"{args.probe_csv} carries no {args.lens}/{args.signal_name} loudness at layer "
+                f"{args.layer}.\n{exc}\nPass --mass-column explicitly if the table uses a "
+                "spelling this does not know."
+            ) from None
+
+    print(f"loudness axis: {args.mass_column}  ({cols.axis_label(args.lens, args.signal_name, args.layer)})", flush=True)
     register_extra_probes(args.extra_probes, args.extra_probes_rowset)
 
     wanted = list(ROWSETS) if args.rowsets == "all" else args.rowsets.split(",")

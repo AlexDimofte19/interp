@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import random
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from collections import defaultdict
 
 __all__ = [
     "PROBE_TYPES",
@@ -35,18 +35,6 @@ __all__ = [
     "get_probe_type",
     "probe_type_names",
 ]
-
-
-@dataclass
-class StepPayload:
-    """What one (trajectory, step) contributes, beyond its tokens.
-
-    `labels` is the per-row label for a next_action probe, or the per-cell label vector for a
-    grid_tile one; `cells` is empty for probe types that do not fan a token out.
-    """
-
-    labels: list[int]
-    cells: list[list[int]]
 
 
 class ProbeType(ABC):
@@ -60,24 +48,43 @@ class ProbeType(ABC):
     #: True when one token fans out into several predictions and rows carry per-class counts.
     per_cell: bool = False
 
+    def add_arguments(self, ap) -> None:
+        """Probe-type-specific CLI flags. The shared ones live on the evaluator."""
+
     @abstractmethod
     def load_probe(self, path):
         """Load a trained probe from `path`."""
 
     @abstractmethod
-    def step_payload(self, traj: dict, step: int, **kwargs) -> StepPayload:
-        """The labels (and cells) this step is scored on, or empty when it is unusable."""
+    def prefix_columns(self) -> list[str]:
+        """Leading columns, before the lens scores. `row_prefix` fills these, in order."""
+
+    @abstractmethod
+    def step_state(self, traj: dict, step: int, stem: str, args):
+        """Per-step state shared by every token of that step, or None when unusable.
+
+        Cached by the evaluator: cells are a property of the STEP, so a trajectory's ~240
+        tokens must not re-parse and re-draw the same grid 240 times.
+        """
+
+    @abstractmethod
+    def row_prefix(self, stem, traj, step, abs_pos, token_idx, token, state) -> list:
+        """The row's leading cells, matching `prefix_columns`."""
 
     @abstractmethod
     def result_columns(self, probe_names: list[str], full_probs: bool) -> list[str]:
-        """Per-probe output columns, in the order `result_row` fills them."""
+        """Per-probe output columns, in the order `score` fills them."""
+
+    @abstractmethod
+    def score(self, probes, acts, states, batch_size, device, full_probs) -> list[list]:
+        """One list of result cells per input row, matching `result_columns`."""
 
     def probe_key(self, path) -> str:
         """`"<parent dir>.<stem minus the trainer's prefix>"`.
 
         The parent directory is part of the key on purpose: it is what keeps two arms with the
-        same filename apart, and assuming the prefix was NOT stripped once cost a round with a
-        silently failed join.
+        same filename apart. The prefix IS stripped -- assuming otherwise once cost a round
+        with a silently failed join.
         """
         key = f"{path.parent.name}.{path.stem}"
         for prefix in self.strip_prefixes:
@@ -99,8 +106,12 @@ class NextActionProbeType(ProbeType):
         from telos_interp.commands.prepare_activations_for_probing.prepare_activations_for_probing_fn import (
             NEXT_ACTION_TO_ID,
         )
+        from telos_interp.commands.train_next_action_probe.train_next_action_probe_fn import (
+            ACTION_ID_TO_NAME,
+        )
 
         self._to_id = NEXT_ACTION_TO_ID
+        self._id_to_name = ACTION_ID_TO_NAME
         self.classes = tuple(sorted(NEXT_ACTION_TO_ID.values()))
 
     def load_probe(self, path):
@@ -108,10 +119,25 @@ class NextActionProbeType(ProbeType):
 
         return NextActionProbe.load(path)
 
-    def step_payload(self, traj: dict, step: int, **kwargs) -> StepPayload:
-        action = traj["steps"][step].get("agent_action")
-        label = self._to_id.get(action)
-        return StepPayload(labels=[] if label is None else [label], cells=[])
+    def prefix_columns(self) -> list[str]:
+        return ["name", "size", "complexity", "step", "abs_pos", "token_idx", "token", "label", "label_name"]
+
+    def step_state(self, traj: dict, step: int, stem: str, args):
+        action = traj["steps"][step].get("agent_action", "")
+        return self._to_id.get(action.upper())
+
+    def row_prefix(self, stem, traj, step, abs_pos, token_idx, token, state) -> list:
+        return [
+            stem,
+            traj["grid_params"].get("grid_width", ""),
+            traj["grid_params"].get("grid_complexity", ""),
+            step,
+            abs_pos,
+            token_idx,
+            token,
+            state,
+            self._id_to_name.get(state, ""),
+        ]
 
     def result_columns(self, probe_names: list[str], full_probs: bool) -> list[str]:
         cols = [f"{n}_pred" for n in probe_names]
@@ -121,14 +147,53 @@ class NextActionProbeType(ProbeType):
             cols += [f"{n}_p_{a}" for n in probe_names for a in self.action_cols]
         return cols
 
+    def score(self, probes, acts, states, batch_size, device, full_probs) -> list[list]:
+        import torch
+
+        from telos_interp.commands.prepare_activations_for_probing.prepare_activations_for_probing_fn import (
+            NEXT_ACTION_TO_ID,
+        )
+
+        batch = torch.stack(acts)
+        labels = torch.tensor(states)
+        preds, corrects, ptrue, pfull = {}, {}, {}, {}
+        for name, probe in probes.items():
+            out_pred, out_p, out_full = [], [], []
+            order = [probe.label_to_idx[NEXT_ACTION_TO_ID[a]] for a in self.action_cols]
+            for i in range(0, batch.shape[0], batch_size):
+                chunk = batch[i : i + batch_size]
+                probs = probe.predict_proba(chunk).cpu()
+                idx = probs.argmax(dim=-1)
+                out_pred.append(torch.tensor([probe.idx_to_label[j.item()] for j in idx]))
+                cols = torch.tensor([probe.label_to_idx.get(int(v), 0) for v in labels[i : i + chunk.shape[0]]])
+                out_p.append(probs.gather(1, cols[:, None]).squeeze(1))
+                if full_probs:
+                    out_full.append(probs[:, order])
+            preds[name] = torch.cat(out_pred)
+            ptrue[name] = torch.cat(out_p)
+            corrects[name] = (preds[name] == labels).int()
+            if full_probs:
+                pfull[name] = torch.cat(out_full)
+
+        names = list(probes)
+        rows = []
+        for i in range(len(acts)):
+            cells = [int(preds[n][i]) for n in names]
+            cells += [int(corrects[n][i]) for n in names]
+            cells += [f"{float(ptrue[n][i]):.6f}" for n in names]
+            if full_probs:
+                cells += [f"{float(v):.6f}" for n in names for v in pfull[n][i]]
+            rows.append(cells)
+        return rows
+
 
 class GridTileProbeType(ProbeType):
     """The identity of a grid cell -- the "cognitive map" label. Many labels per token.
 
-    `max_cells` caps the fan-out: padded to the widest grid every trajectory has 225 cells,
-    and ~72k tokens x 225 is 16.2M predictions, so the default keeps a class-balanced sample.
-    The draw is seeded per (trajectory, step), never from the global stream -- two runs that
-    consume different numbers of draws would otherwise score different cells.
+    `--max-cells` decides affordability: padded to the widest grid every trajectory has 225
+    cells, and ~72k tokens x 225 is 16.2M predictions, so the default keeps a class-balanced
+    sample. The draw is seeded per (trajectory, step), never from the global stream -- two
+    runs that consume different numbers of draws would otherwise score different cells.
     """
 
     name = "grid_tile"
@@ -140,6 +205,23 @@ class GridTileProbeType(ProbeType):
 
         self.classes = tuple(sorted(CELL_ID_TO_SYMBOL))
 
+    def add_arguments(self, ap) -> None:
+        ap.add_argument(
+            "--pad-to-size",
+            type=int,
+            default=None,
+            help="Pad every grid to this width before reading cells (default: native size, "
+            "which excludes the padding class entirely).",
+        )
+        ap.add_argument(
+            "--max-cells",
+            type=int,
+            default=None,
+            help="Cap the cells scored per (trajectory, step). Padded to the widest grid a "
+            "trajectory has 225 cells and ~72k tokens x 225 is 16.2M rows per pass.",
+        )
+        ap.add_argument("--seed", type=int, default=42, help="Seeds the per-step cell draw.")
+
     def load_probe(self, path):
         from telos_interp.commands.train_cognitive_map_probe.train_cognitive_map_probe_fn import (
             CognitiveMapProbe,
@@ -147,26 +229,51 @@ class GridTileProbeType(ProbeType):
 
         return CognitiveMapProbe.load(path)
 
-    def step_payload(
-        self,
-        traj: dict,
-        step: int,
-        *,
-        pad_to_size: int | None = None,
-        max_cells: int | None = None,
-        seed: int = 42,
-        stem: str = "",
-        **kwargs,
-    ) -> StepPayload:
+    def prefix_columns(self) -> list[str]:
+        return [
+            "name",
+            "size",
+            "complexity",
+            "step",
+            "abs_pos",
+            "token_idx",
+            "token",
+            "n_cells",
+        ] + [f"n_true_{c}" for c in self.classes]
+
+    def step_state(self, traj: dict, step: int, stem: str, args):
+        import torch
+
         from telos_interp.grid_utils import parse_grid_state
 
         grid_state = traj["steps"][step].get("grid_state")
         if not grid_state:
-            return StepPayload(labels=[], cells=[])
-        triples = parse_grid_state(grid_state, pad_to_size=pad_to_size)
+            return None
+        triples = parse_grid_state(grid_state, pad_to_size=getattr(args, "pad_to_size", None))
+        max_cells = getattr(args, "max_cells", None)
         if max_cells is not None and len(triples) > max_cells:
-            triples = random.Random(f"{stem}|{step}|{seed}").sample(triples, max_cells)
-        return StepPayload(labels=[t[2] for t in triples], cells=triples)
+            triples = random.Random(f"{stem}|{step}|{getattr(args, 'seed', 42)}").sample(triples, max_cells)
+        if not triples:
+            return None
+        pos = torch.tensor([[t[0], t[1]] for t in triples], dtype=torch.float32)
+        lab = torch.tensor([t[2] for t in triples], dtype=torch.long)
+        return (pos, lab)
+
+    def row_prefix(self, stem, traj, step, abs_pos, token_idx, token, state) -> list:
+        lab = state[1]
+        hist: dict[int, int] = defaultdict(int)
+        for v in lab.tolist():
+            hist[v] += 1
+        return [
+            stem,
+            traj["grid_params"].get("grid_width", ""),
+            traj["grid_params"].get("grid_complexity", ""),
+            step,
+            abs_pos,
+            token_idx,
+            token,
+            int(lab.numel()),
+        ] + [hist.get(c, 0) for c in self.classes]
 
     def result_columns(self, probe_names: list[str], full_probs: bool) -> list[str]:
         cols: list[str] = []
@@ -174,6 +281,70 @@ class GridTileProbeType(ProbeType):
             cols += [f"{n}_n_correct", f"{n}_acc", f"{n}_mean_p_true"]
             cols += [f"{n}_correct_{c}" for c in self.classes]
         return cols
+
+    def score(self, probes, acts, states, batch_size, device, full_probs) -> list[list]:
+        """Tokens are batched together rather than scored one at a time: a token contributes C
+        rows of width D+2, and one 8k-row forward over several tokens is far cheaper than ~240
+        forwards of ~100 rows. The activation is broadcast across its own cells, so the
+        (row, col) columns are the only part that varies within a token."""
+        import torch
+
+        per_probe: dict[str, list] = {n: [] for n in probes}
+        n_tokens = len(acts)
+        i = 0
+        while i < n_tokens:
+            # Grow the batch until one more token would exceed batch_size rows.
+            j, rows_in_batch = i, 0
+            while j < n_tokens:
+                c = int(states[j][1].numel())
+                if rows_in_batch and rows_in_batch + c > batch_size:
+                    break
+                rows_in_batch += c
+                j += 1
+
+            chunk_x, chunk_y, spans = [], [], []
+            for k in range(i, j):
+                pos, lab = states[k]
+                a = acts[k].unsqueeze(0).expand(lab.numel(), -1)
+                chunk_x.append(torch.cat([a, pos], dim=1))
+                chunk_y.append(lab)
+                spans.append(lab.numel())
+            x = torch.cat(chunk_x).to(device)
+            y = torch.cat(chunk_y)
+
+            for name, probe in probes.items():
+                probs = probe.predict_proba(x).cpu()
+                pred = torch.tensor([probe.idx_to_label[t.item()] for t in probs.argmax(dim=-1)])
+                # A label the probe never saw has no column; p_true is 0 there, which is the
+                # honest reading -- the probe assigns it no mass at all.
+                cols = torch.tensor([probe.label_to_idx.get(int(v), -1) for v in y])
+                p_true = probs.gather(1, cols.clamp(min=0)[:, None]).squeeze(1)
+                p_true[cols < 0] = 0.0
+                correct = (pred == y).int()
+
+                off = 0
+                for span in spans:
+                    sl = slice(off, off + span)
+                    c_sl, y_sl = correct[sl], y[sl]
+                    pc: dict[int, int] = defaultdict(int)
+                    for v, ok in zip(y_sl.tolist(), c_sl.tolist(), strict=True):
+                        pc[v] += ok
+                    per_probe[name].append(
+                        (int(c_sl.sum()), float(c_sl.float().mean()), float(p_true[sl].mean()), dict(pc))
+                    )
+                    off += span
+            i = j
+
+        names = list(probes)
+        rows = []
+        for idx in range(n_tokens):
+            cells: list = []
+            for n in names:
+                n_correct, acc, mean_p, pc = per_probe[n][idx]
+                cells += [n_correct, f"{acc:.6f}", f"{mean_p:.6f}"]
+                cells += [pc.get(c, 0) for c in self.classes]
+            rows.append(cells)
+        return rows
 
 
 PROBE_TYPES: dict[str, type[ProbeType]] = {
