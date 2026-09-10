@@ -56,6 +56,11 @@ COUNT_NAMES=${COUNT_NAMES:-$WS/splits/lens_trajectories_3600.txt}
 COUNT_EVAL_NAMES=${COUNT_EVAL_NAMES:-$WS/splits/eval_trajectories_720.txt}
 MASS_NAMES=${MASS_NAMES:-$RT/rollout_strategies/mass_l15_names.txt}
 MASS_EVAL_NAMES=${MASS_EVAL_NAMES:-$PREPARED/next_action_mass_l15_eval_names.txt}
+# The same partition, materialised as two standalone datasets by stage `mass_era_split`.
+# MASS_EVAL_NAMES stays the pinned original: it is what every probe on disk was scored with,
+# and MASS_SPLIT_EVAL_NAMES is verified against it rather than replacing it.
+MASS_TRAIN_NAMES=${MASS_TRAIN_NAMES:-$WS/splits/mass_train_2880.txt}
+MASS_SPLIT_EVAL_NAMES=${MASS_SPLIT_EVAL_NAMES:-$WS/splits/mass_eval_720.txt}
 HELDOUT_NAMES=${HELDOUT_NAMES:-$TRAJ_ROOT/heldout360_names.txt}
 HELDOUT_TRAJ=${HELDOUT_TRAJ:-$TRAJ_ROOT/heldout360}
 
@@ -99,7 +104,7 @@ ndirs()  { [ "$(find "$1" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -n 
 STAGES="host_setup deploy_vocabularies fit_jacobian_lens cognitive_map_probes
         sentence_end_rollout sentence_end_activation_tree
         count_era_gather count_era_next_action_arms
-        mass_era_gather mass_era_next_action_probes
+        mass_era_gather mass_era_split mass_era_next_action_probes
         heldout_trees score_probes_on_heldout probe_vs_rollout
         sentence_loudness loud_rollout_arms local_belief_probes
         probe_loudness_eval720 belief_probes_commitment
@@ -123,6 +128,7 @@ meta() {
     count_era_gather)        echo "GPU|not recorded|Count-scored selective gather, then the logit-lens arm";;
     count_era_next_action_arms) echo "GPU|9h39m + 2h02m + 3h12m + 4h27m|Next-action arms: pooled 7:23, layer 15, sentence-end, three seeds";;
     mass_era_gather)         echo "GPU|2h34m|Probability-mass ranking at layer 15";;
+    mass_era_split)          echo "no|seconds|The mass-era 3,600 as two separate datasets: train 2,880 and eval 720";;
     mass_era_next_action_probes) echo "GPU|~1h|Mass-era probes: jlens top-1/2/3/all and the random control";;
     heldout_trees)           echo "GPU|45m + 6m|The held-out 360: layer-15 activations, and both lenses' tables";;
     score_probes_on_heldout) echo "GPU|~2h|Every probe on every held-out token, under both rankings";;
@@ -159,6 +165,9 @@ done_sentence_end_activation_tree() { ndirs "$ACT/activations_train_single_step_
 done_count_era_gather()        { nfiles "$ACT/jlens_reasoning_tokens" '*_logitlens_analysis.csv' 1 4; }
 done_count_era_next_action_arms() { nfiles "$PROBES/next_action_seeds" '*.pt' 18; }
 done_mass_era_gather()         { nfiles "$ACT/jlens_mass_l15" '*_direction_mass.csv' 1 4; }
+done_mass_era_split()          { [ -s "$MASS_TRAIN_NAMES" ] && [ -s "$MASS_SPLIT_EVAL_NAMES" ] \
+                                     && ndirs "$ACT/mass_train2880_view/activations" 6 \
+                                     && ndirs "$ACT/mass_eval720_view/activations" 6; }
 done_mass_era_next_action_probes() { nfiles "$PROBES/next_action_mass_l15" '*.pt' 8; }
 done_heldout_trees()           { ndirs "$ACT/heldout360_l15" 6 && nfiles "$ACT/heldout360_lens" '*_direction_mass.csv' 1 4; }
 done_score_probes_on_heldout() { [ -s "$PROBES/heldout360_all_probes.csv" ]; }
@@ -322,7 +331,7 @@ run_count_era_next_action_arms() {
 # A symlink view: 3600 activation dirs and 3600 trajectory JSONs, no bytes copied. Rebuilt only
 # when the link count is short, so a resumed run costs one readdir.
 build_eos_view() {  # build_eos_view [names-file] [view-dir]
-    x bash "$REPO/scripts/build_eos_view.sh" "${1:-$COUNT_NAMES}" "${2:-$ACT/eos_lens3600_view}"
+    x bash "$REPO/scripts/build_activation_view.sh" "${1:-$COUNT_NAMES}" "${2:-$ACT/eos_lens3600_view}"
 }
 
 # ---- stage 8: the mass-era gather ----------------------------------------------------------
@@ -335,6 +344,21 @@ run_mass_era_gather() {
     x env NAMES_FILE="$MASS_NAMES" TRAJECTORIES="$TRAJ" JLENS_DIR="$JLENS_DIR" \
         SIGNAL_JSON="$SIGNAL_JSON" ACTIVATIONS_DIR="$ACT/jlens_mass_l15" \
         bash "$REPO/scripts/jlens_mass_l15.sh"
+}
+
+# ---- stage 8b: the mass-era train/eval split ----------------------------------------------
+# The 2,880 / 720 partition every mass-era number rests on, written down instead of implied.
+# Before this it existed only as `--eval-names`: the eval half was a file, the train half was
+# "whatever is left", and a tool that walked the TREE rather than a manifest saw both at once.
+# Now each half has a name list and its own activation + trajectory view, so pointing a tool at
+# one half makes the other unreachable. Costs 7,200 symlinks and copies nothing; the source
+# tree, every prepared manifest and every recorded invocation are untouched.
+run_mass_era_split() {
+    x env WS="$WS" ACT="$ACT" PREPARED="$PREPARED" RT="$RT" TRAJ="$TRAJ" \
+        SRC_TREE="$ACT/jlens_mass_l15" MASS_NAMES="$MASS_NAMES" \
+        MASS_EVAL_NAMES="$MASS_EVAL_NAMES" \
+        TRAIN_NAMES="$MASS_TRAIN_NAMES" EVAL_NAMES="$MASS_SPLIT_EVAL_NAMES" \
+        bash "$REPO/scripts/build_mass_era_split.sh"
 }
 
 # ---- stage 9: the mass-era next-action probes ----------------------------------------------

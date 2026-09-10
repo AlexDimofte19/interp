@@ -11,6 +11,12 @@ exactly one of them -- and which one decides what its numbers may be compared ag
   heldout 360    a disjoint TREE -- no shared draw with the 3,600 at all. The stronger
                  claim, for generalisation rather than a matched comparison.
 
+The first two are read from the name lists `build_mass_era_split.sh` materialises, and each
+now has its own activation + trajectory view as well, so a tool pointed at one half cannot
+reach the other. They fall back to how this script used to recover them -- the eval list, and
+the names inside one arm's prepared manifest -- so it still runs on a host where the split has
+not been built; `verify_mass_era_split.py` is what checks the two definitions agree.
+
 This reads the `name` column of each artifact and reports what it actually is, rather than
 trusting the write-up. An artifact that lands on "all 3600" is train and eval mixed: fine
 for a rollout-vs-rollout analysis that fits no model, never comparable to a probe number.
@@ -28,9 +34,18 @@ RT = pathlib.Path("/workspace/reasoning_theatre")
 PROBES = pathlib.Path("/workspace/probes")
 
 
-def load_reference(prep: pathlib.Path, heldout_lens: pathlib.Path) -> list[tuple[str, set]]:
-    ev = set((prep / "next_action_mass_l15_eval_names.txt").read_text().split())
-    tr = {s["name"] for s in json.loads((prep / "local_belief_p2_split_train/manifest.json").read_text())["samples"]}
+SPLITS = pathlib.Path("/workspace/splits")
+
+
+def load_reference(prep: pathlib.Path, heldout_lens: pathlib.Path, splits: pathlib.Path) -> list[tuple[str, set]]:
+    train_list, eval_list = splits / "mass_train_2880.txt", splits / "mass_eval_720.txt"
+    ev = set((eval_list if eval_list.exists() else prep / "next_action_mass_l15_eval_names.txt").read_text().split())
+    if train_list.exists():
+        tr = set(train_list.read_text().split())
+    else:
+        tr = {
+            s["name"] for s in json.loads((prep / "local_belief_p2_split_train/manifest.json").read_text())["samples"]
+        }
     hd = {p.name for p in heldout_lens.glob("size*/*") if p.is_dir()}
     return [("train 2880", tr), ("eval 720", ev), ("heldout 360", hd), ("all 3600", tr | ev)]
 
@@ -49,9 +64,10 @@ def main() -> int:
     ap.add_argument(
         "--heldout-lens", type=pathlib.Path, default=pathlib.Path("/workspace/activations/heldout360_lens")
     )
+    ap.add_argument("--splits", type=pathlib.Path, default=SPLITS)
     args = ap.parse_args()
 
-    ref = load_reference(args.prepared, args.heldout_lens)
+    ref = load_reference(args.prepared, args.heldout_lens, args.splits)
     sizes = ", ".join(f"{lab}={len(s)}" for lab, s in ref)
     print(f"reference sets: {sizes}")
     tr, ev, hd = ref[0][1], ref[1][1], ref[2][1]

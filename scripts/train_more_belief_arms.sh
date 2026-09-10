@@ -108,7 +108,7 @@ fi
 # ---- arm 1: sentence ends -> belief -------------------------------------------------------
 if want eos_belief; then
     echo "[$(ts)] === eos_belief: view the existing sentence-end tree at the mass-era names ==="
-    bash "$REPO/scripts/build_eos_view.sh" "$NAMES_FILE" "$ACT_EOS_VIEW" \
+    bash "$REPO/scripts/build_activation_view.sh" "$NAMES_FILE" "$ACT_EOS_VIEW" \
         2>&1 | tee "$LOGS/eos_belief_view.txt"
 
     echo "[$(ts)] === eos_belief: prepare (token-selection all, layer 15) ==="

@@ -53,3 +53,17 @@ report rebuilds in one command.
 
 `ICLR log.txt` is append-only history and keeps every entry number, including in text that
 names the old scripts. That is correct: it records what was true when it was written.
+
+---
+
+# Script rename, 2026-09-10
+
+| old | new | why |
+|---|---|---|
+| `scripts/build_eos_view.sh` | `scripts/build_activation_view.sh` | It was never specific to the sentence-end tree -- `SRC` was always an env var. The mass-era train/eval split cuts two views out of `jlens_mass_l15` with the same script, and a name saying `eos` would have been wrong for both. |
+
+Done with `git mv`; `SRC` still defaults to the sentence-end tree, so every existing call site
+keeps its behaviour and only the path changed. The two callers
+(`reproduce_all.sh`, `train_more_belief_arms.sh`) were updated. The `build_eos_view` *function*
+inside `reproduce_all.sh` keeps its name -- it builds the eos view specifically, which is what
+it says.

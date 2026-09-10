@@ -232,6 +232,24 @@ It takes either token-major manifest despite the name; a `grid_tile` one has no 
 strata by grid size instead. `--eval-names FILE` pins the eval set to a name list, which is how arms
 prepared from different trees end up scored on the same test trajectories.
 
+**The mass-era 3,600 is two datasets, not one with a flag.** `scripts/build_mass_era_split.sh`
+materialises the partition `--eval-names` used to imply: `splits/mass_train_2880.txt` and
+`splits/mass_eval_720.txt`, plus an `activations/mass_{train2880,eval720}_view` pair holding an
+`activations/` + `trajectories/` directory each. Point a tool at one view and the other half is
+*unreachable* — which matters because everything that walks a TREE rather than a manifest (the
+rollouts, `eval_probe_per_token.py`, the loudness builds, `build_convinced_dataset.py`) saw all
+3,600 at once and stayed honest only by being handed the right `--eval-names`/`--exclude-names`.
+The link is at the trajectory level, so a view carries the gather's analysis CSV, direction-mass
+table, `.meta.json` and selection record along with the tensors. **It does not re-draw the
+split**: the 720 are byte-for-byte the pinned `next_action_mass_l15_eval_names.txt` every probe on
+disk was scored against, and the train half is their complement — verified against both that list
+and the 2,880 `audit_trajectory_sets.py` used to recover from `local_belief_p2_split_train`'s
+manifest. Nothing is moved or rewritten, so every existing `activations_root` still resolves.
+`scripts/verify_mass_era_split.py` is the contract (dangling links, closure, leakage, the two
+identities); `build_mass_era_split.sh` runs it, and `VERIFY_ONLY=1` re-checks without building.
+Note the eval 720 is a plain random draw, **not stratified** — its (size × complexity) cells run
+14–29 against the 20 a stratified draw would give, while the 3,600 is exactly 100 per cell.
+
 **The same arms with the grid label.** `scripts/prepare_grid_arms.sh` and `scripts/train_grid_arms.sh`
 are the `grid_tile` twins of the `*_next_action_arms.sh` pair: same tree, same records, same tokens,
 same layers, `train_cognitive_map_probe` instead of `train_next_action_probe`. Any difference between a
