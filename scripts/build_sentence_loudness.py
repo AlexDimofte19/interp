@@ -36,6 +36,16 @@ import math
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from telos_interp.jlens_utils import (  # noqa: E402
+    eos_positions,
+    place_token,
+    read_rollout_steps,
+    reasoning_offset,
+    sentence_of_token,
+)
+
 FIELDS = [
     "name",
     "size",
@@ -67,19 +77,6 @@ FIELDS = [
     "dir_prob_L15",
     "is_direction_token",
 ]
-
-
-def sentence_of_token(eos: list[int]) -> dict[int, int]:
-    """output-token index -> sentence index, for sentences 1.. (sentence 0 is the header)."""
-    span: dict[int, int] = {}
-    prev = eos[0]
-    for si, e in enumerate(eos):
-        if si == 0:
-            continue
-        for t in range(prev + 1, e + 1):
-            span[t] = si
-        prev = e
-    return span
 
 
 def main() -> int:
@@ -129,8 +126,7 @@ def main() -> int:
             if not mass_path.exists() or not roll_path.exists():
                 skipped["missing artifact"] = skipped.get("missing artifact", 0) + 1
                 continue
-            with open(roll_path, encoding="utf-8") as f:
-                steps = {s["step_id"]: s for s in json.load(f)["steps"]}
+            steps = read_rollout_steps(roll_path)
             # csv.DictReader, never pandas: decoded tokens include "NA", commas and newlines.
             with open(mass_path, encoding="utf-8", newline="") as f:
                 mass_rows = list(csv.DictReader(f))
@@ -145,8 +141,8 @@ def main() -> int:
                     skipped["no rollout step"] = skipped.get("no rollout step", 0) + 1
                     continue
                 evals = rec["sentence_evals"]
-                eos = [e["eos_token_pos"] for e in evals]
-                offset = eos[0] + 1  # first analysis-tagged token, i.e. reasoning_pos 0
+                eos = eos_positions(rec)
+                offset = reasoning_offset(eos)  # first analysis-tagged token, i.e. reasoning_pos 0
                 span = sentence_of_token(eos)
                 acts = [e["model_action"] for e in evals]
                 n_switch = sum(1 for a, b in zip(acts, acts[1:], strict=False) if a != b)
@@ -158,16 +154,16 @@ def main() -> int:
                 for r in rows:
                     rp = int(r["reasoning_pos"])
                     tok_idx = rp + offset
-                    si = span.get(tok_idx)
-                    if si is None:
+                    place = place_token(tok_idx, eos, span, conv)
+                    if place is None:
                         skipped["token outside every sentence"] = skipped.get("token outside every sentence", 0) + 1
                         continue
-                    start = eos[si - 1] + 1
-                    sent_len = eos[si] - start + 1
-                    pos_in = tok_idx - start
+                    si = place.sentence_idx
+                    sent_len = place.sentence_len
+                    pos_in = place.pos_in_sentence
                     lm = float(r[col])
-                    frac = (pos_in / (sent_len - 1)) if sent_len > 1 else 1.0
-                    rel = "" if conv is None else si - conv
+                    frac = place.sentence_frac
+                    rel = "" if place.rel_sentence is None else place.rel_sentence
                     w.writerow(
                         {
                             "name": name,
@@ -185,13 +181,13 @@ def main() -> int:
                             "pos_in_sentence": pos_in,
                             "sentence_len": sent_len,
                             "sentence_frac": frac,
-                            "is_sentence_end": int(tok_idx == eos[si]),
+                            "is_sentence_end": place.is_sentence_end,
                             "convinced_idx": "" if conv is None else conv,
                             "first_correct_idx": ""
                             if rec["first_correct_sentence_idx"] is None
                             else rec["first_correct_sentence_idx"],
                             "rel_sentence": rel,
-                            "x_sentence": "" if rel == "" else rel - 1 + frac,
+                            "x_sentence": "" if place.x_sentence is None else place.x_sentence,
                             "convinced_reasoning_frac": conv_frac,
                             "n_switches": n_switch,
                             "sent_model_action": evals[si]["model_action"],
