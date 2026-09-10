@@ -220,4 +220,7 @@ __marimo__/
 
 
 # Don't store activations saved under data/activations
-data/activations/scripts/out/
+data/activations/
+
+# Generated inventory output
+scripts/out/
