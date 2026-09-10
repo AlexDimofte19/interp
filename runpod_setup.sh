@@ -14,7 +14,7 @@ fi
 export PATH="$HOME/.local/bin:$PATH"
 
 # Install Claude Code
-#curl -fsSL https://claude.ai/install.sh | sh
+# curl -fsSL https://claude.ai/install.sh | sh
 
 # Install the Hugging Face CLI system-wide, so plain `hf ...` works in any
 # shell. (The project env also gets `hf` transitively via huggingface_hub;
