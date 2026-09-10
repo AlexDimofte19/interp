@@ -3845,3 +3845,99 @@ the same footing. Same-round gaps are.
 
 	ARTIFACTS: the three CSVs above, each with a .meta.json. Entry 53's four
 	*_random20 / *_jlens20 files are left in place, superseded.
+55. THE SPECIFICITY CONTROL: DIRECTION LOUDNESS DOES *NOT* PREDICT GRID-CELL
+    DECODABILITY (2026-09-10)
+
+	Entry 37(c) finding 1 says the jlens L15 direction mass predicts where the
+	NEXT ACTION is decodable, monotonically across ten deciles. The standing
+	worry that entry never closed is whether the score is direction-specific at
+	all, or merely a "this token is informative" saliency measure that would
+	flatter ANY probe. This is that control, run with the grid_tile label and
+	nothing else changed.
+
+	THE ANSWER IS NO, AND CLEANLY. Same 87,221 held-out reasoning tokens, same
+	jlens_mass_L15 column, same decile construction, 9,969,453 cell evaluations:
+
+	  probe (grid_tile, L15)   decile 1   decile 10      gap        reversals
+	  random lr                  .2821      .2597      -0.0224          2
+	  random mlp                 .3831      .3596      -0.0236          1
+
+	  ACTION reference, same tokens, same binning, matched training draw:
+	  next_action random lr      .3518      .5066      +0.1548          4
+	  next_action random mlp     .3924      .5483      +0.1559          0
+
+	The grid gap is ~15% of the action gap IN MAGNITUDE and OPPOSITE IN SIGN.
+	Direction loudness buys +15.6 points of action decodability and -2.4 points
+	of grid decodability. The score is specific to the action; it is not a
+	generic saliency measure. Entry 37's finding 1 survives its sharpest control.
+
+	The logit-lens ranking says the same thing (lr -0.0191, mlp -0.0263), so this
+	is not a property of the Jacobian lens in particular.
+
+	(a) BOTH CIs EXCLUDE ZERO, AND THAT IS NOT THE RESULT. At n=87k a 2pp gap is
+	comfortably resolvable, so "the CI excludes zero" is nearly guaranteed and
+	says almost nothing. The result is the EFFECT SIZE against the action bar.
+	analyze_grid_loudness_correlation.py now reports the gap as a fraction of
+	that reference rather than printing a bare significance verdict, because the
+	first version of it labelled -0.02 "correlated" -- true, and exactly the
+	wrong thing to take away.
+
+	(b) THE SLIGHT DECLINE IS REAL BUT SMALL, and this entry does not explain it.
+	Plausibly loud tokens sit mid-sentence where the residual is committed to an
+	action rather than to the map (entry 42's sentence-local picture), so grid
+	information is marginally crowded out. Untested.
+
+	(c) TOOLING. Two new scripts, both stdlib+torch/pandas only:
+	  scripts/eval_grid_probe_per_token.py  -- the grid twin of
+	    eval_probe_per_token.py. One row per (trajectory, step, token), NOT per
+	    cell: a token owns C cells and each row carries n_true_{c} /
+	    correct_{c} per class, so balanced accuracy for any bucket is a group-by
+	    over per-class counts. Emitting per-cell rows would multiply the file
+	    ~100x and buy nothing.
+	  scripts/analyze_grid_loudness_correlation.py -- decile table, Spearman,
+	    reversal count, and a trajectory-clustered bootstrap of the gap that
+	    RECOMPUTES the decile edges inside each resample.
+
+	(d) TWO LANDMINES, ONE OLD AND ONE NEW.
+
+	  * Entry 34's open landmine is CONFIRMED LIVE and worked around, not fixed.
+	    --balance-classes-per-trajectory takes samples_per_class = min(...,
+	    min_count), and every grid holds exactly one A and one G, so min_count is
+	    1 and a --max-positions-per-trajectory 25 request yields FOUR cells per
+	    (trajectory, step), one per class present. Verified directly. This round
+	    used a plain cap with no per-trajectory balancing (25 cells, natural mix)
+	    and let --class-weight balanced handle imbalance at train time, which is
+	    exactly the fix entry 34 proposed. scripts/prepare_grid_arms.sh STILL
+	    DEFAULTS TO THE BROKEN COMBINATION -- fix it before the grid arm sweep.
+
+	  * NEW, and it invalidates a natural reading of entry 37(b). "Overlap with
+	    the trained-on 3600: ZERO" is true of the MASS-ERA tree
+	    (/workspace/activations/jlens_mass_l15) and ONLY that tree. heldout360
+	    shares 33 trajectories with the COUNT-ERA tree
+	    (/workspace/activations/jlens_reasoning_tokens), and the two 3600-trees
+	    share 348 with each other. They are NOT interchangeable. A first grid
+	    probe trained on the count-era tree was discarded for this reason and
+	    retrained on the mass tree, which also buys label-only parity with the
+	    next_action_mass_l15.* probes this entry compares against.
+	    Corollary: /workspace/splits/eval_trajectories_720.txt pins COUNT-ERA
+	    names -- only 63 of its 720 exist in the mass tree, and
+	    split_next_action_manifest.py correctly refuses it there. The mass tree
+	    needs a seeded --eval-split, not that file.
+
+	CAVEATS. Layer 15 only. The grid label is static within a step while the
+	action label is what the model is deciding, so the two are not symmetric in
+	difficulty -- this shows loudness fails to predict the grid, not that the
+	grid is equally predictable in principle. The grid probe's held-out balanced
+	accuracy (.359 mlp over 4 real classes) is not comparable to its internal
+	eval (.540 over 5, padding included); prepare pads to 15 so padding is a
+	trained class, while the eval scores each grid at NATIVE size where no cell
+	is padding. Padding is trivially predictable from (row, col) and would
+	dilute every decile equally, which is why it is excluded.
+
+	ARTIFACTS:
+	  /workspace/probes/grid_mass_l15/grid_probe_random_l15_{lr,mlp}.pt
+	    (input_dim 2882 = one L15 activation + row + col; internal eval
+	     balanced acc .4051 / .5400)
+	  /workspace/probes/grid_mass_l15/heldout360_grid_per_token.csv (87,221 rows)
+	  /workspace/probes/grid_mass_l15/grid_loudness_{jlens,logitlens}_L15.json
+	  /workspace/prepared/grid_mass_l15_random{,_split_train,_split_eval}
