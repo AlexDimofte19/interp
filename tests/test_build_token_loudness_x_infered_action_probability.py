@@ -1,4 +1,4 @@
-"""Tests for scripts/build_token_loudness_x_infered_action_probability.py.
+"""Tests for telos_interp/loudness_analysis/join_rollout_answers.py.
 
 The join is arithmetically trivial and silently wrong in exactly one way: the mass tables are
 indexed by ``reasoning_pos``, which counts only the ANALYSIS-tagged output tokens, while the
@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-build = importlib.import_module("scripts.build_token_loudness_x_infered_action_probability")
+build = importlib.import_module("telos_interp.loudness_analysis.join_rollout_answers")
 
 NAME = "together_ai_openai_gpt-oss-20b_size5_comp0.0_1"
 

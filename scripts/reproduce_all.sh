@@ -451,12 +451,12 @@ run_probe_vs_rollout() {
 # statements and never an accuracy number. The header offset when placing a token in its
 # sentence is eos[0] + 1 per trajectory, not a constant.
 run_sentence_loudness() {
-    x $UVC python "$REPO/scripts/build_sentence_loudness.py" \
+    x $UVC python "$REPO/telos_interp/loudness_analysis/build_sentence_loudness.py" \
         --lens-root "$ACT/jlens_mass_l15" --probs-root "$RT/trajectories_train_single_step_probs" \
         --eval-names "$MASS_EVAL_NAMES" --direction-tokens-path "$SIGNAL_JSON" \
         --out "$RT/loudness/per_token.csv"
     x $UVC python "$REPO/telos_interp/loudness_analysis/plotting/figures.py" \
-        --per-token "$RT/loudness/per_token.csv" --out "$RT/loudness"
+        --distribution-table "$RT/loudness/per_token.csv" --out "$RT/loudness"
     x $UVC python "$REPO/telos_interp/loudness_analysis/analysis/loudness_distribution.py" \
         --per-token "$RT/loudness/per_token.csv" --out "$RT/loudness"
 }
@@ -534,11 +534,24 @@ lb_train() {  # lb_train <tag> <prepared-local> <extra-split-flags>
 # crossover -- do NOT survive the selection-free version in stage 19. Inside a fixed top-K arm
 # loudness correlates +0.42 with chain length, so read the chain-length-quartile control.
 run_probe_loudness_eval720() {
-    x $UV python "$REPO/scripts/build_probe_loudness.py" --out "$RT/probe_loudness/per_token.csv"
+    # build_probe_loudness.py is gone: it loaded probes and ran torch inline over the eval
+    # manifests. The same left table comes from the evaluator, and the join that follows is
+    # then CPU-only -- which is what lets a second lens ruler be produced without the GPU.
+    x $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" \
+        --probe "$RT/local_belief_probes/probes/local_belief_p1_lr.pt" --probe "$RT/local_belief_probes/probes/local_belief_p1_mlp.pt" \
+        --probe "$RT/local_belief_probes/probes/local_belief_p2_lr.pt" --probe "$RT/local_belief_probes/probes/local_belief_p2_mlp.pt" \
+        --activations-dir "$ACT/mass_eval720_view/activations" \
+        --lens-dir "$ACT/mass_eval720_view/activations" \
+        --trajectories-dir "$TRAJ" --signal-json "$SIGNAL_JSON" \
+        --layer 15 --full-probs --out "$RT/probe_loudness/probe_per_token.csv"
+    x $UVC python "$REPO/telos_interp/loudness_analysis/join_rollouts.py" \
+        --table "$RT/probe_loudness/probe_per_token.csv" \
+        --rollout-dir "$RT/rollout_strategies/eos" \
+        --out "$RT/probe_loudness/per_token.csv"
     x $UVC python "$REPO/telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py" \
         --per-token "$RT/probe_loudness/per_token.csv" --out "$RT/probe_loudness"
     x $UVC python "$REPO/telos_interp/loudness_analysis/plotting/figures.py" \
-        --per-token "$RT/probe_loudness/per_token.csv" --out "$RT/probe_loudness/plots"
+        --probe-table "$RT/probe_loudness/per_token.csv" --out "$RT/probe_loudness/plots"
 }
 
 # ---- stage 17: the commitment boundary, re-read ---------------------------------------------
@@ -584,7 +597,7 @@ run_probe_loudness_heldout() {
     x $UVC python "$REPO/telos_interp/loudness_analysis/join_rollouts.py" \
         --probe-csv "$out/heldout360_10probes.csv" --out "$out/per_token.csv"
     x $UVC python "$REPO/telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py" --per-token "$out/per_token.csv" --out "$out"
-    x $UVC python "$REPO/telos_interp/loudness_analysis/plotting/figures.py" --per-token "$out/per_token.csv" --out "$out/plots"
+    x $UVC python "$REPO/telos_interp/loudness_analysis/plotting/figures.py" --probe-table "$out/per_token.csv" --out "$out/plots"
 }
 
 # ---- stage 20: the logit-lens mass tree ----------------------------------------------------

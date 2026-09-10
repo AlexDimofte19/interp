@@ -114,12 +114,12 @@ $UV python "$REPO/telos_interp/loudness_analysis/analysis/probe_accuracy_by_loud
 
 echo "=== step 6c: figures (jlens loudness)"
 $UV python "$REPO/telos_interp/loudness_analysis/plotting/figures.py" \
-    --per-token "$OUT/per_token.csv" --out "$OUT/plots" --extra-probes "$EXTRA_PLOT" \
+    --probe-table "$OUT/per_token.csv" --out "$OUT/plots" --extra-probes "$EXTRA_PLOT" \
     2>&1 | tee "$OUT/logs/step6c_plot.log"
 
 echo "=== step 6c': figures (logitlens loudness)"
 $UV python "$REPO/telos_interp/loudness_analysis/plotting/figures.py" \
-    --per-token "$OUT/per_token_logitlens_loudness.csv" --out "$OUT/plots_logitlens_loudness" \
+    --probe-table "$OUT/per_token_logitlens_loudness.csv" --out "$OUT/plots_logitlens_loudness" \
     --extra-probes "$EXTRA_PLOT" \
     2>&1 | tee "$OUT/logs/plot_logitlens_loudness.log"
 

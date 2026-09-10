@@ -177,7 +177,7 @@ def sentence_spans(eos_positions: list[int]) -> list[tuple[int, int]]:
 
     ``eos_positions[0]`` is the no-reasoning cutoff (the analysis header) and owns no
     reasoning tokens, so sentence *i* spans ``eos[i - 1] + 1 .. eos[i]``. Mirrors
-    ``scripts/build_sentence_loudness.py::sentence_of_token``. That first entry is always
+    ``telos_interp/loudness_analysis/build_sentence_loudness.py::sentence_of_token``. That first entry is always
     present here because harmony output always opens the channel with
     ``<|channel|>analysis<|message|>``, so reasoning never starts at index 0.
     """

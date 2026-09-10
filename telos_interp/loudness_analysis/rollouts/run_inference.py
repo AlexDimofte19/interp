@@ -182,7 +182,7 @@ def build_step_prompts(
     step identity needed to assemble the record later, so generation can be decoupled from
     step boundaries (see ``generate_actions``). ``meta["eos_positions"]`` is kept as the
     plain list of cut positions under its historical name, since downstream joins
-    (``scripts/build_sentence_loudness.py``, ``scripts/build_probe_rollout_join.py``) key
+    (``telos_interp/loudness_analysis/build_sentence_loudness.py``, ``scripts/build_probe_rollout_join.py``) key
     on ``eos_token_pos``.
 
     Propagates ``LoudnessUnavailable`` so the caller can skip the whole trajectory.

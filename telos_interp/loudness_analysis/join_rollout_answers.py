@@ -41,15 +41,13 @@ import math
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from telos_interp.loudness_analysis.rollouts.truncation_strategies import (  # noqa: E402
+from telos_interp.jlens_utils import read_mass_meta
+from telos_interp.loudness_analysis.rollouts.truncation_strategies import (
     KIND_NO_REASONING,
     LoudnessUnavailable,
     MassTableLoudness,
     analysis_positions,
 )
-from telos_interp.jlens_utils import read_mass_meta  # noqa: E402
 
 # csv.DictReader everywhere, never pandas: decoded tokens include "NA", empty strings,
 # embedded commas and newlines, which pandas' NA handling silently corrupts.

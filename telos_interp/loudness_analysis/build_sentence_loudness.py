@@ -36,9 +36,7 @@ import math
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from telos_interp.jlens_utils import (  # noqa: E402
+from telos_interp.jlens_utils import (
     eos_positions,
     place_token,
     read_rollout_steps,

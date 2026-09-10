@@ -56,8 +56,7 @@ import numpy as np  # noqa: E402
 # tables it is read beside can never drift apart. (Mean per-class recall over the classes
 # PRESENT in the cell -- a plain accuracy would move with the cell's class mix, and the loud
 # cells are direction-word-heavy.)
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from analyze_probe_loudness import bal_acc  # noqa: E402
+from telos_interp.loudness_analysis.plotting._style import bal_acc  # noqa: E402
 
 # csv.DictReader everywhere, never pandas.read_csv: decoded tokens include "NA", empty strings,
 # embedded commas and newlines, which pandas' NA handling silently corrupts.
