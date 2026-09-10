@@ -51,7 +51,7 @@ here" section below is the round-2 grid-probing thread and is older than all of 
 **What is committed, as of entry 48.** The truncation-strategy line is now in the repo:
 `telos_interp/loudness_analysis/rollouts/{truncation_strategies.py, run_inference.py, run_inference_strategies.sh,
 rollout_status.sh}`, `tests/test_truncation_strategies.py`, plus
-`scripts/build_probe_loudness_heldout.py`. Entry 45's scripts are still outside the repo
+`telos_interp/loudness_analysis/join_rollouts.py`. Entry 45's scripts are still outside the repo
 (see *Where things live / what needs merging*), and the round-2 grid-probing working state
 below is still uncommitted.
 
@@ -502,7 +502,7 @@ Three stdlib+pandas scripts, no GPU, all reading artifacts that already exist:
 ```bash
 .venv/bin/python scripts/build_sentence_loudness.py    # -> loudness/per_token.csv  (~1m45s)
 .venv/bin/python scripts/plot_sentence_loudness.py     # -> loudness/plots|tables   (22 figures)
-.venv/bin/python scripts/analyze_sentence_loudness.py  # -> loudness/summary.json
+.venv/bin/python telos_interp/loudness_analysis/analysis/loudness_distribution.py  # -> loudness/summary.json
 ```
 
 Output root `/workspace/reasoning_theatre/loudness/`. Report:
@@ -770,7 +770,7 @@ Report: <https://claude.ai/code/artifact/2e873b12-7c49-4ac6-b861-9c2a7aa707f0>
 
 ```bash
 python scripts/build_probe_loudness.py     # -> probe_loudness/per_token.csv  (~15 min)
-python scripts/analyze_probe_loudness.py   # -> summary.json, tables/ (18 CSVs)
+python telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py   # -> summary.json, tables/ (18 CSVs)
 python scripts/plot_probe_loudness.py      # -> plots/ (20 figures)
 ```
 
@@ -959,8 +959,8 @@ OUT_ROOT=/workspace/reasoning_theatre/rollout_strategies_heldout360 \
 # 2. all ten probes in one pass                                      (1h40m)
 python telos_interp/loudness_analysis/score_probes_per_token.py --probe ...x10 --full-probs ...
 # 3. join -> entry 46's exact schema, then analyze/plot UNEDITED
-python scripts/build_probe_loudness_heldout.py
-python scripts/analyze_probe_loudness.py --per-token <out>/per_token.csv --out <out>
+python telos_interp/loudness_analysis/join_rollouts.py
+python telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py --per-token <out>/per_token.csv --out <out>
 python scripts/plot_probe_loudness.py    --per-token <out>/per_token.csv --out <out>/plots
 ```
 
@@ -1125,7 +1125,7 @@ No GPU. Re-running step 6a of `build_sixteen_probe_loudness_report.sh` is the wh
 6b/6c for the tables and figures, once per lens:
 
 ```bash
-python scripts/build_probe_loudness_heldout.py --probe-csv "$OUT/heldout360_16probes.csv" \
+python telos_interp/loudness_analysis/join_rollouts.py --probe-csv "$OUT/heldout360_16probes.csv" \
     --out "$OUT/per_token.csv" --extra-probes "$EXTRA_BUILD"      # ~2 min
 ```
 
@@ -1242,7 +1242,7 @@ python telos_interp/loudness_analysis/score_probes_per_token.py --probe-type gri
     --activations-dir /workspace/activations/heldout360_l15 \
     --lens-dir /workspace/activations/heldout360_lens \
     --signal-json /workspace/jlens/direction_tokens_full.json --layer 15 ...
-python grid_cell_analysis/analyze_grid_loudness_correlation.py <per_token.csv> --score jlens_mass_L15
+python telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py --probe-type grid_tile <per_token.csv> --score jlens_mass_L15
 ```
 
 Two trees on purpose: `heldout360_l15` holds the layer-15 `.pt` for every reasoning token,
@@ -1256,7 +1256,7 @@ Two trees on purpose: `heldout360_l15` holds the layer-15 `.pt` for every reason
   `n_true_{c}` / `correct_{c}` per class and balanced accuracy for any bucket is a group-by
   over per-class counts. Per-cell rows would multiply the file ~100× and buy nothing.
   Has `--exclude-names` for the partly-overlapping-tree case below.
-- `grid_cell_analysis/analyze_grid_loudness_correlation.py` — decile table, Spearman, reversal count,
+- `telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py --probe-type grid_tile` — decile table, Spearman, reversal count,
   and a trajectory-clustered bootstrap of the gap that **recomputes the decile edges inside
   each resample** (the edges are themselves a function of the sample).
 

@@ -572,7 +572,7 @@ does not win there. Zero reversals under either ruler.
 
 ## 9c. Isolating the direction words (entry 49)
 
-`scripts/analyze_direction_word_isolation.py` → `direction_words/` (3 tables, 5 figures,
+`telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py --exclude-signal-words` → `direction_words/` (3 tables, 5 figures,
 `summary.json`). The standing confound: a lens calls a token loud partly because the model has
 already *written* a direction word there. Tested twice before (entry 37(2) inside the selected
 top-20 against the final label; entry 46 on eval-720) — here with the selection gone, the belief

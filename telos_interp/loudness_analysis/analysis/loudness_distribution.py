@@ -14,8 +14,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from telos_interp.loudness_analysis import columns as _cols
+from telos_interp.loudness_analysis import provenance as _prov
+
 COMPLEXITIES = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
-VAL = "dir_prob_L15"
+VAL = "loudness_prob"
 
 
 def boot_mean(g: pd.DataFrame, value: str, n: int, rng) -> tuple[float, float, float]:
@@ -47,6 +50,47 @@ def paired_open(df: pd.DataFrame, a: int, b: int, value: str, n: int, rng) -> di
     }
 
 
+def lens_agreement(path, args) -> dict:
+    """Correlation between two lenses' loudness on the same rows, or {} if only one is present.
+
+    At layer 15 the two lenses' top-20 sets overlap only about half, so this is what says
+    whether a result binned by one ruler would survive the other.
+    """
+    header = pd.read_csv(path, nrows=0, keep_default_na=False).columns.tolist()
+    try:
+        a = _cols.resolve(header, args.lens, args.signal_name, args.layer)
+        b = _cols.resolve(header, args.compare_lens, args.signal_name, args.layer)
+    except KeyError:
+        return {}
+    if a == b:
+        return {}
+
+    member = _cols.membership_column(args.signal_name)
+    want = [c for c in (a, b, member, "is_direction_token") if c in header]
+    d = pd.read_csv(path, usecols=want, keep_default_na=False, na_values=[""])
+    flag = member if member in d.columns else ("is_direction_token" if "is_direction_token" in d.columns else None)
+
+    def pair(sub: pd.DataFrame) -> dict:
+        return {
+            "n": int(len(sub)),
+            "pearson": float(sub[a].corr(sub[b])),
+            "spearman": float(sub[a].corr(sub[b], method="spearman")),
+        }
+
+    out = {
+        "lens_a": args.lens,
+        "lens_b": args.compare_lens,
+        "column_a": a,
+        "column_b": b,
+        "all_tokens": pair(d),
+    }
+    if flag:
+        # Agreement carried entirely by the words the model already typed is not agreement
+        # about the residual stream.
+        out["excluding_signal_words"] = pair(d[d[flag].astype(int) == 0])
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--per-token", type=Path, default=Path("/workspace/reasoning_theatre/loudness/per_token.csv"))
@@ -54,6 +98,41 @@ def main() -> int:
     ap.add_argument("--min-sentence-len", type=int, default=5)
     ap.add_argument("--min-sentences", type=int, default=5)
     ap.add_argument("--boot", type=int, default=500)
+    ap.add_argument(
+        "--lens",
+        default="jlens",
+        help="Which lens's loudness is being profiled (default: %(default)s). Named in every "
+        "table and caption -- an unqualified 'loudness' is not a quantity.",
+    )
+    ap.add_argument("--signal-name", default="direction", help="Which vocabulary (default: %(default)s).")
+    ap.add_argument(
+        "--compare-lens",
+        default="logitlens",
+        help="Second lens to correlate the first against, when the table carries both "
+        "(default: %(default)s). Skipped silently when only one ruler is present.",
+    )
+    ap.add_argument("--layer", type=int, default=15, help="Layer the loudness is read at.")
+    ap.add_argument(
+        "--loudness-column",
+        default=None,
+        help="Read this column as the value instead of the one --lens/--signal-name/--layer "
+        "imply. Legacy spellings are resolved automatically.",
+    )
+    ap.add_argument(
+        "--exclude-signal-words",
+        action="store_true",
+        help="Drop rows whose token is a signal word before anything else, and produce the "
+        "SAME tables from what is left. The per-regime breakdown below always reports the "
+        "filtered variants too; this makes the filter the whole analysis rather than one row "
+        "of it.",
+    )
+    ap.add_argument(
+        "--exclude-radius",
+        type=int,
+        default=0,
+        help="With --exclude-signal-words, also drop rows within N tokens of a signal word "
+        "(0 = only the word itself).",
+    )
     args = ap.parse_args()
     rng = np.random.default_rng(0)
 
@@ -68,18 +147,56 @@ def main() -> int:
         "n_sentences",
         "convinced_idx",
         "convinced_reasoning_frac",
-        "is_direction_token",
+        "is_signal_word",
         VAL,
     ]
-    ref = pd.read_csv(args.per_token, usecols=cols, keep_default_na=False, na_values=[""])
+    # Resolve what this table actually calls the two signal columns before asking for them by
+    # name: a table written before the naming convention spells them dir_prob_L15 and
+    # is_direction_token, and usecols on a missing name is a hard failure.
+    header = pd.read_csv(args.per_token, nrows=0, keep_default_na=False).columns.tolist()
+    member_col = _cols.membership_column(args.signal_name)
+    if member_col not in header:
+        member_col = "is_direction_token" if "is_direction_token" in header else "is_signal_word"
+    if args.loudness_column:
+        value_col = args.loudness_column
+    elif VAL in header:
+        value_col = VAL
+    else:
+        prob = _cols.prob_column(args.lens, args.signal_name, args.layer)
+        value_col = prob if prob in header else "dir_prob_L15"
+    if value_col not in header:
+        raise SystemExit(
+            f"{args.per_token} has no loudness value column; looked for {VAL!r}, "
+            f"{_cols.prob_column(args.lens, args.signal_name, args.layer)!r} and 'dir_prob_L15'. "
+            "Pass --loudness-column."
+        )
+
+    on_disk = [value_col if c == VAL else member_col if c == "is_signal_word" else c for c in cols]
+    ref = pd.read_csv(args.per_token, usecols=on_disk, keep_default_na=False, na_values=[""])
+    ref = ref.rename(columns={value_col: VAL, member_col: "is_signal_word"})
     ref = ref.sort_values(["name", "reasoning_pos"])
-    # `is_direction_token` flags the token the MODEL EMITTED, so dropping those rows asks whether the
-    # boundary bump survives where the model is not writing a direction word. It does not control for
+
+    n_before = len(ref)
+    if args.exclude_signal_words:
+        drop = ref["is_signal_word"].astype(int).astype(bool)
+        if args.exclude_radius > 0:
+            grouped = ref["is_signal_word"].astype(int).groupby(ref["name"])
+            for shift in range(1, args.exclude_radius + 1):
+                drop |= grouped.shift(shift).fillna(0).astype(bool)
+                drop |= grouped.shift(-shift).fillna(0).astype(bool)
+        ref = ref[~drop].copy()
+        print(
+            f"--exclude-signal-words (radius {args.exclude_radius}): "
+            f"{n_before} -> {len(ref)} rows ({n_before - len(ref)} dropped)",
+            flush=True,
+        )
+    # `is_signal_word` flags the token the MODEL EMITTED, so dropping those rows asks whether the
+    # boundary bump survives where the model is not writing a signal word. It does not control for
     # PROXIMITY: the lens predicts the next tokens, so the token just before " up" is loud without
-    # being a direction word itself. near{k} widens the exclusion to a +-k window, which is the
+    # being a signal word itself. near{k} widens the exclusion to a +-k window, which is the
     # control that actually separates "the residual stream is direction-loaded here" from "a
-    # direction word is about to be written".
-    flag = ref.groupby("name")["is_direction_token"]
+    # signal word is about to be written".
+    flag = ref.groupby("name")["is_signal_word"]
     for k in (1, 2, 3):
         near = np.zeros(len(ref), dtype=bool)
         for shift in range(-k, k + 1):
@@ -166,22 +283,22 @@ def main() -> int:
     mid = long[(long["reasoning_frac"] > 0.2) & (long["reasoning_frac"] < 0.8)]
     subsets = {
         "all tokens": long,
-        "token is not a direction word": long[long["is_direction_token"] == 0],
-        "no direction word within +-1": long[~long["near1"]],
-        "no direction word within +-2": long[~long["near2"]],
-        "no direction word within +-3": long[~long["near3"]],
+        "token is not a signal word": long[long["is_signal_word"] == 0],
+        "no signal word within +-1": long[~long["near1"]],
+        "no signal word within +-2": long[~long["near2"]],
+        "no signal word within +-3": long[~long["near3"]],
     }
     out["boundary_step"] = {
         "whole sentence, rel -1 -> 0": paired_sentence(long, -1, 0),
         "whole sentence, rel -1 -> +1": paired_sentence(long, -1, 1),
         "mid-chain only, rel -1 -> 0": paired_sentence(mid, -1, 0),
-        "non-direction tokens, rel -1 -> 0": paired_sentence(subsets["token is not a direction word"], -1, 0),
-        "direction-token share, rel -1 -> 0": paired_sentence(long, -1, 0, "is_direction_token"),
+        "non-direction tokens, rel -1 -> 0": paired_sentence(subsets["token is not a signal word"], -1, 0),
+        "signal-word share, rel -1 -> 0": paired_sentence(long, -1, 0, "is_signal_word"),
         "placebo: rel -2 -> -1": paired_sentence(long, -2, -1),
         "placebo: rel -3 -> -2": paired_sentence(long, -3, -2),
     }
     # Each exclusion re-run with its own placebos: a step that shrinks toward its placebo is
-    # a step that was mostly proximity to a verbalized direction word.
+    # a step that was mostly proximity to a verbalized signal word.
     out["verbalization_proximity"] = {
         label: {
             "tokens_kept": float(len(g) / len(long)),
@@ -213,7 +330,39 @@ def main() -> int:
         m, lo, hi = boot_mean(g, VAL, args.boot, rng)
         prof.append({"x": float((edges[b] + edges[b + 1]) / 2), "n": int(len(g)), "mean": m, "lo": lo, "hi": hi})
     out["chain_profile"] = prof
+    agreement = lens_agreement(args.per_token, args)
+    if agreement:
+        out["lens_agreement"] = agreement
+        print(
+            f"lens agreement {agreement['lens_a']} vs {agreement['lens_b']}: "
+            f"pearson {agreement['all_tokens']['pearson']:.3f}",
+            flush=True,
+        )
     (args.out / "summary.json").write_text(json.dumps(out, indent=2))
+
+    cfg = _prov.RunConfig("loudness_analysis/analysis/loudness_distribution.py")
+    cfg.measurement(lens=args.lens, signal=args.signal_name, layer=args.layer)
+    cfg.input("per_token", args.per_token)
+    cfg.params.update(
+        {
+            "min_sentence_len": args.min_sentence_len,
+            "min_sentences": args.min_sentences,
+            "exclude_signal_words": args.exclude_signal_words,
+            "exclude_radius": args.exclude_radius,
+        }
+    )
+    cfg.aggregation(
+        statistic="mean loudness on the probability scale",
+        resolved_value_column=value_col,
+        resolved_membership_column=member_col,
+        bootstrap="trajectory-clustered",
+        n_boot=args.boot,
+        seed=0,
+    )
+    cfg.rows("input", n_before)
+    cfg.rows("after_signal_word_filter", len(ref))
+    cfg.guard(args.out, "lens", "signal", "layer")
+    cfg.write(args.out)
 
     pd.set_option("display.width", 250)
     print(tab[tab["complexity"] == "all"].to_string(index=False))

@@ -134,7 +134,7 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | `analyze_truncation_strategies.py` (356L) | Compares the rollout arms on one table of cutoffs. | `RT/rollout_strategies`, `ACT/jlens_mass_l15`, `TRAJ` | `--output-dir/*.csv` + `summary.json` |
 | `analyze_direction_word_isolation.py` (408L) | The direction-word confound: does loudness just read a word the model typed? | `RT/probe_loudness_heldout360_16probes/per_token_{jlens,logitlens}_loudness.csv` | `tables/` + `plots/` + `summary.json` |
 | `analyze_jlens_direction_classes.py` (279L) | The lens read through the full direction vocabulary, split by class. | `RT/probe_vs_rollout/per_token.csv`, direction JSON | `RT/probe_vs_rollout/q4v_*.csv` |
-| `grid_cell_analysis/analyze_grid_loudness_correlation.py` (226L) | The specificity control: direction loudness vs. **grid** decodability. | an `eval_grid_probe_per_token.py` CSV | `--out` tables |
+| `telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py --probe-type grid_tile` (226L) | The specificity control: direction loudness vs. **grid** decodability. | an `eval_grid_probe_per_token.py` CSV | `--out` tables |
 
 ## H. Figures
 

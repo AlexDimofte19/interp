@@ -172,6 +172,115 @@ def _prepare(df: pd.DataFrame, args) -> tuple[pd.DataFrame, str, int, int]:
     return df, mass_col, n_before, len(df)
 
 
+# ---------------------------------------------------------------------------------------------
+# Counts mode: a raw evaluator table, where one row summarises many predictions.
+# ---------------------------------------------------------------------------------------------
+
+
+def decile_table(df: pd.DataFrame, probe: str, score: str, n_bins: int) -> pd.DataFrame:
+    """Balanced accuracy per loudness bin, rebuilt from the per-class count columns."""
+    d = df.copy()
+    d["bin"] = qbin(d[score], n_bins, labels=False)
+    rows = []
+    for b, g in d.groupby("bin", observed=True):
+        ba, recalls = _stats.bal_acc_from_counts(g, probe, CLASSES)
+        rows.append(
+            {
+                "bin": int(b),
+                "n_tokens": int(len(g)),
+                "n_traj": int(g["name"].nunique()),
+                "mean_logmass": float(g[score].mean()),
+                "balanced_acc": ba,
+                "plain_acc": _stats.plain_accuracy(g, probe),
+                "n_classes_with_support": len(recalls),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("bin").reset_index(drop=True)
+
+
+def gap_bootstrap(df: pd.DataFrame, probe: str, score: str, n_bins: int, n_boot: int, seed: int) -> dict:
+    """Trajectory-clustered bootstrap of (top bin BA - bottom bin BA).
+
+    The bins are recomputed inside each resample: the decile edges are themselves a function
+    of the sample, and holding them fixed would understate the spread.
+    """
+    names = df["name"].unique()
+    rng = np.random.default_rng(seed)
+    by_name = dict(df.groupby("name").__iter__())
+    draws = []
+    for _ in range(n_boot):
+        pick = rng.choice(len(names), size=len(names), replace=True)
+        rs = pd.concat([by_name[names[i]] for i in pick], ignore_index=True)
+        t = decile_table(rs, probe, score, n_bins)
+        if len(t) < 2:
+            continue
+        draws.append(t["balanced_acc"].iloc[-1] - t["balanced_acc"].iloc[0])
+    if not draws:
+        return {}
+    base = decile_table(df, probe, score, n_bins)
+    return {
+        "gap": float(base["balanced_acc"].iloc[-1] - base["balanced_acc"].iloc[0]),
+        "lo": float(np.percentile(draws, 2.5)),
+        "hi": float(np.percentile(draws, 97.5)),
+        "n_boot": len(draws),
+    }
+
+
+def verdict(gap: float, lo: float, hi: float, reference: float) -> str:
+    """Read the gap as an EFFECT SIZE against a reference, not as a significance test.
+
+    At 87k tokens a 2pp gap is comfortably resolvable, so "the CI excludes zero" is nearly
+    guaranteed and says almost nothing on its own -- reporting it alone would call a -0.02
+    drift "correlated" and invite exactly the wrong conclusion. What a specificity question
+    turns on is whether the gap approaches the matched same-token, same-layer reference.
+    """
+    if lo <= 0 <= hi:
+        return f"straddles zero: no detectable trend (reference gap {reference:+.3f})"
+    direction = "RISES with loudness" if gap > 0 else "FALLS slightly as loudness rises"
+    frac = abs(gap) / abs(reference) if reference else float("inf")
+    if gap < 0:
+        return (
+            f"{direction}; |gap| is {frac:.0%} of the reference {reference:+.3f} "
+            "and OPPOSITE in sign -> loudness does not predict this label"
+        )
+    if frac < 0.25:
+        return f"{direction} but |gap| is only {frac:.0%} of the reference {reference:+.3f} -> far weaker"
+    return f"{direction}, {frac:.0%} of the reference {reference:+.3f} -> comparable to the reference effect"
+
+
+def run_counts_mode(df: pd.DataFrame, args, ptype) -> dict:
+    """The whole analysis for a per-cell probe type, on a raw evaluator table."""
+    probes = sorted({c.rsplit("_n_correct", 1)[0] for c in df.columns if c.endswith("_n_correct")})
+    if args.probes_filter:
+        probes = [p for p in probes if p in args.probes_filter]
+    if not probes:
+        raise SystemExit(
+            "no probe columns found: a counts-mode table needs {probe}_n_correct and "
+            "{probe}_correct_{class} columns, as score_probes_per_token.py --probe-type "
+            f"{args.probe_type} writes. Columns present: {sorted(df.columns)[:12]}..."
+        )
+    print(f"counts mode ({args.probe_type}): {len(probes)} probe(s) over {len(df)} rows", flush=True)
+
+    out: dict = {"mode": "counts", "probe_type": args.probe_type, "probes": probes, "bins": {}}
+    (args.out / "tables").mkdir(parents=True, exist_ok=True)
+    for probe in probes:
+        table = decile_table(df, probe, "loudness", args.deciles)
+        table.to_csv(args.out / "tables" / f"{probe}_by_loudness_decile.csv", index=False)
+        gap = gap_bootstrap(df, probe, "loudness", args.deciles, args.boot, 0)
+        entry = {
+            "table": table.to_dict(orient="records"),
+            "gap": gap,
+            "spearman_loudness_vs_accuracy": (
+                _stats.spearman(df, "loudness", f"{probe}_acc") if f"{probe}_acc" in df.columns else None
+            ),
+        }
+        if gap:
+            entry["verdict"] = verdict(gap["gap"], gap["lo"], gap["hi"], args.reference_gap)
+            print(f"  {probe}: {entry['verdict']}", flush=True)
+        out["bins"][probe] = entry
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
@@ -246,6 +355,20 @@ def main() -> int:
         help="JSON of {class: [tokens]} defining the signal words for --exclude-signal-words. "
         "Defaults to the table's own is_<signal>_token column when it has one.",
     )
+    ap.add_argument(
+        "--reference-gap",
+        type=float,
+        default=0.1559,
+        help="Effect size the counts-mode gap is read against (default: the matched action "
+        "gap from next_action_mass_l15.random_topall_mlp). A gap is reported as a fraction "
+        "of this, not as a significance test.",
+    )
+    ap.add_argument(
+        "--probes-filter",
+        default="",
+        type=lambda s: [x.strip() for x in s.split(",") if x.strip()],
+        help="Restrict counts mode to these probe keys (default: every probe in the table).",
+    )
     args = ap.parse_args()
     extra = [t.strip() for t in args.extra_probes.split(",") if t.strip()]
     if extra:
@@ -266,8 +389,32 @@ def main() -> int:
     ptype = _probes.get_probe_type(args.probe_type)
     CLASSES[:] = ptype.analysis_classes
     df, mass_col, n_before, n_after = _prepare(df, args)
-
     args.out.mkdir(parents=True, exist_ok=True)
+
+    if ptype.aggregation == "counts":
+        # A raw evaluator table: one row per token summarising that step's cells. None of the
+        # joined columns (label_local, {probe}_pred, sentence coordinates) exist here.
+        summary = run_counts_mode(df, args, ptype)
+        (args.out / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
+        cfg = _prov.RunConfig("loudness_analysis/analysis/probe_accuracy_by_loudness.py")
+        cfg.measurement(lens=args.lens, signal=args.signal_name, layer=args.layer)
+        cfg.input("per_token", args.per_token)
+        cfg.params.update({"probe_type": args.probe_type, "deciles": args.deciles})
+        cfg.aggregation(
+            balanced_accuracy="counts",
+            classes=list(CLASSES),
+            resolved_loudness_column=mass_col,
+            bootstrap="trajectory-clustered, bin edges recomputed per resample",
+            n_boot=args.boot,
+            seed=0,
+        )
+        cfg.rows("input", n_before)
+        cfg.rows("after_signal_word_filter", n_after)
+        cfg.guard(args.out, "lens", "signal", "layer")
+        cfg.write(args.out)
+        print(f"\nwrote {args.out / 'summary.json'}")
+        return 0
+
     (args.out / "tables").mkdir(exist_ok=True)
     summary: dict = {"per_token": str(args.per_token), "rowsets": {}}
 

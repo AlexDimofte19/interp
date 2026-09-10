@@ -457,7 +457,7 @@ run_sentence_loudness() {
         --out "$RT/loudness/per_token.csv"
     x $UVC python "$REPO/scripts/plot_sentence_loudness.py" \
         --per-token "$RT/loudness/per_token.csv" --out "$RT/loudness"
-    x $UVC python "$REPO/scripts/analyze_sentence_loudness.py" \
+    x $UVC python "$REPO/telos_interp/loudness_analysis/analysis/loudness_distribution.py" \
         --per-token "$RT/loudness/per_token.csv" --out "$RT/loudness"
 }
 
@@ -535,7 +535,7 @@ lb_train() {  # lb_train <tag> <prepared-local> <extra-split-flags>
 # loudness correlates +0.42 with chain length, so read the chain-length-quartile control.
 run_probe_loudness_eval720() {
     x $UV python "$REPO/scripts/build_probe_loudness.py" --out "$RT/probe_loudness/per_token.csv"
-    x $UVC python "$REPO/scripts/analyze_probe_loudness.py" \
+    x $UVC python "$REPO/telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py" \
         --per-token "$RT/probe_loudness/per_token.csv" --out "$RT/probe_loudness"
     x $UVC python "$REPO/scripts/plot_probe_loudness.py" \
         --per-token "$RT/probe_loudness/per_token.csv" --out "$RT/probe_loudness/plots"
@@ -581,9 +581,9 @@ run_probe_loudness_heldout() {
         --activations-dir "$ACT/heldout360_l15" --lens-dir "$ACT/heldout360_lens" \
         --trajectories-dir "$TRAJ" --signal-json "$SIGNAL_JSON" \
         --layer 15 --full-probs --out "$out/heldout360_10probes.csv"
-    x $UVC python "$REPO/scripts/build_probe_loudness_heldout.py" \
+    x $UVC python "$REPO/telos_interp/loudness_analysis/join_rollouts.py" \
         --probe-csv "$out/heldout360_10probes.csv" --out "$out/per_token.csv"
-    x $UVC python "$REPO/scripts/analyze_probe_loudness.py" --per-token "$out/per_token.csv" --out "$out"
+    x $UVC python "$REPO/telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py" --per-token "$out/per_token.csv" --out "$out"
     x $UVC python "$REPO/scripts/plot_probe_loudness.py" --per-token "$out/per_token.csv" --out "$out/plots"
 }
 

@@ -134,14 +134,14 @@ fi
 # coordinates. Pure CPU. --mass-column stays at the jlens ruler: neither round is comparing
 # rulers, and the logitlens cut can be produced later from the same inputs.
 echo "[$(ts)] === step 2: join -> per_token.csv ==="
-$UV python "$REPO/scripts/build_probe_loudness_heldout.py" \
+$UV python "$REPO/telos_interp/loudness_analysis/join_rollouts.py" \
     --probe-csv "$CSV" --out "$OUT/per_token.csv" --extra-probes "$EXTRA_BUILD" \
     --mass-column jlens_mass_L15 \
     2>&1 | tee "$OUT/logs/step2_build.log"
 
 # ---- step 3: the numbers ------------------------------------------------------------------
 echo "[$(ts)] === step 3: balanced accuracy per probe, both label definitions ==="
-$UV python "$REPO/scripts/score_probes_heldout.py" "$OUT/per_token.csv" \
+$UV python "$REPO/telos_interp/loudness_analysis/summarise_probe_accuracy.py" "$OUT/per_token.csv" \
     --out "$OUT/heldout_balanced_accuracy.csv" --json-out "$OUT/heldout_balanced_accuracy.json" \
     2>&1 | tee "$OUT/logs/step3_score.log"
 

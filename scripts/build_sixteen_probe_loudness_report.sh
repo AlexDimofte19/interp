@@ -84,7 +84,7 @@ fi
 # direction mass becomes `dir_logmass`. Both columns are already in $CSV, so neither pass
 # re-reads an activation.
 echo "=== step 6a: join -> per_token.csv (jlens loudness)"
-$UV python "$REPO/scripts/build_probe_loudness_heldout.py" \
+$UV python "$REPO/telos_interp/loudness_analysis/join_rollouts.py" \
     --probe-csv "$CSV" --out "$OUT/per_token.csv" --extra-probes "$EXTRA_BUILD" \
     --mass-column jlens_mass_L15 \
     2>&1 | tee "$OUT/logs/step6a_build.log"
@@ -96,18 +96,18 @@ ln -f "$OUT/per_token.csv" "$OUT/per_token_jlens_loudness.csv" 2>/dev/null \
     || cp "$OUT/per_token.csv" "$OUT/per_token_jlens_loudness.csv"
 
 echo "=== step 6a': join -> per_token_logitlens_loudness.csv (logitlens loudness)"
-$UV python "$REPO/scripts/build_probe_loudness_heldout.py" \
+$UV python "$REPO/telos_interp/loudness_analysis/join_rollouts.py" \
     --probe-csv "$CSV" --out "$OUT/per_token_logitlens_loudness.csv" --extra-probes "$EXTRA_BUILD" \
     --mass-column logitlens_mass_L15 \
     2>&1 | tee "$OUT/logs/step6a_build_logitlens_loudness.log"
 
 echo "=== step 6b: tables (jlens loudness)"
-$UV python "$REPO/scripts/analyze_probe_loudness.py" \
+$UV python "$REPO/telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py" \
     --per-token "$OUT/per_token.csv" --out "$OUT" --extra-probes "$EXTRA_NAMES" \
     2>&1 | tee "$OUT/logs/step6b_analyze.log"
 
 echo "=== step 6b': tables (logitlens loudness)"
-$UV python "$REPO/scripts/analyze_probe_loudness.py" \
+$UV python "$REPO/telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py" \
     --per-token "$OUT/per_token_logitlens_loudness.csv" --out "$OUT/logitlens_loudness" \
     --extra-probes "$EXTRA_NAMES" \
     2>&1 | tee "$OUT/logs/analyze_logitlens_loudness.log"
@@ -125,7 +125,7 @@ $UV python "$REPO/scripts/plot_probe_loudness.py" \
 
 # ---- step 7: is loudness just reading a word the model already typed? -------------------
 echo "=== step 7: direction-word isolation, under both rulers"
-$UV python "$REPO/scripts/analyze_direction_word_isolation.py" --src "$OUT" \
+$UV python "$REPO/telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py --exclude-signal-words" --src "$OUT" \
     2>&1 | tee "$OUT/logs/step7_direction_words.log"
 
 # ---- step 8: the page ------------------------------------------------------------------

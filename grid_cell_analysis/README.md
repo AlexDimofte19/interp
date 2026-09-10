@@ -43,7 +43,7 @@ would stop differing only in their tokens.
 | Script | Does |
 |---|---|
 | _(merged away)_ | Scoring a `grid_tile` probe on **every** reasoning token is now `telos_interp/loudness_analysis/score_probes_per_token.py --probe-type grid_tile`; this file and its five duplicated lens-IO helpers are gone. |
-| `analyze_grid_loudness_correlation.py` | The specificity control behind ICLR log entry 55: does *direction* loudness predict where the **grid** is decodable? It should not — and does not (−2.4 points of grid decodability against +15.6 of action). |
+| _(merged away)_ | The specificity control behind ICLR log entry 55 — does *direction* loudness predict where the **grid** is decodable? It should not, and does not (−2.4 points of grid decodability against +15.6 of action). Now `telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py --probe-type grid_tile`, whose counts mode pools the per-class counts a grid row carries instead of averaging per-token accuracies. |
 | `compute_probe_accuracy.py` | Overall and per-class accuracy of probe predictions written back into trajectory JSONs. |
 
 ## `plots/`
