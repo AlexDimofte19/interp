@@ -56,4 +56,4 @@ for arm in $ARMS; do
     d="${OUT%_jlens}_${arm}"
     [ -f "$d/manifest.json" ] && echo "  $d" || echo "  $d  (MISSING)"
 done
-echo "Train them with scripts/train_next_action_direction_probe.sh"
+echo "Train them with wrappers/train_next_action_direction_probe.sh"

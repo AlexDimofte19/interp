@@ -9,7 +9,7 @@ parenthetical cross-reference inside each header, never as the name.
 
 | old | new | what it does |
 |---|---|---|
-| `scripts/entry49_baseline_arms.sh` | `scripts/rollout_belief_baseline_arms.sh` | The belief-baseline rollout arms: random replay, and the two logit-lens loud arms |
+| `scripts/entry49_baseline_arms.sh` | `wrappers/rollout_belief_baseline_arms.sh` | The belief-baseline rollout arms: random replay, and the two logit-lens loud arms |
 | `scripts/entry49_baseline_probes.sh` | `scripts/train_belief_baseline_probes.sh` | The belief-baseline probes: label and selection separated |
 | `scripts/entry49_baseline_report.sh` | `scripts/build_sixteen_probe_loudness_report.sh` | Sixteen probes on the held-out 360, under both loudness rulers |
 | `scripts/entry49_status.sh` | `scripts/belief_baselines_status.sh` | Status of the belief-baseline round |
@@ -67,3 +67,68 @@ keeps its behaviour and only the path changed. The two callers
 (`reproduce_all.sh`, `train_more_belief_arms.sh`) were updated. The `build_eos_view` *function*
 inside `reproduce_all.sh` keeps its name -- it builds the eos view specifically, which is what
 it says.
+
+---
+
+# Reorganisation, 2026-09-10
+
+`scripts/` had grown to 86 files with no separation between *code that does work* and *a record
+of what was once run*. Three directories now, and the rule is what a file **is**, not what it
+touches:
+
+| Directory | What belongs there |
+|---|---|
+| `scripts/` | machinery — anything with logic worth testing or changing |
+| `wrappers/` | recorded invocations: an env block pinning one run's parameters onto one script. Never refactor one; changing a default rewrites the description of a run that already happened. See [wrappers/README.md](wrappers/README.md). |
+| `grid_cell_analysis/` | the grid-cell ("cognitive map") line, both rounds. See [grid_cell_analysis/README.md](grid_cell_analysis/README.md). |
+
+## Moved to `wrappers/` (16)
+
+From `scripts/`: `jlens_reasoning_tokens.sh`, `jlens_reasoning_tokens_filtered.sh`,
+`jlens_mass_l15.sh`, `jlens_extend_logitlens.sh`, `delete_non_jlens_selected.sh`,
+`rollout_belief_baseline_arms.sh`, `rollout_more_belief_arms.sh`, `run_next_action_arms.sh`,
+`train_next_action_direction_probe.sh`, `prepare_next_action_jlens_by_complexity.sh`,
+`build_convinced_datasets.sh`. From `scripts/inference_oss/`: `run_analysis.sh`. From the repo
+root: `script.sh`, `general_probe_train.sh`, `reasoning_theatre.ps1`, `run_commands.ps1` — the
+four CLAUDE.md already called recorded invocations. Only `runpod_setup.sh` is left loose.
+
+Each still resolves the repo from its own location, so `REPO=.../..` keeps working from
+`wrappers/` exactly as it did from `scripts/`. Three needed a real fix, because they had been
+finding siblings by directory rather than by repo:
+
+* `rollout_belief_baseline_arms.sh`, `rollout_more_belief_arms.sh` — `$HERE/inference_oss/...`
+  became `$REPO/scripts/inference_oss/...`.
+* `run_analysis.sh` ran `python analysis.py` bare, which only worked from the one directory it
+  used to live in. It now resolves the script from `$REPO`.
+* `build_convinced_datasets.sh` used a relative `.venv/bin/python` and relative script paths.
+
+## Moved to `grid_cell_analysis/` (20)
+
+Round 2 (never produced a result): `gather_grid_arms.sh`, `prepare_grid_arms.sh`,
+`train_grid_arms.sh`, `grid_round_status.sh`, `eval_grid_probe_per_token.py`,
+`analyze_grid_loudness_correlation.py`.
+
+Round 1 (published): `evaluation_scripts/compute_probe_accuracy.py` and all of
+`plotting_scripts/` land under `grid_cell_analysis/plots/`, together with the four
+`scripts/plot_*_by_distance*.py` — every one of them consumes
+`eval_cognitive_map_probe_per_distance`, which is the cognitive-map evaluator. The
+`evaluation_scripts/` and `plotting_scripts/` directories are gone.
+
+## Merged
+
+| Was | Now |
+|---|---|
+| `eval_more_belief_arms.sh` + `eval_equal_n_belief_arms.sh` (83% identical) | `scripts/eval_belief_arms_heldout.sh <24probes\|equal_n>` |
+| `jlens_action_ranks.py` + `jlens_action_ranks_sampled.py` (73% identical) | `scripts/jlens_action_ranks.py`, with `--runs_per_combo` / `--trajectories_root` optional |
+
+Both merges were checked against the originals before the originals were deleted: the belief
+script's two `--extra-probes` key maps are byte-identical to what each old file built, and the
+action-ranks CSV keeps its narrow schema unless `--trajectories_root` is passed. The importers of
+`jlens_action_ranks_sampled` (`jlens_reasoning_tokens.py`, `tests/conftest.py`,
+`tests/test_jlens_reasoning_tokens.py`) were repointed; the merged `action_token_ids` keeps the
+fork's `(ids, tok)` return, which is what they expect.
+
+## Verified
+
+`DRY_RUN=1 FORCE=1 GRID_ROUND=1 UNRUN=1 ./scripts/reproduce_all.sh` names 44 distinct scripts;
+all 44 exist. 408 tests pass. Nothing was deleted except the four files the two merges replaced.

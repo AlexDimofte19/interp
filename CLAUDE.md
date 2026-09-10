@@ -47,7 +47,7 @@ needs it spelled out.
 required even for `--lens logitlens`, which never reads the Jacobian — get it wrong and the first run
 re-downloads a 4.2 GB shard to rebuild the unembed cache. The direction vocabulary is one level **up**, at
 `/workspace/jlens/direction_tokens_full.json` — the deployed copy of the repo's
-`data/jlens/direction_tokens_full.json`, which is where the notebooks write it. The `scripts/*.sh`
+`data/jlens/direction_tokens_full.json`, which is where the notebooks write it. The `wrappers/*.sh`
 defaults encode this layout; pass `JLENS_DIR` / `SIGNAL_JSON` to override.
 
 ```
@@ -195,7 +195,7 @@ another gather — it is a guarantee, not a method.
 **The tree is already pruned.** Everything outside the jlens ∪ random selection is gone, so a new lens arm
 cannot be recovered by re-filtering — the tokens it would pick were deleted. `delete_non_jlens_selected.py`
 refuses to widen an existing selection for exactly that reason. The path that works is
-`jlens_reasoning_tokens.py --extend` (wrapped by `scripts/jlens_extend_logitlens.sh`, dry-run by default):
+`jlens_reasoning_tokens.py --extend` (wrapped by `wrappers/jlens_extend_logitlens.sh`, dry-run by default):
 one CSV-only forward pass for the new lens, gather only the `.pt` files not already present, and **merge**
 the arm into the record. Arms already recorded keep their picks and config verbatim; the control is
 inherited, never redrawn, because a fresh draw could only sample the survivors. The selection record is
@@ -221,7 +221,7 @@ select a single layer and still leave the full `(token x layer)` profile behind 
 `jlens_layer_profile.py`. It mirrors `--candidate-layers` on `delete_non_jlens_selected.py`, and the
 two must be given the same pool or a prune keeps different files than the filtered gather wrote; the
 value is recorded in each arm's `config.candidate_layers` (absent/`null` = every layer the artifact
-covers). `scripts/jlens_mass_l15.sh` is the recorded invocation: `logprob_mass_full` ranking at layer
+covers). `wrappers/jlens_mass_l15.sh` is the recorded invocation: `logprob_mass_full` ranking at layer
 15 over the same 3600 trajectories the count-era tree drew.
 
 Narrow at training time, not prepare time: `split_next_action_manifest.py --tokens-per-trajectory K
@@ -250,7 +250,7 @@ identities); `build_mass_era_split.sh` runs it, and `VERIFY_ONLY=1` re-checks wi
 Note the eval 720 is a plain random draw, **not stratified** — its (size × complexity) cells run
 14–29 against the 20 a stratified draw would give, while the 3,600 is exactly 100 per cell.
 
-**The same arms with the grid label.** `scripts/prepare_grid_arms.sh` and `scripts/train_grid_arms.sh`
+**The same arms with the grid label.** `grid_cell_analysis/prepare_grid_arms.sh` and `grid_cell_analysis/train_grid_arms.sh`
 are the `grid_tile` twins of the `*_next_action_arms.sh` pair: same tree, same records, same tokens,
 same layers, `train_cognitive_map_probe` instead of `train_next_action_probe`. Any difference between a
 grid arm and an action arm is therefore the label and nothing else. Two knobs matter there. `MAX_CELLS`
@@ -382,8 +382,12 @@ header as a cross-reference, not in a filename.
 
 ## Conventions and gotchas
 
-- `configs/**/*.conf`, `script.sh`, `general_probe_train.sh`, `*.ps1` are **recorded `interp-cli`
-  invocations**, not parsed config files. They are the record of how published results were produced.
+- **`wrappers/` is the record, `scripts/` is the machinery.** A file under `wrappers/` exists to pin the
+  *parameter values* of a published run onto one other script -- `configs/**/*.conf` and the `*.ps1`
+  files there are the same thing. They are **recorded invocations**, not parsed config files, and not
+  code to refactor: changing a default there rewrites history. `scripts/` holds the things that
+  actually do the work, and `grid_cell_analysis/` holds the round-2 grid-cell line, which never
+  produced a result (see its README).
 - `ICLR log.txt` is the running research log (findings, planned phases, known landmines) and
   `claude_session_readme.md` is the handoff note for the current branch — `worktree-probe-loudness` as of
   entry 48, forked from `reasoning_theatre`. Read them before touching the jlens → probe or rollout path;

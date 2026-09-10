@@ -7,10 +7,10 @@
 # the probes and logs go. Everything else is train_next_action_arms.sh's default, and any of
 # it can still be overridden here on the command line.
 #
-#   ./scripts/train_next_action_direction_probe.sh
-#   ARMS="jlens random" ./scripts/train_next_action_direction_probe.sh
+#   ./wrappers/train_next_action_direction_probe.sh
+#   ARMS="jlens random" ./wrappers/train_next_action_direction_probe.sh
 #
-# The datasets come from scripts/prepare_next_action_jlens_by_complexity.sh (or
+# The datasets come from wrappers/prepare_next_action_jlens_by_complexity.sh (or
 # prepare_next_action_arms.sh with COMPLEXITIES="0.0 0.2 0.4" and the same OUT).
 set -euo pipefail
 

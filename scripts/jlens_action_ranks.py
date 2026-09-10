@@ -12,6 +12,16 @@ layer itself: no transport, just norm + unembed.
 First run downloads one 4.2 GB safetensors shard from openai/gpt-oss-20b to
 extract lm_head + final norm (cached as gpt-oss-20b_unembed.pt in --jlens_dir).
 
+Two optional flags widen it, and both used to be a separate `_sampled` fork that duplicated
+this file (including `ensure_unembed_assets` verbatim):
+
+  --runs_per_combo N   keep only the first N runs per (size, complexity, layer). For a first
+                       pass on a tree too big to sweep whole.
+  --trajectories_root  join each row to the step's `agent_action` and widen the CSV with the
+                       four action logprobs and the top/bottom 5 decoded tokens. WITHOUT it the
+                       narrow schema above is written, unchanged -- so an existing consumer
+                       (`jlens_rank_analysis.py`) reads the same columns it always did.
+
 Usage:
   python scripts/jlens_action_ranks.py \
     --activations_root C:/Uni/Thesis/data/activations_train_single_step \
@@ -25,6 +35,7 @@ import json
 import re
 import sys
 from collections import defaultdict
+from functools import cache
 from pathlib import Path
 
 import torch
@@ -65,7 +76,25 @@ def ensure_unembed_assets(jlens_dir: Path) -> dict:
     return assets
 
 
-def action_token_ids() -> dict:
+@cache
+def trajectory_actions(traj_file: Path) -> dict:
+    """{step_id: agent_action} for one trajectory json."""
+    steps = json.load(open(traj_file, encoding="utf-8"))["steps"]
+    return {s["step_id"]: s["agent_action"] for s in steps}
+
+
+def agent_action_for(f: Path, traj_root: Path) -> str:
+    # f = .../size{S}/{run_folder}/openai__gpt-oss-20b/layer_L/step_{n}/prompt_suffix/{T}.pt
+    run_folder = f.parents[4].name
+    size_dir = f.parents[5].name
+    step_id = int(f.parents[1].name.split("_")[1])
+    traj_file = traj_root / size_dir / f"{run_folder}.json"
+    if not traj_file.exists():
+        return ""
+    return trajectory_actions(traj_file).get(step_id, "")
+
+
+def action_token_ids() -> tuple[dict, object]:
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(MODEL_ID)
@@ -74,13 +103,25 @@ def action_token_ids() -> dict:
         enc = tok.encode(a, add_special_tokens=False)
         assert len(enc) == 1, f"{a!r} is not a single token: {enc}"
         ids[a] = enc[0]
-    return ids
+    return ids, tok
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--activations_root", type=Path, required=True)
     ap.add_argument("--jlens_dir", type=Path, required=True)
+    ap.add_argument(
+        "--trajectories_root",
+        type=Path,
+        default=None,
+        help="join agent_action and widen the CSV with logprobs and top/bottom tokens",
+    )
+    ap.add_argument(
+        "--runs_per_combo",
+        type=int,
+        default=None,
+        help="keep the first N runs (lowest run index) per size/complexity/layer; default: all",
+    )
     ap.add_argument("--out", type=Path, default=Path("jlens_action_ranks.csv"))
     ap.add_argument("--batch_size", type=int, default=2048)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -94,18 +135,31 @@ def main():
     # group by layer so each J matrix is loaded onto the GPU once
     by_layer = defaultdict(list)
     skipped = 0
+    parsed = []
     for f in files:
         m = PATH_RE.search(f.as_posix())
         if not m:
             skipped += 1
             continue
-        by_layer[int(m["layer"])].append((f, m))
+        parsed.append((f, m))
     if skipped:
         print(f"warning: {skipped} files did not match the expected path pattern")
 
+    # keep only the first N runs per (size, complexity, layer)
+    if args.runs_per_combo is not None:
+        runs_per_combo = defaultdict(set)
+        for _, m in parsed:
+            runs_per_combo[(m["size"], m["comp"], m["layer"])].add(int(m["run"]))
+        keep = {k: set(sorted(v)[: args.runs_per_combo]) for k, v in runs_per_combo.items()}
+        parsed = [(f, m) for f, m in parsed if int(m["run"]) in keep[(m["size"], m["comp"], m["layer"])]]
+        print(f"{len(parsed)} files after sampling {args.runs_per_combo} runs per combo")
+
+    for f, m in parsed:
+        by_layer[int(m["layer"])].append((f, m))
+
     lens = torch.load(args.jlens_dir / "gpt-oss-20b_jacobian_lens.pt", map_location="cpu")
     assets = ensure_unembed_assets(args.jlens_dir)
-    ids = action_token_ids()
+    ids, tok = action_token_ids()
     print(f"action token ids: {ids}")
 
     dev = torch.device(args.device)
@@ -114,9 +168,20 @@ def main():
     eps = assets["rms_eps"]
     id_cols = [ids[a] for a in ACTIONS]
 
-    with open(args.out, "w", newline="") as fh:
+    wide = args.trajectories_root is not None
+    with open(args.out, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["size", "complexity", "layer", "run", "token"] + [f"{a}_position" for a in ACTIONS])
+        header = ["size", "complexity", "layer", "run", "token"]
+        if wide:
+            header += ["agent_action"]
+        header += [f"{a}_position" for a in ACTIONS]
+        if wide:
+            header += (
+                [f"{a}_logprob" for a in ACTIONS]
+                + [f"top_{i}" for i in range(1, 6)]
+                + [f"bottom_{i}" for i in range(1, 6)]
+            )
+        writer.writerow(header)
         for layer, items in sorted(by_layer.items()):
             if layer == TARGET_LAYER:
                 J = None
@@ -141,10 +206,33 @@ def main():
                         [(logits > logits[:, tid : tid + 1]).sum(1) for tid in id_cols],
                         dim=1,
                     )  # [B, 4], rank 0 = argmax
+                    if wide:
+                        own = torch.stack([logits[:, tid] for tid in id_cols], dim=1)
+                        logprobs = own - logits.logsumexp(-1, keepdim=True)  # [B, 4]
+                        top5 = logits.topk(5, dim=1).indices
+                        bot5 = logits.topk(5, dim=1, largest=False).indices  # bottom_1 = worst
                 ranks = ranks.cpu().tolist()
-                for (f, m), r in zip(chunk, ranks):
-                    writer.writerow([m["size"], m["comp"], layer, m["run"], f.stem] + r)
-                print(f"layer {layer}: {min(i + args.batch_size, len(items))}/{len(items)}", end="\r")
+                if wide:
+                    logprobs = logprobs.cpu().tolist()
+                    top5, bot5 = top5.cpu().tolist(), bot5.cpu().tolist()
+                    for (f, m), r, lp, t5, b5 in zip(chunk, ranks, logprobs, top5, bot5):
+                        writer.writerow(
+                            [
+                                m["size"],
+                                m["comp"],
+                                layer,
+                                m["run"],
+                                f.stem,
+                                agent_action_for(f, args.trajectories_root),
+                            ]
+                            + r
+                            + [round(x, 4) for x in lp]
+                            + [tok.decode([i]) for i in t5 + b5]
+                        )
+                else:
+                    for (f, m), r in zip(chunk, ranks):
+                        writer.writerow([m["size"], m["comp"], layer, m["run"], f.stem] + r)
+                print(f"layer {layer}: {min(i + args.batch_size, len(items))}/{len(items)}", end="\r", flush=True)
             print()
     print(f"wrote {args.out}")
 

@@ -28,10 +28,10 @@ The ``--by`` flag selects the panel breakdown:
 
 Usage
 -----
-    python scripts/plot_per_class_accuracy_by_distance_from_csv.py preds.csv
-    python scripts/plot_per_class_accuracy_by_distance_from_csv.py preds.csv --by both
-    python scripts/plot_per_class_accuracy_by_distance_from_csv.py preds.csv --axis goal
-    python scripts/plot_per_class_accuracy_by_distance_from_csv.py preds.csv --metric f1
+    python grid_cell_analysis/plots/plot_per_class_accuracy_by_distance_from_csv.py preds.csv
+    python grid_cell_analysis/plots/plot_per_class_accuracy_by_distance_from_csv.py preds.csv --by both
+    python grid_cell_analysis/plots/plot_per_class_accuracy_by_distance_from_csv.py preds.csv --axis goal
+    python grid_cell_analysis/plots/plot_per_class_accuracy_by_distance_from_csv.py preds.csv --metric f1
 """
 
 from __future__ import annotations

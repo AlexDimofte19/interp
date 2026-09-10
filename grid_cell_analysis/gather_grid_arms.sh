@@ -2,11 +2,11 @@
 # ROUND 2 gather: select reasoning tokens by GRID words instead of direction words.
 #
 # The first of the three grid-round scripts:
-#   scripts/gather_grid_arms.sh    <- you are here: build the tree
-#   scripts/prepare_grid_arms.sh      one grid_tile dataset per arm
-#   scripts/train_grid_arms.sh        the seed sweep
+#   grid_cell_analysis/gather_grid_arms.sh    <- you are here: build the tree
+#   grid_cell_analysis/prepare_grid_arms.sh      one grid_tile dataset per arm
+#   grid_cell_analysis/train_grid_arms.sh        the seed sweep
 #
-# Identical machinery to scripts/jlens_reasoning_tokens_filtered.sh -- same script, same
+# Identical machinery to wrappers/jlens_reasoning_tokens_filtered.sh -- same script, same
 # filter, same record format. Only two things differ, and they are the whole experiment:
 # SIGNAL_JSON points at grid_tokens_full.json, and the output goes to its own tree.
 #
@@ -33,9 +33,9 @@
 # Resumable: a trajectory that already has its CSV is skipped, so re-running after an
 # interruption picks up where it stopped. Pass OVERWRITE=1 to redo them.
 #
-#   ./scripts/gather_grid_arms.sh
-#   DRY_RUN=1 ./scripts/gather_grid_arms.sh            # print the invocation, run nothing
-#   MAX_TRAJ=2 ACT=/tmp/smoke ./scripts/gather_grid_arms.sh   # smoke test
+#   ./grid_cell_analysis/gather_grid_arms.sh
+#   DRY_RUN=1 ./grid_cell_analysis/gather_grid_arms.sh            # print the invocation, run nothing
+#   MAX_TRAJ=2 ACT=/tmp/smoke ./grid_cell_analysis/gather_grid_arms.sh   # smoke test
 set -uo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)   # so uv finds pyproject.toml
@@ -142,7 +142,7 @@ echo "GATHER_END rc=$rc $(date -Is)" >> "$STATUS"
 if [ $rc -eq 0 ]; then
     echo "Done -> $ACT"
     echo "Next: ARMS=\"jlens logitlens random\" LAYERS=15 OUT=/workspace/prepared/grid_l15 \\"
-    echo "        ACT=$ACT ./scripts/prepare_grid_arms.sh"
+    echo "        ACT=$ACT ./grid_cell_analysis/prepare_grid_arms.sh"
 else
     echo "!! gather failed (rc=$rc); see $LOG" >&2
 fi

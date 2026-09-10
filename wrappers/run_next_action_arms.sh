@@ -8,10 +8,10 @@
 # The one thing worth having a master script for is that prepare's OUT and train's PREPARED
 # have to be the same prefix. DATASETS sets both, so they cannot drift.
 #
-#   ./scripts/run_next_action_arms.sh
-#   ARMS="jlens logitlens" ./scripts/run_next_action_arms.sh
-#   COMPLEXITIES="0.0 0.2 0.4" DATASETS=/workspace/prepared/na_comp0-2-4 ./scripts/run_next_action_arms.sh
-#   SKIP_PREPARE=1 ./scripts/run_next_action_arms.sh    # datasets already built; just train
+#   ./wrappers/run_next_action_arms.sh
+#   ARMS="jlens logitlens" ./wrappers/run_next_action_arms.sh
+#   COMPLEXITIES="0.0 0.2 0.4" DATASETS=/workspace/prepared/na_comp0-2-4 ./wrappers/run_next_action_arms.sh
+#   SKIP_PREPARE=1 ./wrappers/run_next_action_arms.sh    # datasets already built; just train
 #
 # Every other knob belongs to one of the two stages and is passed through the environment
 # untouched -- see those scripts for the full list (LAYERS, TOKENS_PER_TRAJ, MODEL_TYPES,

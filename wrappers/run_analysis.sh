@@ -2,6 +2,12 @@
 # Aggregate + plot the reasoning-theatre stats that run_inference.py wrote.
 # INPUT_DIR is the run_inference --output-dir (it contains the size*/ subfolders);
 # analysis.py walks size*/*.json itself, so there is no per-size loop here.
+#
+# The path to analysis.py is resolved from this file rather than from the caller's cwd:
+# this wrapper used to sit beside it and ran `python analysis.py` bare, which only
+# worked when invoked from that one directory.
+
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 INPUT_DIR="/workspace/reasoning_theatre/trajectories_train_single_step_probs/"
 # Source trajectories: needed for grid_complexity (the heatmaps' y axis), which the
@@ -15,7 +21,7 @@ mkdir -p "$LOG_DIR" "$OUTPUT_DIR"
 LOG_FILE="$LOG_DIR/analysis_$(date +%Y%m%d_%H%M%S).txt"
 echo "=== START: $(date) ===" > "$LOG_FILE"
 
-uv run python analysis.py \
+uv run --project "$REPO" python "$REPO/scripts/inference_oss/analysis.py" \
         --input-folder "$INPUT_DIR" \
         --trajectory-folder "$TRAJECTORY_DIR" \
         --output-dir "$OUTPUT_DIR" \

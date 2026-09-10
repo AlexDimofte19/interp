@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # One snapshot of the whole grid round: gather, then prepare, then train.
 #
-# Designed for `watch -n 30 ./scripts/grid_round_status.sh`, and for a fresh session to run
+# Designed for `watch -n 30 ./grid_cell_analysis/grid_round_status.sh`, and for a fresh session to run
 # once to find out where the round actually stopped. Everything it reads lives under
 # /workspace, so it works from any session -- nothing here is scoped to the one that
 # started the run.
 #
-#   ./scripts/grid_round_status.sh
-#   ACT=/tmp/smoke PROBES=/tmp/probes ./scripts/grid_round_status.sh
+#   ./grid_cell_analysis/grid_round_status.sh
+#   ACT=/tmp/smoke PROBES=/tmp/probes ./grid_cell_analysis/grid_round_status.sh
 set -uo pipefail
 
 ACT=${ACT:-/workspace/activations/grid_reasoning_tokens}

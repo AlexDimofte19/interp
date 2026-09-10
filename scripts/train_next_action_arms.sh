@@ -137,7 +137,7 @@ echo "top-K sweep:     $TOKENS_PER_TRAJ   layers: ${SINGLE_LAYER:+single L$SINGL
 echo "models:          $MODEL_TYPES   device: $DEVICE"
 
 # An arm whose dataset is missing must not take the others down -- it usually means that arm
-# is not in the selection records yet (see scripts/jlens_extend_logitlens.sh).
+# is not in the selection records yet (see wrappers/jlens_extend_logitlens.sh).
 skipped=""
 for arm in $ARMS; do
     train_arm "$arm" "${PREPARED}_${arm}" || skipped="$skipped $arm"
@@ -167,7 +167,7 @@ if [ -n "$skipped" ]; then
     echo ""
     echo "Arms with no prepared dataset:$skipped"
     echo "  Run scripts/prepare_next_action_arms.sh first. If an arm prepares nothing, it is"
-    echo "  not in the selection records -- add it with scripts/jlens_extend_logitlens.sh."
+    echo "  not in the selection records -- add it with wrappers/jlens_extend_logitlens.sh."
 fi
 
 echo ""

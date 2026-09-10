@@ -271,8 +271,8 @@ interp-cli prepare_activations_for_probing \
 
 ### Next action on the most direction-loaded reasoning tokens (pruned tree)
 
-The normal path. Run `scripts/jlens_reasoning_tokens_filtered.sh` first (or
-`scripts/delete_non_jlens_selected.sh` over an existing full tree) — either writes the
+The normal path. Run `wrappers/jlens_reasoning_tokens_filtered.sh` first (or
+`wrappers/delete_non_jlens_selected.sh` over an existing full tree) — either writes the
 `{name}_jlens_selection.json` these modes read.
 
 ```bash

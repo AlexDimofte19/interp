@@ -2,7 +2,7 @@
 # Train the grid_tile ("cognitive map") probe once per arm, over a sweep of seeds.
 #
 # The sibling of scripts/train_next_action_arms.sh: it consumes ${PREPARED}_${arm} for each
-# arm that scripts/prepare_grid_arms.sh wrote, so pass the same prefix you gave it as OUT.
+# arm that grid_cell_analysis/prepare_grid_arms.sh wrote, so pass the same prefix you gave it as OUT.
 #
 # Two things differ from the action version, both forced by the data rather than chosen:
 #
@@ -20,9 +20,9 @@
 # thousands of small reads) and every later run of that arm reuses it. Interleaving arms
 # would thrash that. Runs already finished are skipped, so the script is resumable.
 #
-#   PREPARED=/workspace/prepared/grid EVAL_NAMES=/path/eval_720.txt ./scripts/train_grid_arms.sh
-#   ARMS="jlens logitlens" SEEDS=42 ./scripts/train_grid_arms.sh          # the 7:23 pair
-#   MODEL_TYPES=lr DEVICE=cpu NUM_EPOCHS=2 ./scripts/train_grid_arms.sh   # quick smoke run
+#   PREPARED=/workspace/prepared/grid EVAL_NAMES=/path/eval_720.txt ./grid_cell_analysis/train_grid_arms.sh
+#   ARMS="jlens logitlens" SEEDS=42 ./grid_cell_analysis/train_grid_arms.sh          # the 7:23 pair
+#   MODEL_TYPES=lr DEVICE=cpu NUM_EPOCHS=2 ./grid_cell_analysis/train_grid_arms.sh   # quick smoke run
 set -uo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)   # so uv finds pyproject.toml

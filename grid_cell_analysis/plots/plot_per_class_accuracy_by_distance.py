@@ -26,10 +26,10 @@ support anywhere (e.g. padding ``+``) are dropped.
 
 Usage
 -----
-    python scripts/plot_per_class_accuracy_by_distance.py results.json
-    python scripts/plot_per_class_accuracy_by_distance.py results.json --axis goal
-    python scripts/plot_per_class_accuracy_by_distance.py results.json --out-dir figures/
-    python scripts/plot_per_class_accuracy_by_distance.py results.json --metric f1
+    python grid_cell_analysis/plots/plot_per_class_accuracy_by_distance.py results.json
+    python grid_cell_analysis/plots/plot_per_class_accuracy_by_distance.py results.json --axis goal
+    python grid_cell_analysis/plots/plot_per_class_accuracy_by_distance.py results.json --out-dir figures/
+    python grid_cell_analysis/plots/plot_per_class_accuracy_by_distance.py results.json --metric f1
 """
 
 from __future__ import annotations

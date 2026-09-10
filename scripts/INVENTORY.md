@@ -1,11 +1,21 @@
 # `scripts/` inventory
 
-Every script under `scripts/`, what it does, and **which data it reads and writes**. 86 files:
-54 Python, 32 shell. Paths shown are the *defaults*; almost everything is overridable by flag or
-env var, and `reproduce_all.sh` is the canonical record of the values actually used.
+Every script in the repo, what it does, and **which data it reads and writes**. Paths shown are
+the *defaults*; almost everything is overridable by flag or env var, and `reproduce_all.sh` is the
+canonical record of the values actually used.
 
-Read [CLAUDE.md](../CLAUDE.md) first for the pipeline shape and the on-disk contracts. This file
-is the map; §"Duplication" at the end is the refactoring backlog.
+Read [CLAUDE.md](../CLAUDE.md) first for the pipeline shape and the on-disk contracts.
+
+## Where things live
+
+| Directory | Holds | n |
+|---|---|---|
+| `scripts/` | **the machinery** — everything that does work | 62 |
+| [`wrappers/`](../wrappers/README.md) | **the record** — recorded invocations that pin one run's parameters onto a script here. Do not refactor them; changing a default rewrites history. | 16 |
+| [`grid_cell_analysis/`](../grid_cell_analysis/README.md) | the grid-cell ("cognitive map") line: the published round-1 probes, and the round-2 grid-label arms that **never produced a result** | 20 |
+| `configs/**/*.conf` | recorded `interp-cli` invocations, same role as `wrappers/` | — |
+
+Only `runpod_setup.sh` is left loose at the repo root.
 
 ## Data roots
 
@@ -40,13 +50,13 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | Script | Does | Reads | Writes |
 |---|---|---|---|
 | `jlens_reasoning_tokens.py` (1932L) | **The engine.** One forward pass per trajectory; emits per-token activations, the `{stem}_{lens}_analysis.csv` of top-20 lens predictions, the `{stem}_direction_mass.csv` wide table + `.meta.json`, and the `{stem}_jlens_selection.json` record. `--extend` merges a new lens arm into an existing record. | `TRAJ`, `--jlens_dir` (`JLENS/gridenv`), `--signal-json` | `--activations-dir` tree: `.pt` + 3 CSV/JSON artifacts per trajectory |
-| `jlens_reasoning_tokens.sh` (48L) | Thin wrapper: full sweep, saves **every** (token, layer). Superseded. | `TRAJ`, `JLENS/gridenv` | `ACT/jlens_reasoning_tokens` |
-| `jlens_reasoning_tokens_filtered.sh` (85L) | Same sweep but saves only the selection (~75× less disk). The count-era tree's recorded invocation. | `TRAJ`, `JLENS/direction_tokens_full.json` | `ACT/jlens_reasoning_tokens` |
-| `jlens_mass_l15.sh` (123L) | The **mass-era** recorded invocation: `logprob_mass_full` ranking, `--select-candidate-layers 15`, layers 7:23 in the CSV. | `TRAJ`, `JLENS/direction_tokens_full.json` | `ACT/jlens_mass_l15` (or `logitlens_mass_l15` with `LENS=logitlens`) |
-| `gather_grid_arms.sh` (149L) | Round-2 gather selecting on **grid** words instead of direction words. Never produced a result. | `TRAJ`, `JLENS/grid_tokens_full.json` | `ACT/grid_reasoning_tokens`, log at `/workspace/logs/grid_gather.log` |
-| `jlens_extend_logitlens.sh` (98L) | Adds a logitlens arm to an already-pruned tree: CSV-only pass, gather only missing `.pt`, merge the arm. Dry-run by default. | existing tree + `TRAJ` | same tree, in place |
+| `wrappers/jlens_reasoning_tokens.sh` (48L) | Thin wrapper: full sweep, saves **every** (token, layer). Superseded. | `TRAJ`, `JLENS/gridenv` | `ACT/jlens_reasoning_tokens` |
+| `wrappers/jlens_reasoning_tokens_filtered.sh` (85L) | Same sweep but saves only the selection (~75× less disk). The count-era tree's recorded invocation. | `TRAJ`, `JLENS/direction_tokens_full.json` | `ACT/jlens_reasoning_tokens` |
+| `wrappers/jlens_mass_l15.sh` (123L) | The **mass-era** recorded invocation: `logprob_mass_full` ranking, `--select-candidate-layers 15`, layers 7:23 in the CSV. | `TRAJ`, `JLENS/direction_tokens_full.json` | `ACT/jlens_mass_l15` (or `logitlens_mass_l15` with `LENS=logitlens`) |
+| `grid_cell_analysis/gather_grid_arms.sh` (149L) | Round-2 gather selecting on **grid** words instead of direction words. Never produced a result. | `TRAJ`, `JLENS/grid_tokens_full.json` | `ACT/grid_reasoning_tokens`, log at `/workspace/logs/grid_gather.log` |
+| `wrappers/jlens_extend_logitlens.sh` (98L) | Adds a logitlens arm to an already-pruned tree: CSV-only pass, gather only missing `.pt`, merge the arm. Dry-run by default. | existing tree + `TRAJ` | same tree, in place |
 | `delete_non_jlens_selected.py` (406L) | Prunes a fully-gathered tree down to the selection, negatively applying the same `top_filter`. Dry-run by default. | `--activations-dir`, `--trajectories-dir`, `--signal-json` | deletes `.pt` in place |
-| `delete_non_jlens_selected.sh` (65L) | Env-var wrapper for the above. `APPLY=1` to actually unlink. | `ACT/jlens_reasoning_tokens` | same |
+| `wrappers/delete_non_jlens_selected.sh` (65L) | Env-var wrapper for the above. `APPLY=1` to actually unlink. | `ACT/jlens_reasoning_tokens` | same |
 | `build_activation_view.sh` (55L) | Symlink view of **any** activation tree restricted to one name list. Links at the trajectory level, so the lens CSV, mass table, `.meta.json` and selection record come along. `SRC` defaults to the sentence-end tree. *(was `build_eos_view.sh`)* | `SRC` tree + a names file | `<view>/activations` + `<view>/trajectories` symlink trees |
 | `build_mass_era_split.sh` (105L) | Materialises the mass-era 3,600 as **two separate datasets** — train 2,880 and eval 720 — as name lists plus a view each. Does not re-draw the split. Idempotent, `DRY_RUN=1`, `VERIFY_ONLY=1`. | `mass_l15_names.txt`, `next_action_mass_l15_eval_names.txt`, `ACT/jlens_mass_l15` | `SPLITS/mass_{train_2880,eval_720}.txt`, `ACT/mass_{train2880,eval720}_view` |
 | `verify_mass_era_split.py` (135L) | That split's contract: disjointness, closure, no dangling links, and that neither half drifted from the pinned definitions. Exits non-zero on failure. | the lists + the views | stdout |
@@ -58,8 +68,8 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | Script | Does | Reads | Writes |
 |---|---|---|---|
 | `prepare_next_action_arms.sh` (125L) | One `next_action` dataset per arm (jlens/logitlens/random) via `interp-cli prepare_activations_for_probing --token-selection recorded_<arm>`. | `ACT/jlens_reasoning_tokens`, `TRAJ` | `PREPARED/next_action_<arm>` |
-| `prepare_grid_arms.sh` (134L) | The `grid_tile` twin of the above — same tree, same tokens, different label. `MAX_CELLS` caps cells per (trajectory, step). | same | `PREPARED/grid_<arm>` |
-| `prepare_next_action_jlens_by_complexity.sh` (59L) | The same prepare restricted to complexity 0.0/0.2/0.4 via a view. | `ACT/jlens_reasoning_tokens_comp0.0-0.2-0.4` | `PREPARED/next_action_comp0.0-0.2-0.4_jlens` |
+| `grid_cell_analysis/prepare_grid_arms.sh` (134L) | The `grid_tile` twin of the above — same tree, same tokens, different label. `MAX_CELLS` caps cells per (trajectory, step). | same | `PREPARED/grid_<arm>` |
+| `wrappers/prepare_next_action_jlens_by_complexity.sh` (59L) | The same prepare restricted to complexity 0.0/0.2/0.4 via a view. | `ACT/jlens_reasoning_tokens_comp0.0-0.2-0.4` | `PREPARED/next_action_comp0.0-0.2-0.4_jlens` |
 | `split_next_action_manifest.py` (622L) | **Thin + split.** `--tokens-per-trajectory K`, `--layers-per-token M`, `--single-layer L`, `--thin-mode`, and a by-trajectory train/eval split (`--eval-names` pins it). Copies nothing. | a token-major `PREPARED/<ds>/manifest.json` | `<ds>_train/manifest.json`, `<ds>_eval/manifest.json` |
 | `inference_oss/relabel_manifest_from_rollout.py` (237L) | Replaces each entry's label with the model's **local belief** at that cutoff. | a token-major manifest + a rollout dir | a new prepared dir + optional report CSV |
 | `intersect_belief_arms.py` (100L) | Cuts several per-sentence arms down to the `(name, step, cut_sentence_idx)` sentences all of them hold. | several prepared arm dirs | `<arm><out_suffix>/manifest.json` each |
@@ -69,9 +79,9 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | Script | Does | Reads | Writes |
 |---|---|---|---|
 | `train_next_action_arms.sh` (179L) | `train_next_action_probe` per arm across a top-K sweep, lr + mlp. | `PREPARED/next_action_<arm>` | `PROBES/next_action/*.pt` + logs |
-| `train_grid_arms.sh` (174L) | Sibling for `train_cognitive_map_probe`, over a seed sweep. | `PREPARED/grid_<arm>` | `PROBES/grid/*.pt` + logs |
-| `run_next_action_arms.sh` (77L) | Master: prepare then train, in order. **Unreferenced.** | — | — |
-| `train_next_action_direction_probe.sh` (22L) | Records the parameters of the published comp-0.0/0.2/0.4 run; delegates to `train_next_action_arms.sh`. | `PREPARED/next_action_comp…_jlens` | `PROBES/…` |
+| `grid_cell_analysis/train_grid_arms.sh` (174L) | Sibling for `train_cognitive_map_probe`, over a seed sweep. | `PREPARED/grid_<arm>` | `PROBES/grid/*.pt` + logs |
+| `wrappers/run_next_action_arms.sh` (77L) | Master: prepare then train, in order. **Unreferenced.** | — | — |
+| `wrappers/train_next_action_direction_probe.sh` (22L) | Records the parameters of the published comp-0.0/0.2/0.4 run; delegates to `train_next_action_arms.sh`. | `PREPARED/next_action_comp…_jlens` | `PROBES/…` |
 | `train_belief_baseline_probes.sh` (121L) | Six belief-baseline probes: relabel → prepare → split → train, per arm. | `RT/rollout_strategies_baselines`, `ACT/logitlens_*` | `PREPARED/entry49_*`, `PROBES/local_belief_baselines` |
 | `train_more_belief_arms.sh` (161L) | Eight more belief probes at the per-sentence cadence. Same relabel→prepare→split→train shape. | `RT/rollout_strategies_baselines`, `ACT/eos_mass3600_view`, `ACT/random_per_sentence_l15` | `PREPARED/more_belief_*`, `PROBES/local_belief_baselines` |
 | `train_equal_n_belief_arms.sh` (183L) | Fourteen equal-N probes: adds `link_end_of_reasoning_activations` + `intersect_belief_arms` before the same shape. | rollout arms + `ACT/eos_mass3600_view` | `PREPARED/equal_n_*`, `PROBES/local_belief_equalN` |
@@ -83,10 +93,10 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | `inference_oss/run_inference.py` (872L) | Re-runs gpt-oss at cutoffs inside its own reasoning; one results JSON per trajectory. | `TRAJ`, `--lens-root` (mass table), a names file | `--output-dir/size*/NAME.json` |
 | `inference_oss/truncation_strategies.py` (807L) | The `STRATEGIES` registry deciding **where** to cut: `eos`, `jlens_argmax_per_sentence`, `jlens_top_k_global`, `every_token`, `recorded_selection`. Library, not a CLI. | mass tables + `.meta.json`, selection records | — |
 | `inference_oss/run_inference_strategies.sh` (165L) | One arm per strategy; the recorded invocation. | `TRAJ`, `ACT/jlens_mass_l15`, `mass_l15_names.txt` | `RT/rollout_strategies/<arm>` |
-| `rollout_belief_baseline_arms.sh` (73L) | Three baseline arms (random replay + two logitlens loud arms) — a wrapper around the above. | same | `RT/rollout_strategies_baselines/<arm>` |
-| `rollout_more_belief_arms.sh` (78L) | Two more arms (`eos`, `random_per_sentence`) — the same wrapper shape. | same | same |
+| `wrappers/rollout_belief_baseline_arms.sh` (73L) | Three baseline arms (random replay + two logitlens loud arms) — a wrapper around the above. | same | `RT/rollout_strategies_baselines/<arm>` |
+| `wrappers/rollout_more_belief_arms.sh` (78L) | Two more arms (`eos`, `random_per_sentence`) — the same wrapper shape. | same | same |
 | `inference_oss/analysis.py` (536L) | Aggregates the results JSONs into 13 figures + summary stats. | a `run_inference` output dir | `--output-dir/*.png` |
-| `inference_oss/run_analysis.sh` (25L) | Runs the above on `RT/trajectories_train_single_step_probs`. | that dir | `RT/trajectories_train_single_step_plots` |
+| `wrappers/run_analysis.sh` (31L) | Runs the above on `RT/trajectories_train_single_step_probs`. | that dir | `RT/trajectories_train_single_step_plots` |
 | `inference_oss/rollout_status.sh` (194L) | Live progress of the rollout arms (readdirs + log tails only). | `RT/rollout_strategies` | stdout |
 
 ## E. Eval / scoring
@@ -94,9 +104,8 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | Script | Does | Reads | Writes |
 |---|---|---|---|
 | `eval_probe_per_token.py` (310L) | Scores a `next_action` probe on **every** reasoning token of a set, carrying each token's loudness. | `--probe`, `--activations-dir`, `--trajectories-dir`, `--signal-json` | `--out` per-token CSV |
-| `eval_grid_probe_per_token.py` (437L) | The `grid_tile` twin — the specificity control. | same + `--max-cells`, `--pad-to-size` | `--out` per-token CSV |
-| `eval_more_belief_arms.sh` (93L) | Reads 24 probes on all 87,221 held-out tokens. | `PROBES/{local_belief*,next_action_mass_l15}`, `ACT/heldout360_lens` | `RT/probe_loudness_heldout360_24probes` |
-| `eval_equal_n_belief_arms.sh` (106L) | Same for the 38 equal-N-era probes. **83% line-identical to the above.** | same | `RT/probe_loudness_heldout360_equal_n` |
+| `grid_cell_analysis/eval_grid_probe_per_token.py` (437L) | The `grid_tile` twin — the specificity control. | same + `--max-cells`, `--pad-to-size` | `--out` per-token CSV |
+| `eval_belief_arms_heldout.sh` (146L) | Reads every belief probe of a round on all 87,221 held-out tokens. `24probes` = the entry-49/50 round; `equal_n` = those plus the 14 that supersede them. *(merged from `eval_more_belief_arms.sh` + `eval_equal_n_belief_arms.sh`, which were 83% identical)* | `PROBES/{local_belief*,local_belief_equalN,next_action_mass_l15}`, `ACT/heldout360_lens` | `RT/probe_loudness_heldout360_{24probes,equal_n}` |
 | `score_probes_heldout.py` (111L) | Balanced accuracy per probe against both label definitions. | a per-token CSV | table + optional JSON |
 | `compare_equal_n_arms.py` (116L) | Old arms vs. their equal-N rebuilds, from `results.best_balanced_accuracy` in each checkpoint. **Unreferenced.** | `PROBES/**/*.pt` | stdout + optional JSON |
 | `inference_oss/eval_local_belief.py` (106L) | A belief probe against both the local belief and the final action. | a probe + an eval prepared dir | stdout |
@@ -112,7 +121,7 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | `build_probe_loudness_heldout.py` (570L) | The same over the **held-out 360** and over every reasoning token. | `ACT/heldout360_lens`, `RT/rollout_strategies_heldout360/every_token`, `RT/probe_vs_rollout/per_token.csv` | `RT/probe_loudness_heldout360/per_token.csv` |
 | `build_token_loudness_x_infered_action_probability.py` (513L) | Per-token loudness under **both** lenses against the action the model gives if cut there. | `RT/rollout_strategies_heldout360/every_token`, `ACT/heldout360_lens`, `HELDOUT` | `RT/loudness_vs_answer_prob/heldout360_per_token.csv` |
 | `build_convinced_dataset.py` (333L) | Per-token loudness against a convinced / not-convinced label. | `ACT/jlens_mass_l15`, `RT/trajectories_train_single_step_probs`, direction JSON | `--out` CSV + `.meta.json` |
-| `build_convinced_datasets.sh` (37L) | The three convinced datasets as produced: **train 2880 / val 720 / eval 360**. | as above + `heldout360_lens` | `RT/convinced_classifier/{train,val,eval_heldout360}_all.csv` |
+| `wrappers/build_convinced_datasets.sh` (37L) | The three convinced datasets as produced: **train 2880 / val 720 / eval 360**. | as above + `heldout360_lens` | `RT/convinced_classifier/{train,val,eval_heldout360}_all.csv` |
 | `verify_convinced_datasets.py` (115L) | Checks those three against independently-built artifacts. | `RT/convinced_classifier`, `RT/loudness`, `RT/probe_vs_rollout` | stdout |
 
 ## G. Analysis — table producers (read a per-token CSV, write `tables/` + `summary.json`)
@@ -125,7 +134,7 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | `analyze_truncation_strategies.py` (356L) | Compares the rollout arms on one table of cutoffs. | `RT/rollout_strategies`, `ACT/jlens_mass_l15`, `TRAJ` | `--output-dir/*.csv` + `summary.json` |
 | `analyze_direction_word_isolation.py` (408L) | The direction-word confound: does loudness just read a word the model typed? | `RT/probe_loudness_heldout360_16probes/per_token_{jlens,logitlens}_loudness.csv` | `tables/` + `plots/` + `summary.json` |
 | `analyze_jlens_direction_classes.py` (279L) | The lens read through the full direction vocabulary, split by class. | `RT/probe_vs_rollout/per_token.csv`, direction JSON | `RT/probe_vs_rollout/q4v_*.csv` |
-| `analyze_grid_loudness_correlation.py` (226L) | The specificity control: direction loudness vs. **grid** decodability. | an `eval_grid_probe_per_token.py` CSV | `--out` tables |
+| `grid_cell_analysis/analyze_grid_loudness_correlation.py` (226L) | The specificity control: direction loudness vs. **grid** decodability. | an `eval_grid_probe_per_token.py` CSV | `--out` tables |
 
 ## H. Figures
 
@@ -139,10 +148,10 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | `plot_loud_vs_sentence_end.py` (278L) | Does a loud token's action match its sentence's conclusion or the previous one? | `RT/rollout_strategies`, `ACT/jlens_mass_l15` | `RT/rollout_strategies/comparison` |
 | `plot_token_loudness_x_infered_action_probability.py` (379L) | Figures for the loudness × answer-probability table. **Unreferenced.** | `RT/loudness_vs_answer_prob/heldout360_per_token.csv` | `…/plots/*.png` |
 | `build_loudness_x_reasoning_pos_heatmap.py` (509L) | Loudness × chain-position 2-D heatmap — separates the two axes. **Unreferenced.** | `RT/probe_loudness_heldout360_16probes` | `RT/360_held_out/loudness_x_reasoning_pos` |
-| `plot_object_prediction_rate_by_distance.py` (195L) | Goal/agent prediction rate vs. distance, from a results JSON. | a results JSON | `--out-dir` |
-| `plot_object_prediction_rate_by_distance_from_csv.py` (231L) | Same figure from the per-prediction CSV. **Unreferenced.** | a predictions CSV | `--out-dir` |
-| `plot_per_class_accuracy_by_distance.py` (241L) | Per-class accuracy vs. distance, from a results JSON. | a results JSON | `--out-dir` |
-| `plot_per_class_accuracy_by_distance_from_csv.py` (297L) | Same from the CSV. **Unreferenced.** | a predictions CSV | `--out-dir` |
+| `grid_cell_analysis/plots/plot_object_prediction_rate_by_distance.py` (195L) | Goal/agent prediction rate vs. distance, from a results JSON. | a results JSON | `--out-dir` |
+| `grid_cell_analysis/plots/plot_object_prediction_rate_by_distance_from_csv.py` (231L) | Same figure from the per-prediction CSV. **Unreferenced.** | a predictions CSV | `--out-dir` |
+| `grid_cell_analysis/plots/plot_per_class_accuracy_by_distance.py` (241L) | Per-class accuracy vs. distance, from a results JSON. | a results JSON | `--out-dir` |
+| `grid_cell_analysis/plots/plot_per_class_accuracy_by_distance_from_csv.py` (297L) | Same from the CSV. **Unreferenced.** | a predictions CSV | `--out-dir` |
 | `jlens_rank_analysis.py` (135L) | Four supervisor-facing figures from an action-rank CSV. | a `jlens_action_ranks.csv` | `--out_dir/fig*.png` |
 | `jlens_slice_page.py` (93L) | A jacobian-lens slice page for one trajectory step. **Unreferenced.** | a trajectory + a lens | `slice.html` |
 | `jlens_viewer_export.py` (712L) | Streams the (3.2 GB) reasoning-token CSV into per-step viewer JSONs. | a lens CSV + `TRAJ` | `--out-dir/**/step_*.json` |
@@ -162,11 +171,10 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | `audit_trajectory_sets.py` (107L) | Which of the three trajectory sets produced each artifact on disk. | `PREPARED`, `PROBES`, `RT`, `ACT/heldout360_lens` | stdout |
 | `jlens_layer_profile.py` (188L) | The **unbiased** mean direction score per layer over a whole tree — where `--single-layer L` should come from. | an activations dir + `--signal-json` | stdout / `--out` |
 | `jlens_direction_vocab_diagnostic.py` (55L) | Which direction-vocabulary tokens actually reach the lens top-20, per class. | `ACT/heldout360_l15`, direction JSON | stdout |
-| `jlens_action_ranks.py` (153L) | Ranks the four action tokens under the lens for every saved activation. | `--activations_root`, `--jlens_dir` | `jlens_action_ranks.csv` |
-| `jlens_action_ranks_sampled.py` (227L) | A sampled fork of the above (N runs per size×complexity×layer). **73% identical.** | same + `--trajectories_root` | same |
+| `jlens_action_ranks.py` (229L) | Ranks the four action tokens under the lens for every saved activation. `--runs_per_combo N` samples; `--trajectories_root` widens the CSV with `agent_action`, logprobs and top/bottom tokens. Without it the narrow schema is unchanged. *(absorbed `jlens_action_ranks_sampled.py`, 73% identical)* | `--activations_root`, `--jlens_dir` | `jlens_action_ranks.csv` |
 | `gather_reasoning_steps_statistics.py` (246L) | Counts `.pt` per (size, complexity) and plots reasoning-step counts. **Unreferenced.** | an activations root | `reasoning_step_figures/` |
 | `belief_baselines_status.sh` (117L) | One snapshot of the belief-baseline round. | `ACT`, `PROBES`, `RT`, `/workspace/logs` | stdout |
-| `grid_round_status.sh` (93L) | The same for the grid round. | `ACT/grid_reasoning_tokens`, `PREPARED/grid_l15`, `PROBES/grid` | stdout |
+| `grid_cell_analysis/grid_round_status.sh` (93L) | The same for the grid round. | `ACT/grid_reasoning_tokens`, `PREPARED/grid_l15`, `PROBES/grid` | stdout |
 
 ## K. Orchestration and distribution
 
@@ -178,60 +186,67 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 
 ---
 
-## Duplication
+## Duplication — what was resolved, and what is left
 
 Measured, not eyeballed: `difflib` ratio over comment-stripped lines, and AST-level comparison of
-top-level function bodies.
+top-level function bodies. Re-run it after any merge.
 
-### Byte-identical function bodies copied between scripts
+### Resolved
 
-| Function | Copies in |
+| Was | Now |
 |---|---|
-| `find_act_folder`, `read_lens_tables`, `read_mass_columns`, `load_trajectory`, `trajectory_dirs` | `eval_probe_per_token.py` ↔ `eval_grid_probe_per_token.py` |
-| `ensure_unembed_assets` (946 chars) | `jlens_action_ranks.py` ↔ `jlens_action_ranks_sampled.py` |
-| `load_probe` | `build_probe_loudness.py` ↔ `inference_oss/eval_local_belief.py` |
-| `bal_acc` | `analyze_direction_word_isolation.py` ↔ `plot_probe_loudness.py` |
-| `_facets` (774 chars) | `plot_object_prediction_rate_by_distance_from_csv.py` ↔ `plot_per_class_accuracy_by_distance_from_csv.py` |
-| `_complexity_levels` | `plot_object_prediction_rate_by_distance.py` ↔ `plot_per_class_accuracy_by_distance.py` |
+| `eval_equal_n_belief_arms.sh` ↔ `eval_more_belief_arms.sh` (0.83) | `eval_belief_arms_heldout.sh <round>` — a round is a `case` entry. Both key maps verified byte-identical to the originals before deletion. |
+| `jlens_action_ranks.py` ↔ `jlens_action_ranks_sampled.py` (0.73, `ensure_unembed_assets` verbatim) | one `jlens_action_ranks.py`; `--runs_per_combo` and `--trajectories_root` are optional and the narrow CSV schema is unchanged without them |
+| 11 parameter-record wrappers scattered through `scripts/` and the repo root | [`wrappers/`](../wrappers/README.md), where the copied `CMD=(...)` assembly is the *point* rather than a defect |
+| the grid-cell line spread over `scripts/`, `plotting_scripts/`, `evaluation_scripts/` | [`grid_cell_analysis/`](../grid_cell_analysis/README.md); the two now-empty root folders are gone |
 
-Re-implemented rather than copied verbatim, but the same idea in several places:
-`load` (×4), `make_figure` (×4), `bal_acc`/`balanced_accuracy` (×5), `qbin`, `wilson`, `zscore`,
-`read_rows`, `expand_paths`, `entries_key`, `clustered_band`, `draw`, `score`, `collect`.
+### Left, and why
 
-### Whole-file near-duplicates
+**Five duplicated lens-IO helpers.** `find_act_folder`, `read_lens_tables`, `read_mass_columns`,
+`load_trajectory` and `trajectory_dirs` are byte-identical in `scripts/eval_probe_per_token.py`
+and `grid_cell_analysis/eval_grid_probe_per_token.py`. The obvious fix is one module in
+`telos_interp/`. It is deliberately not done here: the grid round is dormant and pulling its
+evaluator back across the folder boundary would undo the separation that was just made. Do it
+when the grid round is next touched — or, better, fold the grid evaluator into
+`eval_probe_per_token.py --probe-type grid_tile`, which kills the file and the five helpers at once.
 
-| Ratio | Pair |
-|---|---|
-| 0.83 | `eval_equal_n_belief_arms.sh` ↔ `eval_more_belief_arms.sh` |
-| 0.73 | `jlens_action_ranks.py` ↔ `jlens_action_ranks_sampled.py` |
-| 0.73 | `jlens_mass_l15.sh` ↔ `jlens_reasoning_tokens_filtered.sh` |
-| 0.57 | `prepare_grid_arms.sh` ↔ `prepare_next_action_arms.sh` |
-| 0.55 | `rollout_belief_baseline_arms.sh` ↔ `rollout_more_belief_arms.sh` |
-| 0.53 | `plot_object_prediction_rate_by_distance_from_csv.py` ↔ `plot_per_class_accuracy_by_distance_from_csv.py` |
-| 0.47 | `plot_object_prediction_rate_by_distance.py` ↔ its `_from_csv` twin |
-| 0.46 | `jlens_reasoning_tokens.sh` ↔ `jlens_reasoning_tokens_filtered.sh` |
-| 0.45 | `plot_object_prediction_rate_by_distance.py` ↔ `plot_per_class_accuracy_by_distance.py` |
+**The four `*_by_distance` plots** (0.45–0.53 pairwise, `_facets` and `_complexity_levels`
+verbatim) collapse cleanly into one `--metric {object,per-class} --source {json,csv}`. Same
+reasoning: dormant round, and all four are unreferenced.
 
-### Repeated shapes below the line-similarity threshold
+**Smaller repeats.** `load_probe` (`build_probe_loudness.py` ↔ `inference_oss/eval_local_belief.py`)
+and `bal_acc` (`analyze_direction_word_isolation.py` ↔ `plot_probe_loudness.py`) are byte-identical.
+Re-implemented rather than copied, but the same idea in several places: `load` (×4),
+`make_figure` (×4), `bal_acc`/`balanced_accuracy` (×5), `qbin`, `wilson`, `zscore`, `read_rows`,
+`expand_paths`, `entries_key`, `clustered_band`, `draw`, `score`, `collect`.
 
-Four gather wrappers (`jlens_reasoning_tokens{,_filtered}.sh`, `jlens_mass_l15.sh`,
-`gather_grid_arms.sh`) each rebuild the same ~25-variable env block and `CMD=(...)` array over one
-Python entry point; they differ in the *values*, which is exactly what a recorded invocation should
-be — but the assembly is copied four times.
+**Three belief-round drivers.** `train_belief_baseline_probes.sh`, `train_more_belief_arms.sh` and
+`train_equal_n_belief_arms.sh` each run relabel → prepare → split → train per arm, with the same
+`EVAL_NAMES` / `SINGLE_LAYER=15` / `SEED=42` / `EPOCHS=50` block. Pairwise ratios are only
+0.32–0.43 — low, because the arm *lists* differ, not the machinery. They are the next real merge
+in the active pipeline, and the biggest remaining one.
 
-Three belief-round drivers (`train_belief_baseline_probes.sh`, `train_more_belief_arms.sh`,
-`train_equal_n_belief_arms.sh`) each run relabel → prepare → split → train per arm, with the same
-`EVAL_NAMES` / `SINGLE_LAYER=15` / `SEED=42` / `EPOCHS=50` block. Pairwise ratios 0.32–0.43 —
-low, because the arm *lists* differ, not the machinery.
+**`prepare_grid_arms.sh` ↔ `prepare_next_action_arms.sh` (0.57)** and
+`train_grid_arms.sh` ↔ `train_next_action_arms.sh` (0.42) are label-twins that a `--label` flag
+would collapse. They now sit either side of the `grid_cell_analysis/` boundary, so merging them
+means deciding that boundary matters less than the duplication. It currently does not.
+
+### The 15 analysis and figure scripts
+
+`analyze_*.py` (6) and `plot_*.py` (8) plus `build_loudness_x_reasoning_pos_heatmap.py` each read
+one per-token CSV and write one set of tables or figures. Pairwise similarity is *low* (0.05–0.13)
+because the statistics genuinely differ — but the shape does not, and a registry keyed by analysis
+name would fit this codebase, which already dispatches `METHODS`, `STRATEGIES` and the scoring
+modes that way. That is the one remaining change that would move the file count a lot, and it is
+also the one that touches published figure provenance, so it is listed rather than done.
 
 ### Unreferenced by any script, doc, config or test (8)
 
 `build_loudness_x_reasoning_pos_heatmap.py`, `compare_equal_n_arms.py`,
 `gather_reasoning_steps_statistics.py`, `jlens_slice_page.py`,
-`plot_object_prediction_rate_by_distance_from_csv.py`,
-`plot_per_class_accuracy_by_distance_from_csv.py`,
-`plot_token_loudness_x_infered_action_probability.py`, `run_next_action_arms.sh`.
+`plot_token_loudness_x_infered_action_probability.py`, the two
+`grid_cell_analysis/plots/*_from_csv.py`, and `wrappers/run_next_action_arms.sh`.
 
 "Unreferenced" is not "dead" — `build_loudness_x_reasoning_pos_heatmap.py` was committed
-deliberately two commits ago. It means nothing else will run them, so they are the ones whose
-provenance has to be read out of `ICLR log.txt` rather than off a call graph.
+deliberately. It means nothing else will run them, so they are the ones whose provenance has to be
+read out of `ICLR log.txt` rather than off a call graph.

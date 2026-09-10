@@ -246,7 +246,7 @@ run_sentence_end_rollout() {
         --strategy eos --trajectory-paths "$TRAJ" \
         --output-dir "$RT/trajectories_train_single_step_probs" \
         --skip-existing
-    x bash "$REPO/scripts/inference_oss/run_analysis.sh"
+    x bash "$REPO/wrappers/run_analysis.sh"
 }
 
 # ---- stage 5: the sentence-end activation tree ---------------------------------------------
@@ -271,11 +271,11 @@ run_count_era_gather() {
         JLENS_DIR="$JLENS_DIR" SIGNAL_JSON="$SIGNAL_JSON" \
         ACTIVATIONS_DIR="$ACT/jlens_reasoning_tokens" LAYERS="$LAYERS" \
         NUM_TOKENS=20 NUM_LAYERS=3 ALWAYS_LAYERS=15 RANDOM_TOKENS=20 SELECT_SEED="$SELECT_SEED" \
-        bash "$REPO/scripts/jlens_reasoning_tokens_filtered.sh"
+        bash "$REPO/wrappers/jlens_reasoning_tokens_filtered.sh"
     x env ACT="$ACT/jlens_reasoning_tokens" TRAJ="$TRAJ" JLENS_DIR="$JLENS_DIR" \
         SIGNAL_JSON="$SIGNAL_JSON" METHODS=logitlens NUM_TOKENS=20 NUM_LAYERS=3 \
         ALWAYS_LAYERS=15 SELECT_SEED="$SELECT_SEED" APPLY=1 ASSUME_YES=1 \
-        bash "$REPO/scripts/jlens_extend_logitlens.sh"
+        bash "$REPO/wrappers/jlens_extend_logitlens.sh"
 }
 
 # ---- stage 7: the count-era next-action arms -----------------------------------------------
@@ -343,7 +343,7 @@ build_eos_view() {  # build_eos_view [names-file] [view-dir]
 run_mass_era_gather() {
     x env NAMES_FILE="$MASS_NAMES" TRAJECTORIES="$TRAJ" JLENS_DIR="$JLENS_DIR" \
         SIGNAL_JSON="$SIGNAL_JSON" ACTIVATIONS_DIR="$ACT/jlens_mass_l15" \
-        bash "$REPO/scripts/jlens_mass_l15.sh"
+        bash "$REPO/wrappers/jlens_mass_l15.sh"
 }
 
 # ---- stage 8b: the mass-era train/eval split ----------------------------------------------
@@ -595,11 +595,11 @@ run_logitlens_mass_gather() {
     x env LENS=logitlens SELECT_METHODS=logitlens NAMES_FILE="$MASS_NAMES" \
         TRAJECTORIES="$TRAJ" JLENS_DIR="$JLENS_DIR" SIGNAL_JSON="$SIGNAL_JSON" \
         ACTIVATIONS_DIR="$ACT/logitlens_mass_l15" \
-        bash "$REPO/scripts/jlens_mass_l15.sh"
+        bash "$REPO/wrappers/jlens_mass_l15.sh"
 }
 
 # ---- stages 21-23: the belief baselines and the report --------------------------------------
-run_belief_baseline_rollout_arms() { x bash "$REPO/scripts/rollout_belief_baseline_arms.sh"; }
+run_belief_baseline_rollout_arms() { x bash "$REPO/wrappers/rollout_belief_baseline_arms.sh"; }
 run_belief_baseline_probes()       { x bash "$REPO/scripts/train_belief_baseline_probes.sh"; }
 run_sixteen_probe_loudness_report(){ x bash "$REPO/scripts/build_sixteen_probe_loudness_report.sh"; }
 
@@ -612,9 +612,9 @@ run_sixteen_probe_loudness_report(){ x bash "$REPO/scripts/build_sixteen_probe_l
 # trajectories_train_single_step_probs: that one predates truncation_strategies.py, and on the ten
 # trajectories where both exist its interior cutoffs disagree on the action 17.9% of the time.
 # See the header of rollout_more_belief_arms.sh.
-run_more_belief_rollout_arms() { x bash "$REPO/scripts/rollout_more_belief_arms.sh"; }
+run_more_belief_rollout_arms() { x bash "$REPO/wrappers/rollout_more_belief_arms.sh"; }
 run_more_belief_probes()       { x bash "$REPO/scripts/train_more_belief_arms.sh"; }
-run_more_belief_heldout_eval() { x bash "$REPO/scripts/eval_more_belief_arms.sh"; }
+run_more_belief_heldout_eval() { x bash "$REPO/scripts/eval_belief_arms_heldout.sh" 24probes; }
 
 # ---- stage 23c: the p1 arms rebuilt so they hold the same sentences ---------------------------
 # Two bugs found while asking why four arms that select one token per sentence had four
@@ -642,7 +642,7 @@ run_equal_n_belief_probes() {
     x bash "$REPO/scripts/train_equal_n_belief_arms.sh" p1
     x bash "$REPO/scripts/train_equal_n_belief_arms.sh" p1-top20
 }
-run_equal_n_belief_heldout_eval() { x bash "$REPO/scripts/eval_equal_n_belief_arms.sh"; }
+run_equal_n_belief_heldout_eval() { x bash "$REPO/scripts/eval_belief_arms_heldout.sh" equal_n; }
 
 # ---- stage 24 (opt-in): the grid-label round ------------------------------------------------
 # NEVER RAN, and produced no result. Two unresolved problems before spending GPU here: the grid
@@ -653,13 +653,13 @@ run_equal_n_belief_heldout_eval() { x bash "$REPO/scripts/eval_equal_n_belief_ar
 run_grid_probing_round() {
     x env TRAJECTORIES="$TRAJ" JLENS_DIR="$JLENS_DIR" SIGNAL_JSON="$GRID_SIGNAL_JSON" \
         ACT="$ACT/grid_reasoning_tokens" \
-        bash "$REPO/scripts/gather_grid_arms.sh"
+        bash "$REPO/grid_cell_analysis/gather_grid_arms.sh"
     x env ARMS="jlens logitlens random" LAYERS=15 ACT="$ACT/grid_reasoning_tokens" \
         TRAJ="$TRAJ" OUT="$PREPARED/grid_l15" \
-        bash "$REPO/scripts/prepare_grid_arms.sh"
+        bash "$REPO/grid_cell_analysis/prepare_grid_arms.sh"
     x env ARMS="jlens logitlens random" SEEDS="42 43 44" TAG=l15 \
         EVAL_NAMES="$COUNT_EVAL_NAMES" PREPARED="$PREPARED/grid_l15" PROBES="$PROBES/grid" \
-        bash "$REPO/scripts/train_grid_arms.sh"
+        bash "$REPO/grid_cell_analysis/train_grid_arms.sh"
 }
 
 # ---- stage 25 (opt-in): written but never run -----------------------------------------------

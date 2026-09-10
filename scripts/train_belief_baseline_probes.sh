@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The belief-baseline probes: label and selection separated.
 #
-# The six probes, from the three rollout arms of scripts/rollout_belief_baseline_arms.sh
+# The six probes, from the three rollout arms of wrappers/rollout_belief_baseline_arms.sh
 # (ICLR log entry 49). Run AFTER those finish and the GPU is free.
 #
 #   random_belief   random selection  -> belief   tokens: the recorded `random` control arm,

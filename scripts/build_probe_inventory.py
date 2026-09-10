@@ -441,7 +441,7 @@ H16 = {
     "probes/local_belief_baselines/next_action_probe_logitlens_p2_lr.pt": "ll2_lr",
     "probes/local_belief_baselines/next_action_probe_logitlens_p2_mlp.pt": "ll2_mlp",
 }
-# Entry 52. These keys are the ones eval_equal_n_belief_arms.sh assigns via --extra-probes;
+# Entry 52. These keys are the ones eval_belief_arms_heldout.sh equal_n assigns via --extra-probes;
 # they must match it exactly. (The CSV column itself is "<parent dir>.<stem minus the
 # next_action_probe_ prefix>", e.g. "p1.jlens_lr" -- the prefix IS stripped.)
 for _arm, _key in (

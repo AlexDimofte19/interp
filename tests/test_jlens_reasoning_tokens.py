@@ -160,7 +160,7 @@ def _reference_run(env, out_name):
         save_activations_to_files,
     )
 
-    sampled = importlib.import_module("scripts.jlens_action_ranks_sampled")
+    sampled = importlib.import_module("scripts.jlens_action_ranks")
     assets = sampled.ensure_unembed_assets(env["jlens_dir"])
     ids, tok = sampled.action_token_ids()
     id_cols = [ids[a] for a in jrt.ACTIONS]
@@ -696,7 +696,7 @@ def test_overwrite_record_permits_it_explicitly(env, signal_json):
 
 
 def test_the_extend_wrapper_invocation_works(env, signal_json):
-    """Exactly what scripts/jlens_extend_logitlens.sh runs, on an already-selected tree.
+    """Exactly what wrappers/jlens_extend_logitlens.sh runs, on an already-selected tree.
 
     --lens logitlens (the jlens CSV is not recomputed), --select-methods logitlens (only the
     new arm), --select-random-tokens 0 (the control is inherited from the record, never

@@ -16,7 +16,8 @@
 # The mass tree's split is next_action_mass_l15_eval_names.txt.
 set -euo pipefail
 
-PY=${PY:-.venv/bin/python}
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+PY=${PY:-$REPO/.venv/bin/python}
 LENS_ROOT=${LENS_ROOT:-/workspace/activations/jlens_mass_l15}
 HELDOUT_ROOT=${HELDOUT_ROOT:-/workspace/activations/heldout360_lens}
 EVAL_NAMES=${EVAL_NAMES:-/workspace/prepared/next_action_mass_l15_eval_names.txt}
@@ -24,14 +25,14 @@ OUT=${OUT:-/workspace/reasoning_theatre/convinced_classifier}
 
 mkdir -p "$OUT"
 
-$PY scripts/build_convinced_dataset.py \
+$PY "$REPO/scripts/build_convinced_dataset.py" \
     --lens-root "$LENS_ROOT" --exclude-names "$EVAL_NAMES" \
     --selection-arm none --out "$OUT/train_all.csv"
 
-$PY scripts/build_convinced_dataset.py \
+$PY "$REPO/scripts/build_convinced_dataset.py" \
     --lens-root "$LENS_ROOT" --names "$EVAL_NAMES" \
     --selection-arm none --out "$OUT/val_all.csv"
 
-$PY scripts/build_convinced_dataset.py \
+$PY "$REPO/scripts/build_convinced_dataset.py" \
     --lens-root "$HELDOUT_ROOT" \
     --selection-arm none --out "$OUT/eval_heldout360_all.csv"

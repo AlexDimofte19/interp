@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Does DIRECTION loudness predict where the GRID is decodable? (It should not.)
 
-Consumes the per-token CSV from `scripts/eval_grid_probe_per_token.py` and produces the
+Consumes the per-token CSV from `grid_cell_analysis/eval_grid_probe_per_token.py` and produces the
 table that answers it: balanced accuracy of the grid_tile probe binned by the token's jlens
 layer-15 direction mass.
 

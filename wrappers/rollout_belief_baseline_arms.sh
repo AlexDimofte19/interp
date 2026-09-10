@@ -19,7 +19,7 @@
 # The two logitlens arms reuse the jlens strategies unchanged: loudness comes from
 # MassTableLoudness, which is parameterised by --lens, so LENS=logitlens is the whole change.
 # They need the logitlens direction-mass tables, which the training tree did NOT have --
-# scripts/jlens_mass_l15.sh with LENS=logitlens builds them (step 1, ~1.6 h; see the header
+# wrappers/jlens_mass_l15.sh with LENS=logitlens builds them (step 1, ~1.6 h; see the header
 # of that script for the invocation).
 #
 # WHY THE RANDOM ARM REPLAYS RATHER THAN RE-DRAWS. Its tokens must be the ones the existing
@@ -36,12 +36,12 @@
 # jlens_top_k_global 3h55m over the same 3600). Every arm resumes from what is on disk.
 #
 # Usage:
-#   bash scripts/rollout_belief_baseline_arms.sh            # all three, in order
-#   bash scripts/rollout_belief_baseline_arms.sh random     # just the control arm
-#   DRY_RUN=1 bash scripts/rollout_belief_baseline_arms.sh  # cutoffs only, no model
+#   bash wrappers/rollout_belief_baseline_arms.sh            # all three, in order
+#   bash wrappers/rollout_belief_baseline_arms.sh random     # just the control arm
+#   DRY_RUN=1 bash wrappers/rollout_belief_baseline_arms.sh  # cutoffs only, no model
 set -euo pipefail
 
-HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 NAMES_FILE=${NAMES_FILE:-/workspace/reasoning_theatre/rollout_strategies/mass_l15_names.txt}
 OUT_ROOT=${OUT_ROOT:-/workspace/reasoning_theatre/rollout_strategies_baselines}
@@ -55,14 +55,14 @@ if [ "$WANT" = all ] || [ "$WANT" = random ]; then
     echo "### arm 1/3: random selection -> belief (replaying the recorded control)"
     NAMES_FILE="$NAMES_FILE" OUT_ROOT="$OUT_ROOT" \
     LENS=jlens LENS_ROOT="$JLENS_ROOT" SELECTION_ARM=random \
-        bash "$HERE/inference_oss/run_inference_strategies.sh" recorded_selection
+        bash "$REPO/scripts/inference_oss/run_inference_strategies.sh" recorded_selection
 fi
 
 if [ "$WANT" = all ] || [ "$WANT" = logitlens ]; then
     echo "### arms 2-3/3: logitlens P1 and P2 -> belief"
     NAMES_FILE="$NAMES_FILE" OUT_ROOT="$OUT_ROOT" \
     LENS=logitlens LENS_ROOT="$LOGITLENS_ROOT" \
-        bash "$HERE/inference_oss/run_inference_strategies.sh" \
+        bash "$REPO/scripts/inference_oss/run_inference_strategies.sh" \
             jlens_argmax_per_sentence jlens_top_k_global
 fi
 

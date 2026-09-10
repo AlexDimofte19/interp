@@ -29,9 +29,9 @@ the ``d >= 1`` false-positive bars.
 
 Usage
 -----
-    python scripts/plot_object_prediction_rate_by_distance.py results.json
-    python scripts/plot_object_prediction_rate_by_distance.py results.json --object goal
-    python scripts/plot_object_prediction_rate_by_distance.py results.json --out-dir figures/
+    python grid_cell_analysis/plots/plot_object_prediction_rate_by_distance.py results.json
+    python grid_cell_analysis/plots/plot_object_prediction_rate_by_distance.py results.json --object goal
+    python grid_cell_analysis/plots/plot_object_prediction_rate_by_distance.py results.json --out-dir figures/
 """
 
 from __future__ import annotations

@@ -14,10 +14,10 @@
 # files through `activations_root`, and the per-cell payload is stored once per
 # (trajectory, step) under `cells` rather than on each of that trajectory's ~20 entries.
 #
-#   ./scripts/prepare_grid_arms.sh
-#   ARMS="jlens logitlens" LAYERS=7:23 ./scripts/prepare_grid_arms.sh
-#   LAYERS=15 OUT=/workspace/prepared/grid_l15 ./scripts/prepare_grid_arms.sh
-#   MAX_CELLS=0 ./scripts/prepare_grid_arms.sh          # every cell, no per-trajectory cap
+#   ./grid_cell_analysis/prepare_grid_arms.sh
+#   ARMS="jlens logitlens" LAYERS=7:23 ./grid_cell_analysis/prepare_grid_arms.sh
+#   LAYERS=15 OUT=/workspace/prepared/grid_l15 ./grid_cell_analysis/prepare_grid_arms.sh
+#   MAX_CELLS=0 ./grid_cell_analysis/prepare_grid_arms.sh          # every cell, no per-trajectory cap
 #
 # MAX_CELLS is the knob that decides whether this is affordable. Padded to the widest grid
 # every trajectory has 225 cells, and ~72k token entries x 225 is 16.2M rows per epoch. The
@@ -26,7 +26,7 @@
 # their tokens and in nothing else.
 #
 # An arm the record does not hold prepares nothing and is reported as MISSING rather than
-# aborting the others -- add it with scripts/jlens_extend_logitlens.sh.
+# aborting the others -- add it with wrappers/jlens_extend_logitlens.sh.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)   # so uv finds pyproject.toml
@@ -125,10 +125,10 @@ done
 if [ -n "$failed" ]; then
     echo ""
     echo "Arms that prepared nothing:$failed"
-    echo "  A lens arm missing from the records is added by scripts/jlens_extend_logitlens.sh;"
+    echo "  A lens arm missing from the records is added by wrappers/jlens_extend_logitlens.sh;"
     echo "  pruning removed the tokens it needs, so prepare cannot re-derive it."
 fi
 
 echo ""
 echo "Train them with:"
-echo "  ARMS=\"$ARMS\" PREPARED=$OUT ./scripts/train_grid_arms.sh"
+echo "  ARMS=\"$ARMS\" PREPARED=$OUT ./grid_cell_analysis/train_grid_arms.sh"

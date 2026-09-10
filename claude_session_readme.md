@@ -87,7 +87,7 @@ downstream work never re-runs `gather_activations` over the same trajectories.
   rather than falsely skipped.
 - Activations are saved **before** the lens loop, so layers with no jlens `J` matrix (which
   the loop `continue`s past) still get their `.pt` files.
-- `scripts/jlens_reasoning_tokens.sh` defaults to `LAYERS="7:23"` (inclusive → 17 layers).
+- `wrappers/jlens_reasoning_tokens.sh` defaults to `LAYERS="7:23"` (inclusive → 17 layers).
 - Needs a GPU that fits gpt-oss-20b — this cannot run on the laptop.
 
 Deliberately unchanged: `reasoning_token_positions()` keeps its 3-tuple return, because
@@ -246,7 +246,7 @@ record with all three arms** — `jlens`, `logitlens`, `random` — and a
 `*_logitlens_analysis.csv`, 600 per size with no gaps. The remaining 4 have no record at all
 and are simply not in any arm.
 
-The logitlens arm came from `scripts/jlens_extend_logitlens.sh` (`--select-num-layers 3`),
+The logitlens arm came from `wrappers/jlens_extend_logitlens.sh` (`--select-num-layers 3`),
 which finished cleanly: log `/workspace/logs/jlens_extend_logitlens_run_16_00.txt`, last
 write 17:56 UTC, ending `done: 2994 trajectory folder(s)`. The only repeated message in it is
 the harmless `--extend but no selection record ... skipping`. Note the "2994" is what that
@@ -337,7 +337,7 @@ tree, `/workspace/activations/grid_reasoning_tokens`, and does not touch round 1
 | gather | **NOT started.** Smoke-tested on 2 trajectories and passed. |
 | prepare / split / train | not started |
 
-Run `./scripts/grid_round_status.sh` for the live picture — it reads only `/workspace`, so it
+Run `./grid_cell_analysis/grid_round_status.sh` for the live picture — it reads only `/workspace`, so it
 works from any session.
 
 **One thing must be settled before the prepare stage** (entry 34, "OPEN LANDMINE"):
@@ -352,12 +352,12 @@ interrupted before producing numbers; it needs no GPU.
 ### The three round-2 scripts
 
 ```bash
-./scripts/gather_grid_arms.sh          # build the tree (~3-4h on one GPU; resumable)
+./grid_cell_analysis/gather_grid_arms.sh          # build the tree (~3-4h on one GPU; resumable)
 ARMS="jlens logitlens random" LAYERS=15 OUT=/workspace/prepared/grid_l15 \
-    ACT=/workspace/activations/grid_reasoning_tokens ./scripts/prepare_grid_arms.sh
+    ACT=/workspace/activations/grid_reasoning_tokens ./grid_cell_analysis/prepare_grid_arms.sh
 PREPARED=/workspace/prepared/grid_l15 TAG=l15 \
     EVAL_NAMES=/workspace/splits/eval_trajectories_720.txt \
-    ARMS="jlens logitlens random" SEEDS="42 43 44" ./scripts/train_grid_arms.sh
+    ARMS="jlens logitlens random" SEEDS="42 43 44" ./grid_cell_analysis/train_grid_arms.sh
 ```
 
 `DRY_RUN=1` on the gather prints its invocation and runs nothing. The planned sweep is 22
@@ -406,7 +406,7 @@ uv run python scripts/jlens_layer_profile.py /workspace/activations/grid_reasoni
     --direction-score logprob_mass_full
 
 # 3. train the arms pinned to it (give the CONTROL the same explicit L; it has no scores)
-SINGLE_LAYER=<L> PREPARED=... ./scripts/train_grid_arms.sh
+SINGLE_LAYER=<L> PREPARED=... ./grid_cell_analysis/train_grid_arms.sh
 ```
 
 Caveat before spending GPU time: on a **pruned** tree a new score can only re-rank the ~20
@@ -1014,9 +1014,9 @@ reads **sixteen** probes on the identical 87,221 heldout-360 tokens.
 LENS=logitlens SELECT_METHODS=logitlens \
 ACTIVATIONS_DIR=/workspace/activations/logitlens_mass_l15 \
 NAMES_FILE=/workspace/reasoning_theatre/rollout_strategies/mass_l15_names.txt \
-  bash scripts/jlens_mass_l15.sh                  # 1h55m, 3600/3600, exit 0
+  bash wrappers/jlens_mass_l15.sh                  # 1h55m, 3600/3600, exit 0
 
-bash scripts/rollout_belief_baseline_arms.sh             # step 2, the three rollout arms
+bash wrappers/rollout_belief_baseline_arms.sh             # step 2, the three rollout arms
 bash scripts/train_belief_baseline_probes.sh           # steps 3-4, gather/relabel/split/train
 bash scripts/build_sixteen_probe_loudness_report.sh           # steps 5-6, score 16 + rebuild the page
 
@@ -1237,11 +1237,11 @@ interp-cli train_cognitive_map_probe --model-type {lr,mlp} --class-weight balanc
     --normalize --cache-activations ...                             # .4051 / .5400
 
 # 3. score EVERY reasoning token of heldout360, then bin by loudness
-python scripts/eval_grid_probe_per_token.py --probe <lr.pt> --probe <mlp.pt> \
+python grid_cell_analysis/eval_grid_probe_per_token.py --probe <lr.pt> --probe <mlp.pt> \
     --activations-dir /workspace/activations/heldout360_l15 \
     --lens-dir /workspace/activations/heldout360_lens \
     --signal-json /workspace/jlens/direction_tokens_full.json --layer 15 ...
-python scripts/analyze_grid_loudness_correlation.py <per_token.csv> --score jlens_mass_L15
+python grid_cell_analysis/analyze_grid_loudness_correlation.py <per_token.csv> --score jlens_mass_L15
 ```
 
 Two trees on purpose: `heldout360_l15` holds the layer-15 `.pt` for every reasoning token,
@@ -1250,12 +1250,12 @@ Two trees on purpose: `heldout360_l15` holds the layer-15 `.pt` for every reason
 
 ### New scripts (merged into `reasoning_theatre`)
 
-- `scripts/eval_grid_probe_per_token.py` — grid twin of `eval_probe_per_token.py`. One row
+- `grid_cell_analysis/eval_grid_probe_per_token.py` — grid twin of `eval_probe_per_token.py`. One row
   per (trajectory, step, token), **not** per cell: a token owns C cells, so each row carries
   `n_true_{c}` / `correct_{c}` per class and balanced accuracy for any bucket is a group-by
   over per-class counts. Per-cell rows would multiply the file ~100× and buy nothing.
   Has `--exclude-names` for the partly-overlapping-tree case below.
-- `scripts/analyze_grid_loudness_correlation.py` — decile table, Spearman, reversal count,
+- `grid_cell_analysis/analyze_grid_loudness_correlation.py` — decile table, Spearman, reversal count,
   and a trajectory-clustered bootstrap of the gap that **recomputes the decile edges inside
   each resample** (the edges are themselves a function of the sample).
 
@@ -1265,7 +1265,7 @@ Two trees on purpose: `heldout360_l15` holds the layer-15 `.pt` for every reason
    `--balance-classes-per-trajectory` takes `samples_per_class = min(..., min_count)`, and
    every grid holds exactly one `A` and one `G`, so `min_count` is 1 and a
    `--max-positions-per-trajectory 25` request yields **4 cells per (trajectory, step)**,
-   one per class present. Verified directly. **`scripts/prepare_grid_arms.sh` still defaults
+   one per class present. Verified directly. **`grid_cell_analysis/prepare_grid_arms.sh` still defaults
    to the broken combination** — fix it before the grid arm sweep. The workaround is a plain
    cap plus `--class-weight balanced` at train time, which is what entry 34 proposed.
 

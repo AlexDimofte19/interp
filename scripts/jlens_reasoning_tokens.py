@@ -22,7 +22,7 @@ there: just norm + unembed).
 
 Needs a GPU that fits gpt-oss-20b — run on the server, not the laptop.
 First run downloads one 4.2 GB shard to cache lm_head + final norm (see
-ensure_unembed_assets), reused from jlens_action_ranks_sampled.py.
+ensure_unembed_assets), reused from jlens_action_ranks.py.
 
 Usage:
   python scripts/jlens_reasoning_tokens.py \
@@ -1216,7 +1216,7 @@ def save_selected_activations(
 def main() -> None:
     import torch
     from scripts.inference_oss.run_inference import expand_paths
-    from scripts.jlens_action_ranks_sampled import action_token_ids, ensure_unembed_assets
+    from scripts.jlens_action_ranks import action_token_ids, ensure_unembed_assets
     from telos_interp.commands.gather_activations.gather_activations_fn import _resolve_torch_dtype
     from telos_interp.commands.gather_activations.gather_activations_utils import (
         ActivationWriter,

@@ -22,9 +22,9 @@
 # DRY RUN BY DEFAULT. Run it first and read the projected file count -- the disk filled up
 # once already, which is why any of this exists.
 #
-#   ./scripts/jlens_extend_logitlens.sh              # report what would be added
-#   APPLY=1 ./scripts/jlens_extend_logitlens.sh      # do it
-#   LIMIT=5 APPLY=1 ./scripts/jlens_extend_logitlens.sh   # ...on a handful first
+#   ./wrappers/jlens_extend_logitlens.sh              # report what would be added
+#   APPLY=1 ./wrappers/jlens_extend_logitlens.sh      # do it
+#   LIMIT=5 APPLY=1 ./wrappers/jlens_extend_logitlens.sh   # ...on a handful first
 #
 # Do not run this while prepare_next_action_jlens_by_complexity.sh is reading the tree.
 set -euo pipefail

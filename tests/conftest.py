@@ -161,7 +161,7 @@ def env(tmp_path, monkeypatch):
         "from_pretrained",
         classmethod(lambda cls, *a, **k: _StubModel()),
     )
-    sampled = importlib.import_module("scripts.jlens_action_ranks_sampled")
+    sampled = importlib.import_module("scripts.jlens_action_ranks")
     monkeypatch.setattr(sampled, "action_token_ids", lambda: (ACTION_IDS, _StubTokenizer()))
     # built once: every run in a test must see the same unembed, or two runs of the same
     # trajectory would differ for reasons that have nothing to do with the code under test

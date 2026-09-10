@@ -26,7 +26,7 @@
 #   LENS=logitlens SELECT_METHODS=logitlens \
 #   ACTIVATIONS_DIR=/workspace/activations/logitlens_mass_l15 \
 #   NAMES_FILE=/workspace/reasoning_theatre/rollout_strategies/mass_l15_names.txt \
-#     bash scripts/jlens_mass_l15.sh
+#     bash wrappers/jlens_mass_l15.sh
 #
 # No random arm there: the control's draw already exists in this tree's records and must be
 # read, never re-drawn (scripts/inference_oss/truncation_strategies.py::recorded_selection).

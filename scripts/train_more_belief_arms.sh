@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Four more belief arms: the per-sentence cadence, completed.
 #
-# The eight probes from the two rollout arms of scripts/rollout_more_belief_arms.sh, plus one
+# The eight probes from the two rollout arms of wrappers/rollout_more_belief_arms.sh, plus one
 # thinning that needed no rollout at all. Run AFTER those finish and the GPU is free.
 #
 #   eos_belief                    last token of each sentence   uncapped, ~71.4k

@@ -38,12 +38,12 @@
 # both arms here have the same one-cutoff-per-sentence cadence). Every arm resumes from disk.
 #
 # Usage:
-#   bash scripts/rollout_more_belief_arms.sh            # both, in order
-#   bash scripts/rollout_more_belief_arms.sh eos        # just the sentence-end arm
-#   DRY_RUN=1 bash scripts/rollout_more_belief_arms.sh  # cutoffs only, no model
+#   bash wrappers/rollout_more_belief_arms.sh            # both, in order
+#   bash wrappers/rollout_more_belief_arms.sh eos        # just the sentence-end arm
+#   DRY_RUN=1 bash wrappers/rollout_more_belief_arms.sh  # cutoffs only, no model
 set -euo pipefail
 
-HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 NAMES_FILE=${NAMES_FILE:-/workspace/reasoning_theatre/rollout_strategies/mass_l15_names.txt}
 OUT_ROOT=${OUT_ROOT:-/workspace/reasoning_theatre/rollout_strategies_baselines}
@@ -61,14 +61,14 @@ if [ "$WANT" = all ] || [ "$WANT" = eos ]; then
     echo "### arm 1/2: sentence ends -> belief"
     NAMES_FILE="$NAMES_FILE" OUT_ROOT="$OUT_ROOT" \
     LENS=jlens LENS_ROOT="$JLENS_ROOT" \
-        bash "$HERE/inference_oss/run_inference_strategies.sh" eos
+        bash "$REPO/scripts/inference_oss/run_inference_strategies.sh" eos
 fi
 
 if [ "$WANT" = all ] || [ "$WANT" = random ]; then
     echo "### arm 2/2: a random token per sentence -> belief (seed $SEED)"
     NAMES_FILE="$NAMES_FILE" OUT_ROOT="$OUT_ROOT" SEED="$SEED" \
     LENS=jlens LENS_ROOT="$JLENS_ROOT" \
-        bash "$HERE/inference_oss/run_inference_strategies.sh" random_per_sentence
+        bash "$REPO/scripts/inference_oss/run_inference_strategies.sh" random_per_sentence
 fi
 
 echo

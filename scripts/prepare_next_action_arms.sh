@@ -17,7 +17,7 @@
 #   COMPLEXITIES="0.0 0.2 0.4" ./scripts/prepare_next_action_arms.sh
 #
 # An arm the record does not hold prepares nothing and is reported as MISSING rather than
-# aborting the others -- add it with scripts/jlens_extend_logitlens.sh.
+# aborting the others -- add it with wrappers/jlens_extend_logitlens.sh.
 #
 # Do not run this while delete_non_jlens_selected.py or an --extend gather is writing.
 set -euo pipefail
@@ -116,10 +116,10 @@ done
 if [ -n "$failed" ]; then
     echo ""
     echo "Arms that prepared nothing:$failed"
-    echo "  A lens arm missing from the records is added by scripts/jlens_extend_logitlens.sh;"
+    echo "  A lens arm missing from the records is added by wrappers/jlens_extend_logitlens.sh;"
     echo "  pruning removed the tokens it needs, so prepare cannot re-derive it."
 fi
 
 echo ""
 echo "Train them with:"
-echo "  ARMS=\"$ARMS\" PREPARED=$OUT ./scripts/train_next_action_direction_probe.sh"
+echo "  ARMS=\"$ARMS\" PREPARED=$OUT ./wrappers/train_next_action_direction_probe.sh"
