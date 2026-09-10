@@ -93,7 +93,7 @@ trajectory JSONs → gather_activations → per-token .pt tree
 objects that `apply_cognitive_map_probe` writes back). That README also documents the jlens fork viewer.
 
 **Activation tree** (written by `gather_activations`, and byte-compatibly by
-`scripts/jlens_reasoning_tokens.py`):
+`telos_interp/loudness_analysis/build_loudness_tables.py`):
 
 ```
 {out}/{trajectory_name}/{model}/layer_{N}/step_{M}/{prompt_prefix|prompt_suffix|grid_state|output}/{token_idx}.pt
@@ -114,7 +114,7 @@ under `cells`, keyed by each entry's `cells_key`. Loaders live in
 
 ### The lens line (jlens and logitlens)
 
-`scripts/jlens_reasoning_tokens.py` does one forward pass per trajectory and emits both the activations
+`telos_interp/loudness_analysis/build_loudness_tables.py` does one forward pass per trajectory and emits both the activations
 and a per-trajectory `{stem}_{lens}_analysis.csv` of top-20 lens predictions per (reasoning token, layer),
 each with its `top_{i}_logprob`. Tokens are scored by how direction-loaded those predictions are, against a
 vocabulary JSON (`data/jlens/direction_tokens_full.json`, `data/jlens/grid_tokens_full.json` in the repo;
@@ -164,7 +164,7 @@ decide what lands on disk can import it without the model stack. It is **method-
 a branch in four files. See its README. Three consumers share one `top_filter`, which is what makes them
 agree:
 
-- `jlens_reasoning_tokens.py --signal-json --select-methods ...` saves *only* the selection (~75x less
+- `build_loudness_tables.py --signal-json --select-methods ...` saves *only* the selection (~75x less
   disk than saving every (token, layer), which is what filled the volume up).
 - `scripts/delete_non_jlens_selected.py` applies the same filter negatively to trees already gathered in
   full. Dry-run by default; `tests/test_delete_non_jlens_selected.py` asserts prune(full) == filtered
@@ -195,7 +195,7 @@ another gather — it is a guarantee, not a method.
 **The tree is already pruned.** Everything outside the jlens ∪ random selection is gone, so a new lens arm
 cannot be recovered by re-filtering — the tokens it would pick were deleted. `delete_non_jlens_selected.py`
 refuses to widen an existing selection for exactly that reason. The path that works is
-`jlens_reasoning_tokens.py --extend` (wrapped by `wrappers/jlens_extend_logitlens.sh`, dry-run by default):
+`build_loudness_tables.py --extend` (wrapped by `wrappers/jlens_extend_logitlens.sh`, dry-run by default):
 one CSV-only forward pass for the new lens, gather only the `.pt` files not already present, and **merge**
 the arm into the record. Arms already recorded keep their picks and config verbatim; the control is
 inherited, never redrawn, because a fresh draw could only sample the survivors. The selection record is
@@ -213,7 +213,7 @@ as well as over layers), where every token is scored at every layer, and that is
 from. A control arm
 carries no scores and cannot pick: give it the same explicit `L`.
 
-Or pin the layer at *gather* time, which is stronger: `jlens_reasoning_tokens.py
+Or pin the layer at *gather* time, which is stronger: `build_loudness_tables.py
 --select-candidate-layers 15` narrows the pool the selection ranks and saves from, so tokens are
 ranked by their layer-15 score rather than by a cross-layer total, and only layer 15 lands on disk.
 It does **not** narrow the CSV or the mass table — those still cover `--layers` — so one run can

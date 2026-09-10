@@ -4,7 +4,7 @@ A *method* is one named recipe for choosing which reasoning tokens — and which
 them — are worth keeping on disk and training a probe on. Every consumer takes the method
 by name, so adding one is an entry in `METHODS` rather than a new branch in four files:
 
-  * `scripts/jlens_reasoning_tokens.py` decides what to *write*,
+  * `telos_interp/loudness_analysis/build_loudness_tables.py` decides what to *write*,
   * `scripts/delete_non_jlens_selected.py` decides what to *keep*,
   * `prepare_activations_for_probing` decides what a probe *trains on*.
 

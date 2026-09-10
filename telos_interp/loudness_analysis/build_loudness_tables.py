@@ -25,7 +25,7 @@ First run downloads one 4.2 GB shard to cache lm_head + final norm (see
 ensure_unembed_assets), reused from jlens_action_ranks.py.
 
 Usage:
-  python scripts/jlens_reasoning_tokens.py \
+  python telos_interp/loudness_analysis/build_loudness_tables.py \
     --trajectory-paths /workspace/trajectories/trajectories_test_full \
     --jlens_dir /workspace/jlens/gridenv \
     --layers 7:23 \
@@ -124,9 +124,10 @@ from telos_interp.jlens_utils import (
     write_selection_record,
 )
 
-# Running this file directly puts scripts/ on sys.path[0], not the repo root, so the
-# sibling `scripts.*` imports below would miss. Put the repo root first.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# `scripts.jlens_action_ranks` is imported lazily in main() and lives outside this
+# package, so the repo root has to be on sys.path however this file is entered.
+# parents[2] is that root: this file sits at telos_interp/loudness_analysis/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 # Heavy deps (torch/transformers) and sibling-script imports are done lazily inside
 # main() so --self-test runs on any machine with only the stdlib.
@@ -351,8 +352,17 @@ def build_direction_mass_columns(args, tok, dev, model_id):
     if not resolved:
         raise SystemExit(f"{mass_json} resolved to no usable token ids; nothing to take the mass over")
     print(f"direction mass: {len(resolved)} token id(s) from {mass_json}", flush=True)
+    from telos_interp.loudness_analysis import signals as _signals
+
+    signal = _signals.resolve(getattr(args, "signal_name", None), mass_json)
     return torch.tensor(resolved, device=dev), {
         "signal_json": str(mass_json),
+        # The name every downstream column and label is built from, and a hash of the
+        # vocabulary's contents. The path alone cannot decide comparability: the same
+        # vocabulary is spelled `data/jlens/...` in the repo and `/workspace/jlens/...`
+        # when deployed, and a file edited in place keeps its path.
+        "signal_name": signal.name,
+        "signal_fingerprint": signal.fingerprint(mass_json),
         "direction_classes": args.direction_classes,
         "num_direction_tokens": len(resolved),
         "num_dropped": len(dropped),
@@ -1215,7 +1225,7 @@ def save_selected_activations(
 
 def main() -> None:
     import torch
-    from scripts.inference_oss.run_inference import expand_paths
+    from telos_interp.loudness_analysis.rollouts.run_inference import expand_paths
     from scripts.jlens_action_ranks import action_token_ids, ensure_unembed_assets
     from telos_interp.commands.gather_activations.gather_activations_fn import _resolve_torch_dtype
     from telos_interp.commands.gather_activations.gather_activations_utils import (
@@ -1365,11 +1375,23 @@ def main() -> None:
         "--signal-json",
         type=Path,
         default=None,
-        help="Enable selective gathering: JSON mapping UP/DOWN/LEFT/RIGHT to token "
-        "strings (e.g. data/jlens/direction_tokens_full.json). The full CSV(s) "
-        "are still written, but only the tokens/layers selected get a .pt, cutting "
-        "the activation tree ~75x. Without this the script saves everything, as "
-        "before.",
+        help="Enable selective gathering: JSON mapping each signal class to token "
+        "strings (e.g. data/jlens/direction_tokens_full.json, whose classes are "
+        "UP/DOWN/LEFT/RIGHT, or grid_tokens_full.json, whose classes are "
+        "WALL/OPEN/GOAL/AGENT/AXIS/STATUS). Any conforming JSON works -- the classes "
+        "are read from the file, not assumed. The full CSV(s) are still written, but "
+        "only the tokens/layers selected get a .pt, cutting the activation tree ~75x. "
+        "Without this the script saves everything, as before.",
+    )
+    ap.add_argument(
+        "--signal-name",
+        default=None,
+        help="What this vocabulary measures, e.g. 'direction' or 'grid'. It names the "
+        "loudness columns and figure labels downstream "
+        "({lens}_{signal}_logmass_L{layer}), so it has to stay stable for a given "
+        "vocabulary. Defaults to the name inferred from --signal-json's filename, so "
+        "direction_tokens_full.json is signal 'direction'. Give it explicitly for any "
+        "vocabulary whose filename does not already say what it measures.",
     )
     ap.add_argument(
         "--select-methods",

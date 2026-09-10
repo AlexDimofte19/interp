@@ -6,7 +6,7 @@ control arm, the only record of which of the survivors are the control. Re-deriv
 a CSV would work for a lens arm but not the control: after pruning, a uniform draw over the
 surviving tokens is no longer a uniform draw over the reasoning chain.
 
-So both `scripts/jlens_reasoning_tokens.py` (which prunes as it writes) and
+So both `telos_interp/loudness_analysis/build_loudness_tables.py` (which prunes as it writes) and
 `scripts/delete_non_jlens_selected.py` (which prunes after the fact) drop this file next to
 the CSVs, and `prepare_activations_for_probing`'s `recorded_*` modes read it back instead of
 re-scoring.

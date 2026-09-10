@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prepare one next_action probe dataset per arm: jlens, logitlens, random.
 #
-# Every arm is read from the {stem}_jlens_selection.json that jlens_reasoning_tokens.py
+# Every arm is read from the {stem}_jlens_selection.json that build_loudness_tables.py
 # (--signal-json, or --extend) or delete_non_jlens_selected.py wrote. Re-scoring a lens CSV
 # would still find the right tokens, but on a pruned tree "draw N tokens uniformly" can only
 # draw from what survived -- which is not a uniform draw over the reasoning chain. The

@@ -31,7 +31,7 @@ missing cells.** All three axes are now measured independently (§6, §7).
 
 ```
 trajectory JSONs
-   ├─ jlens_reasoning_tokens.py ─→ per-token .pt  +  {stem}_{lens}_analysis.csv
+   ├─ build_loudness_tables.py ─→ per-token .pt  +  {stem}_{lens}_analysis.csv
    │                                              +  {stem}_{lens}_direction_mass.csv (+ .meta.json)
    │                                              +  {stem}_jlens_selection.json   (the arms)
    ├─ run_inference.py (truncation strategies) ─→ per-trajectory rollout JSON = the LOCAL BELIEF label
@@ -691,5 +691,5 @@ selection **+10.3 pp** (.4772 → .5806) and jlens top-20 **+6.6 pp** (.4440 →
 - **Layer 15 only** since entry 36; `--direction-classes` is `all`, so nothing can be split by class.
 - **Entry 44(d)'s figures cover all 3,600** (train and eval mixed) — a different population from
   every other result. Re-cut to eval 720 before comparing to any probe number.
-- `--names-file` on `jlens_reasoning_tokens.py` and its `has_work()` guard are **uncommitted**, mixed
+- `--names-file` on `build_loudness_tables.py` and its `has_work()` guard are **uncommitted**, mixed
   with ~1,180 lines of older working state in the same two files.

@@ -5,7 +5,7 @@ keeping**. Three consumers, one answer:
 
 | consumer | what it does with the answer |
 | --- | --- |
-| `scripts/jlens_reasoning_tokens.py` | writes only the selected activations |
+| `telos_interp/loudness_analysis/build_loudness_tables.py` | writes only the selected activations |
 | `scripts/delete_non_jlens_selected.py` | deletes everything *but* the selected activations |
 | `prepare_activations_for_probing` | builds a probe dataset from the CSV or the record |
 
@@ -92,7 +92,7 @@ tokens covering different layer subsets be compared.
 The first can only see direction words that reached the **top 20** — mass sitting at rank
 21 is invisible, and a token whose direction belief is spread thinly over many words looks
 empty. The second is computed at the source: while the `[b, vocab]` logits are still on the
-device, `jlens_reasoning_tokens.py` gathers *every* direction token id and logsumexps them.
+device, `build_loudness_tables.py` gathers *every* direction token id and logsumexps them.
 That costs one gather over ~500 columns plus one reduction, against logits the unembed
 already paid for.
 

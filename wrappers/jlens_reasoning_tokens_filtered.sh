@@ -3,7 +3,7 @@
 #
 # Same as jlens_reasoning_tokens.sh -- full CSV, same resume-by-CSV behaviour -- but the
 # .pt tree is filtered down to the top NUM_TOKENS tokens x NUM_LAYERS layers (plus
-# ALWAYS_LAYERS), which is ~75x less disk. See scripts/jlens_reasoning_tokens.py.
+# ALWAYS_LAYERS), which is ~75x less disk. See telos_interp/loudness_analysis/build_loudness_tables.py.
 #
 # RANDOM_TOKENS is not optional bookkeeping: it reserves a uniform-draw control arm. Once
 # a trajectory holds only its top-scoring tokens, that draw can never be made again, and a
@@ -54,7 +54,7 @@ PROFILE=${PROFILE:-}
 
 [ -f "$SIGNAL_JSON" ] || { echo "!! signal JSON not found: $SIGNAL_JSON" >&2; exit 1; }
 
-uv run --project "$REPO" python "$REPO/scripts/jlens_reasoning_tokens.py" \
+uv run --project "$REPO" python "$REPO/telos_interp/loudness_analysis/build_loudness_tables.py" \
     --trajectory-paths "$TRAJECTORIES" \
     ${NAMES_FILE:+--names-file "$NAMES_FILE"} \
     --jlens_dir "$JLENS_DIR" \

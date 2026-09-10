@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # next_action prepare from a pruned activation tree, restricted to comp 0.0/0.2/0.4.
 #
-# Every arm comes from the {stem}_jlens_selection.json that jlens_reasoning_tokens.py (with
+# Every arm comes from the {stem}_jlens_selection.json that build_loudness_tables.py (with
 # --signal-json, or --extend) or delete_non_jlens_selected.py wrote. Re-scoring a CSV would
 # still find the right lens tokens, but on a pruned tree "draw N tokens uniformly" can only
 # draw from what survived -- which is not a uniform draw over the reasoning chain. The
 # control has to be read back, not recomputed.
 #
 # ARMS names which arms to prepare. An arm the record does not hold prepares nothing; add
-# it first with jlens_reasoning_tokens.py --extend.
+# it first with build_loudness_tables.py --extend.
 #
 # prepare_activations_for_probing has no complexity filter -- it processes every folder
 # under --activations-dir -- so link the wanted trajectories into a view and prepare that.

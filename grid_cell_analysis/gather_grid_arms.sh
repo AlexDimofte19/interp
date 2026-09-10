@@ -94,7 +94,7 @@ fi
 
 mkdir -p "$(dirname "$LOG")" "$(dirname "$STATUS")"
 
-cmd=(uv run --project "$REPO" python "$REPO/scripts/jlens_reasoning_tokens.py"
+cmd=(uv run --project "$REPO" python "$REPO/telos_interp/loudness_analysis/build_loudness_tables.py"
     --trajectory-paths "$TRAJECTORIES"
     --jlens_dir "$JLENS_DIR"
     --activations-dir "$ACT"

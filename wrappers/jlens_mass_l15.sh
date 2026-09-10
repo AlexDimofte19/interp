@@ -87,7 +87,7 @@ UV_EXTRAS=${UV_EXTRAS:---extra gpu}
 
 [ -f "$SIGNAL_JSON" ] || { echo "!! signal JSON not found: $SIGNAL_JSON" >&2; exit 1; }
 
-uv run --project "$REPO" $UV_EXTRAS python "$REPO/scripts/jlens_reasoning_tokens.py" \
+uv run --project "$REPO" $UV_EXTRAS python "$REPO/telos_interp/loudness_analysis/build_loudness_tables.py" \
     --trajectory-paths "$TRAJECTORIES" \
     ${NAMES_FILE:+--names-file "$NAMES_FILE"} \
     --jlens_dir "$JLENS_DIR" \

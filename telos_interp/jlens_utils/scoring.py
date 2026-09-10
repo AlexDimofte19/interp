@@ -3,7 +3,7 @@
 The original score was a **count**: of a row's top-k lens predictions, how many are
 direction words. It throws away everything the lens actually said — a direction word the
 lens ranked first with p=0.4 counts exactly as much as one it ranked 20th with p=1e-6.
-`scripts/jlens_reasoning_tokens.py` now writes a `top_{i}_logprob` beside every `top_{i}`,
+`telos_interp/loudness_analysis/build_loudness_tables.py` now writes a `top_{i}_logprob` beside every `top_{i}`,
 so the score can be the probability mass the lens puts on direction words instead.
 
 Like `methods.py`, this is a **registry** rather than a branch in each consumer: a score
@@ -18,7 +18,7 @@ sitting at rank 21 is invisible, and a token whose direction belief is spread th
 many words can look empty.
 
 `source="mass"` reads the direction-mass table, which
-`scripts/jlens_reasoning_tokens.py` computes at the source: while the `[b, vocab]` logits
+`telos_interp/loudness_analysis/build_loudness_tables.py` computes at the source: while the `[b, vocab]` logits
 are still on the device it gathers *every* direction token id and logsumexps them, so the
 number is the total direction probability over the whole vocabulary rather than over a
 top-20 window. It costs one gather and one reduction per (chunk, layer) — nothing next to

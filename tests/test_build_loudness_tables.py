@@ -1,4 +1,4 @@
-"""End-to-end tests for scripts/jlens_reasoning_tokens.py against a stub model.
+"""End-to-end tests for telos_interp/loudness_analysis/build_loudness_tables.py against a stub model.
 
 The stub model, the `env` / `signal_json` fixtures and the `_run` / `_select_args` helpers
 live in tests/conftest.py, shared with tests/test_delete_non_jlens_selected.py.

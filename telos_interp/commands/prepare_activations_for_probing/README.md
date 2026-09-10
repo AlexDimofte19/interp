@@ -99,7 +99,7 @@ recomputed. For `recorded_*`, `--num-tokens` is an optional cap on each arm's to
 A `recorded_*` mode naming an arm the record does not hold selects **nothing** (reported
 under `--verbose`), which on an empty result surfaces as prepare's usual "no activations were
 extracted". That is correct rather than a bug: the arm you name is the arm you get. Add a
-missing arm with `scripts/jlens_reasoning_tokens.py --extend` — pruning removed the tokens it
+missing arm with `telos_interp/loudness_analysis/build_loudness_tables.py --extend` — pruning removed the tokens it
 would need, so it cannot be re-derived here.
 
 | `--layer-selection` | which layers of each selected token become samples |
@@ -114,7 +114,7 @@ When both axes name a lens they must name the **same** one — a selection reads
 are chosen per token, so two tokens may contribute different layers.
 
 The direction counts come from the `{trajectory_name}_{lens}_analysis.csv` that
-`scripts/jlens_reasoning_tokens.py` writes next to the activations: for each
+`telos_interp/loudness_analysis/build_loudness_tables.py` writes next to the activations: for each
 `(reasoning token, layer)` row, the score is how many of `top_1..top_k` appear in
 `--direction-tokens-path` (a JSON mapping `UP`/`DOWN`/`LEFT`/`RIGHT` to token strings). A
 token's trajectory-level score is the sum over the candidate layers; ranking is per
@@ -505,7 +505,7 @@ is copied into the output directory.
 ## Notes
 
 - At least one of `prompt_prefix_indices`, `prompt_suffix_indices`, `grid_state_indices`, or `output_indices` must be specified.
-- `next_action` requires `output_indices` to be set and ignores the other category indices. With the default `token_selection="all"` it expects the `output` tokens to have been gathered with `--output-indices eos` and a single `--layers` value; the `<lens>_direction`/`random`/`recorded_*` modes instead pick from whatever reasoning tokens `scripts/jlens_reasoning_tokens.py` saved.
+- `next_action` requires `output_indices` to be set and ignores the other category indices. With the default `token_selection="all"` it expects the `output` tokens to have been gathered with `--output-indices eos` and a single `--layers` value; the `<lens>_direction`/`random`/`recorded_*` modes instead pick from whatever reasoning tokens `telos_interp/loudness_analysis/build_loudness_tables.py` saved.
 - `token_selection`/`layer_selection` apply to `next_action` and `grid_tile` only; passing them with another probe type is an error. On `grid_tile` they make the manifest **token-major** (see below); `token_major=True` does the same without a selection, and is an error for any other probe type.
 - The activation vector itself is stored once per trajectory; per-cell `[row_id, col_id]` is folded in at training time.
 - Class balancing finds the minimum count across all cell types and samples equally from each.

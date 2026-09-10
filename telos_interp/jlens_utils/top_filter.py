@@ -5,7 +5,7 @@ One forward pass over a long reasoning chain writes a `.pt` per (token, layer) â
 handful of tokens whose lens output is most direction-loaded. `top_filter` reads a
 trajectory's analysis CSVs and returns exactly that handful, so both
 
-  * `scripts/jlens_reasoning_tokens.py`, which uses it to decide what to *write*, and
+  * `telos_interp/loudness_analysis/build_loudness_tables.py`, which uses it to decide what to *write*, and
   * `scripts/delete_non_jlens_selected.py`, which uses it to decide what to *keep*
 
 agree by construction: pruning an existing tree lands on the same files a filtered gather

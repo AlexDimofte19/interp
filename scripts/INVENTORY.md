@@ -49,7 +49,7 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 
 | Script | Does | Reads | Writes |
 |---|---|---|---|
-| `jlens_reasoning_tokens.py` (1932L) | **The engine.** One forward pass per trajectory; emits per-token activations, the `{stem}_{lens}_analysis.csv` of top-20 lens predictions, the `{stem}_direction_mass.csv` wide table + `.meta.json`, and the `{stem}_jlens_selection.json` record. `--extend` merges a new lens arm into an existing record. | `TRAJ`, `--jlens_dir` (`JLENS/gridenv`), `--signal-json` | `--activations-dir` tree: `.pt` + 3 CSV/JSON artifacts per trajectory |
+| `build_loudness_tables.py` (1932L) | **The engine.** One forward pass per trajectory; emits per-token activations, the `{stem}_{lens}_analysis.csv` of top-20 lens predictions, the `{stem}_direction_mass.csv` wide table + `.meta.json`, and the `{stem}_jlens_selection.json` record. `--extend` merges a new lens arm into an existing record. | `TRAJ`, `--jlens_dir` (`JLENS/gridenv`), `--signal-json` | `--activations-dir` tree: `.pt` + 3 CSV/JSON artifacts per trajectory |
 | `wrappers/jlens_reasoning_tokens.sh` (48L) | Thin wrapper: full sweep, saves **every** (token, layer). Superseded. | `TRAJ`, `JLENS/gridenv` | `ACT/jlens_reasoning_tokens` |
 | `wrappers/jlens_reasoning_tokens_filtered.sh` (85L) | Same sweep but saves only the selection (~75× less disk). The count-era tree's recorded invocation. | `TRAJ`, `JLENS/direction_tokens_full.json` | `ACT/jlens_reasoning_tokens` |
 | `wrappers/jlens_mass_l15.sh` (123L) | The **mass-era** recorded invocation: `logprob_mass_full` ranking, `--select-candidate-layers 15`, layers 7:23 in the CSV. | `TRAJ`, `JLENS/direction_tokens_full.json` | `ACT/jlens_mass_l15` (or `logitlens_mass_l15` with `LENS=logitlens`) |

@@ -384,11 +384,11 @@ run_mass_era_next_action_probes() {
 # These 360 trajectories are disjoint from the 3600 -- they are the only set nothing was
 # selected or trained on.
 run_heldout_trees() {
-    x $UV python "$REPO/scripts/jlens_reasoning_tokens.py" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/build_loudness_tables.py" \
         --trajectory-paths "$HELDOUT_TRAJ" --names-file "$HELDOUT_NAMES" \
         --jlens_dir "$JLENS_DIR" --activations-dir "$ACT/heldout360_l15" \
         --signal-json "$SIGNAL_JSON" --lens jlens --layers 15 --steps all
-    x $UV python "$REPO/scripts/jlens_reasoning_tokens.py" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/build_loudness_tables.py" \
         --trajectory-paths "$HELDOUT_TRAJ" --names-file "$HELDOUT_NAMES" \
         --jlens_dir "$JLENS_DIR" --activations-dir "$ACT/heldout360_lens" \
         --signal-json "$SIGNAL_JSON" --lens both --layers "$LAYERS" --steps all \

@@ -20,7 +20,7 @@ Each still resolves the repo from its own location (`REPO=.../..`), so they run 
 
 ## The gather arms
 
-All four drive `scripts/jlens_reasoning_tokens.py`. They differ in how a token is *scored* and
+All four drive `telos_interp/loudness_analysis/build_loudness_tables.py`. They differ in how a token is *scored* and
 how much of the tree is *kept*.
 
 | Wrapper | Tree it built | The parameters that matter |

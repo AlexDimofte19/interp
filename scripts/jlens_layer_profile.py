@@ -54,7 +54,7 @@ from telos_interp.jlens_utils import (  # noqa: E402
 def trajectory_folders(activations_dir: Path) -> list[Path]:
     """Every folder that could hold an analysis CSV, size-sharded tree or flat.
 
-    `jlens_reasoning_tokens.py` writes `size{S}/{stem}/{stem}_{lens}_analysis.csv`; a
+    `build_loudness_tables.py` writes `size{S}/{stem}/{stem}_{lens}_analysis.csv`; a
     single-size run writes `{stem}/...`. Both are just "directories containing a CSV", so
     glob for the CSVs and take their parents rather than encoding the layout twice.
     """

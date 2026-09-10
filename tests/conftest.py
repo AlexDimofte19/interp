@@ -25,7 +25,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-jrt = importlib.import_module("scripts.jlens_reasoning_tokens")
+jrt = importlib.import_module("telos_interp.loudness_analysis.build_loudness_tables")
 
 # Layer 19 has no jlens matrix, so it gets no CSV rows and cannot be scored -- the filter's
 # candidate pool is the *scorable* layers, not everything --layers asked for. Both the
@@ -177,7 +177,7 @@ def env(tmp_path, monkeypatch):
 def _run(env, out_name, *extra):
     out = env["tmp"] / out_name
     argv = [
-        "jlens_reasoning_tokens.py",
+        "build_loudness_tables.py",
         "--trajectory-paths",
         str(env["traj_path"]),
         "--jlens_dir",

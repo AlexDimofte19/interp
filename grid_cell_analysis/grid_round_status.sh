@@ -24,7 +24,7 @@ EXPECTED=${EXPECTED:-3600}
 echo "=== 1. gather ==="
 # The argv check matters: a stopped (state Tl) leftover from an older run sits in the
 # process table for days and matches a bare pgrep for the script name.
-if pgrep -af "jlens_reasoning_tokens.py" 2>/dev/null | grep -q -- "$ACT"; then
+if pgrep -af "build_loudness_tables.py" 2>/dev/null | grep -q -- "$ACT"; then
     echo "  gather: ALIVE"
 else
     echo "  gather: not running"

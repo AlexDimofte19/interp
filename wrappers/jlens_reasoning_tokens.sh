@@ -2,7 +2,7 @@
 # Full j-space sweep over reasoning tokens on the GPU host.
 # Writes, per trajectory, the residual-stream activations (gather_activations
 # layout) and a {stem}_jlens_analysis.csv of top-20 lens predictions per
-# (reasoning token, layer). See jlens_reasoning_tokens.py.
+# (reasoning token, layer). See build_loudness_tables.py.
 set -euo pipefail
 
 TRAJECTORIES=${TRAJECTORIES:-/workspace/trajectories/reveng/trajectories_train_single_step/}
@@ -26,7 +26,7 @@ FWD_BATCH_TOKENS=${FWD_BATCH_TOKENS:-}  # padded-token budget per forward (defau
 PT_FORMAT=${PT_FORMAT:-}    # zip (default) or legacy; benchmark before switching
 PROFILE=${PROFILE:-}        # non-empty to print the per-phase wall-time split
 
-uv run python jlens_reasoning_tokens.py \
+uv run python build_loudness_tables.py \
     --trajectory-paths "$TRAJECTORIES" \
     --jlens_dir "$JLENS_DIR" \
     --layers "$LAYERS" \

@@ -57,7 +57,7 @@ ASSUME_YES=${ASSUME_YES:-}   # skip the interactive confirm (for unattended repr
 # --select-random-tokens 0: the control is inherited from the record, never redrawn.
 # --lens logitlens: the jlens CSV already exists and is not recomputed.
 CMD=(
-    uv run --project "$REPO" python "$REPO/scripts/jlens_reasoning_tokens.py"
+    uv run --project "$REPO" python "$REPO/telos_interp/loudness_analysis/build_loudness_tables.py"
     --trajectory-paths "$TRAJ"
     --jlens_dir "$JLENS_DIR"
     --activations-dir "$ACT"

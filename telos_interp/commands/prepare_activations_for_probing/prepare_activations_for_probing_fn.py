@@ -197,7 +197,7 @@ def _selection_candidates(
     """Resolve what is on disk for a trajectory, filtered by the layer/step specs.
 
     Returns (model_folder, candidate_layers, candidate_steps, tokens_by_step). Steps and
-    output-token indices are unioned across the candidate layers — jlens_reasoning_tokens.py
+    output-token indices are unioned across the candidate layers — build_loudness_tables.py
     writes the same tokens for every layer, so the union is also the per-layer set.
     """
     model_folder = discover_model_folder(trajectory_folder)
@@ -844,7 +844,7 @@ def prepare_activations_for_probing(
             record. `num_tokens` optionally caps each arm to its top-K; `layers` still
             narrows which of the recorded layers are used. An arm the record does not hold
             (e.g. "recorded_logitlens" on a tree pruned before that arm existed) yields
-            nothing — add it with `jlens_reasoning_tokens.py --extend`.
+            nothing — add it with `build_loudness_tables.py --extend`.
         layer_selection: Which layers of each selected token become samples (`next_action`
             and `grid_tile` only). "spec" (default) uses every layer in `layers`;
             "<lens>_direction" takes that token's top `num_layers` layers by direction

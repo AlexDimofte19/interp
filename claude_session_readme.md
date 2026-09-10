@@ -55,7 +55,7 @@ rollout_status.sh}`, `tests/test_truncation_strategies.py`, plus
 (see *Where things live / what needs merging*), and the round-2 grid-probing working state
 below is still uncommitted.
 
-Covers two connected changes: `scripts/jlens_reasoning_tokens.py` now persists activations
+Covers two connected changes: `telos_interp/loudness_analysis/build_loudness_tables.py` now persists activations
 alongside its lens analysis (committed as `2296c92`), and
 `prepare_activations_for_probing` can now select which of those tokens/layers a
 `next_action` probe trains on (uncommitted at time of writing).
@@ -63,12 +63,12 @@ alongside its lens analysis (committed as `2296c92`), and
 ## The pipeline
 
 ```
-jlens_reasoning_tokens.py                 prepare_activations_for_probing        train_next_action_probe
+build_loudness_tables.py                 prepare_activations_for_probing        train_next_action_probe
   forward pass + Jacobian lens              pick tokens & layers                   probe on (D,) activations
   -> .pt activations + per-traj CSV         -> manifest.json of samples
 ```
 
-## 1. `scripts/jlens_reasoning_tokens.py` — dual artefacts
+## 1. `telos_interp/loudness_analysis/build_loudness_tables.py` — dual artefacts
 
 One forward pass now produces both the lens statistics and the residual streams, so
 downstream work never re-runs `gather_activations` over the same trajectories.
@@ -186,11 +186,11 @@ code.
   `(step, token)` pairs matched an independently computed ranking exactly, every `act_path`
   loaded the tensor for the right `(layer, step, token)`, `direction_count` monotonically
   non-increasing. Picks were `Ġleft`, `Ġright`, `ĠMove`, `Ġdown`, `Ġdown` at layers 9–18.
-- `scripts/jlens_reasoning_tokens.py --self-test` passes; its GPU-host run and the
+- `telos_interp/loudness_analysis/build_loudness_tables.py --self-test` passes; its GPU-host run and the
   `torch.allclose` cross-check against an existing `gather_activations` tree have **not**
   been done yet.
 
-## 3. `jlens_reasoning_tokens.py` — throughput rework
+## 3. `build_loudness_tables.py` — throughput rework
 
 The sweep was unacceptably slow on the high-complexity cells. The cause is not grid size:
 every per-step cost scales linearly with the length of the reasoning chain, and comp
@@ -227,7 +227,7 @@ slower, and which one you have decides whether the threading is enough.
 
 ### What is verified, and what is not
 
-`tests/test_jlens_reasoning_tokens.py` runs the whole script against a stub 24-layer model
+`tests/test_build_loudness_tables.py` runs the whole script against a stub 24-layer model
 whose activations are a closed-form function of (layer, token id, position). It asserts the
 rewritten loop reproduces **the pre-change implementation byte-for-byte** — the golden
 reference `_reference_run` is the old inner loop transcribed verbatim — for the CSV and
@@ -306,7 +306,7 @@ reads `${PREPARED}_${arm}`. Expect ~3600 × ≤20 × 1 = ≤72k rows per arm, ma
   every arm back with `recorded_<arm>` — re-scoring a CSV would still find the right tokens
   for a lens, but a uniform draw over the survivors is no longer a uniform draw over the
   reasoning chain, and the control would stop being one.
-- Watch out for a stopped (state `Tl`) leftover `jlens_reasoning_tokens.py` from the original
+- Watch out for a stopped (state `Tl`) leftover `build_loudness_tables.py` from the original
   gather, still parked in the process table days later alongside `watch`/`tail` watchdogs.
   Not writing, but a `pgrep` for a live run will match it — check the argv (`--extend`,
   `--select-num-layers`) and the state flag, not just the name.
@@ -395,7 +395,7 @@ tree is safe:
 # 1. re-emit the CSVs + the direction-mass tables (no .pt written, tree untouched).
 #    --direction-mass-json is REQUIRED here: it defaults to --signal-json, which this
 #    (non-selective) invocation does not set, and without it no table is written.
-uv run python scripts/jlens_reasoning_tokens.py --overwrite --no-save-activations \
+uv run python telos_interp/loudness_analysis/build_loudness_tables.py --overwrite --no-save-activations \
     --trajectory-paths ... --jlens_dir /workspace/jlens/gridenv \
     --activations-dir /workspace/activations/grid_reasoning_tokens --lens both \
     --direction-mass-json /workspace/jlens/grid_tokens_full.json
@@ -420,7 +420,7 @@ arm needs a fresh selective gather (or `--extend`) on a tree that still holds th
 - Parked, not forgotten: the eos cap (`--tokens-per-trajectory 20`, entry 30), and an eos arm
   for round 2 — that one needs no gather, only prepare+train, since it uses no lens selection.
 - PID 1992 is a stopped (`Tl`) leftover from the original round-1 gather, days old and idle. A
-  bare `pgrep jlens_reasoning_tokens.py` matches it; check the argv, as `grid_round_status.sh`
+  bare `pgrep build_loudness_tables.py` matches it; check the argv, as `grid_round_status.sh`
   does.
 
 Everything above is **uncommitted working-tree state** on `reasoning_theatre`.
@@ -1100,7 +1100,7 @@ which is the check that the six added arms sit on the same measurement.
 
 ### Still open
 
-- **`--names-file` on `jlens_reasoning_tokens.py` is UNCOMMITTED**, together with the
+- **`--names-file` on `build_loudness_tables.py` is UNCOMMITTED**, together with the
   `has_work()` guard that turns an empty trajectory list into an error instead of an
   `IndexError`, and its three tests. Both files also carry ~959 and ~220 lines of *older*
   uncommitted working state, so committing them lands that too — left for a human to decide.
