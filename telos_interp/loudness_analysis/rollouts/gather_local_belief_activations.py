@@ -25,7 +25,7 @@ the tensors are byte-identical to what that command would write for the same
 positions -- an unbatched, single-sequence forward pass, no bf16 packing.
 
 Run from the repo so telos_interp imports:
-    uv run --project . --extra gpu python scripts/inference_oss/gather_local_belief_activations.py
+    uv run --project . --extra gpu python telos_interp/loudness_analysis/rollouts/gather_local_belief_activations.py
 
 GPU host only. One forward pass per trajectory; ~3600 passes.
 """

@@ -1,4 +1,4 @@
-"""Tests for --keep-kinds in scripts/inference_oss/relabel_manifest_from_rollout.py.
+"""Tests for --keep-kinds in telos_interp/loudness_analysis/rollouts/relabel_manifest_from_rollout.py.
 
 The flag exists because of one asymmetry: the arms built by
 ``gather_local_belief_activations.py`` write a tree holding exactly the positions they want,
@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-rl = importlib.import_module("scripts.inference_oss.relabel_manifest_from_rollout")
+rl = importlib.import_module("telos_interp.loudness_analysis.rollouts.relabel_manifest_from_rollout")
 
 NAME = "together_ai_openai_gpt-oss-20b_size5_comp0.0_1"
 

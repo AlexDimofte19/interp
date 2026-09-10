@@ -1,4 +1,4 @@
-"""Tests for the batch-size caps in scripts/inference_oss/run_inference.py.
+"""Tests for the batch-size caps in telos_interp/loudness_analysis/rollouts/run_inference.py.
 
 These exist because of a real crash: an arm of the truncation-strategy rollout died 165
 trajectories in with ``torch.OutOfMemoryError: Tried to allocate 4.80 GiB`` on a batch of
@@ -20,7 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 pytest.importorskip("torch")
-ri = importlib.import_module("scripts.inference_oss.run_inference")
+ri = importlib.import_module("telos_interp.loudness_analysis.rollouts.run_inference")
 
 DEFAULT_ATTN_ELEMS = 16_000_000
 DEFAULT_AREA = 49_152

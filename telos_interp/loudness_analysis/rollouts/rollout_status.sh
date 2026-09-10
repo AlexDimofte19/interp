@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Live status of the truncation-strategy rollouts (ICLR log entry 43).
 #
-#   watch -n 1 bash scripts/inference_oss/rollout_status.sh
+#   watch -n 1 bash telos_interp/loudness_analysis/rollouts/rollout_status.sh
 #
 # Reads only the output tree and the per-arm logs -- it starts nothing and touches
 # no run state, so it is safe to leave running in another terminal.

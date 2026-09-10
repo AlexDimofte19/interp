@@ -30,10 +30,10 @@ omitted (or a trajectory is missing) the complexity falls back to the ``comp<X>`
 in the filename.
 
 Run on the host with the results, e.g.:
-    python scripts/inference_oss/analysis.py \
-        --input-folder scripts/inference_oss/inference_results \
+    python telos_interp/loudness_analysis/rollouts/analysis.py \
+        --input-folder telos_interp/loudness_analysis/rollouts/inference_results \
         --trajectory-folder data/reveng/trajectories_train_single_step \
-        --output-dir scripts/inference_oss/analysis_plots
+        --output-dir telos_interp/loudness_analysis/rollouts/analysis_plots
 """
 
 import argparse

@@ -3,7 +3,7 @@
 #
 # Same model, same trajectories, same prompts-per-cutoff construction; the only thing
 # that differs between the three arms is WHERE the reasoning is cut before the model is
-# asked for its action (scripts/inference_oss/truncation_strategies.py):
+# asked for its action (telos_interp/loudness_analysis/rollouts/truncation_strategies.py):
 #
 #   eos                        every reasoning sentence end. The grid every rollout on
 #                              disk was measured on, re-run here so the baseline is
@@ -40,20 +40,20 @@
 # run and reused afterwards.
 #
 # Usage:
-#   bash scripts/inference_oss/run_inference_strategies.sh              # all three, in order
-#   bash scripts/inference_oss/run_inference_strategies.sh jlens_top_k_global
+#   bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh              # all three, in order
+#   bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh jlens_top_k_global
 #
 #   # the dense held-out grid (ICLR log entry 48):
 #   NAMES_FILE=/workspace/trajectories/heldout360_names.txt \
 #   TRAJECTORIES=/workspace/trajectories/heldout360 \
 #   LENS_ROOT=/workspace/activations/heldout360_lens \
 #   OUT_ROOT=/workspace/reasoning_theatre/rollout_strategies_heldout360 \
-#     bash scripts/inference_oss/run_inference_strategies.sh every_token
-#   DRY_RUN=1 bash scripts/inference_oss/run_inference_strategies.sh    # cutoffs only, no model
+#     bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh every_token
+#   DRY_RUN=1 bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh    # cutoffs only, no model
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO=$(cd "$HERE/../.." && pwd)
+REPO=$(cd "$HERE/../../.." && pwd)
 
 TRAJECTORIES=${TRAJECTORIES:-/workspace/trajectories/reveng/trajectories_train_single_step/}
 LENS_ROOT=${LENS_ROOT:-/workspace/activations/jlens_mass_l15}

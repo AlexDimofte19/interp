@@ -1,4 +1,4 @@
-"""Tests for scripts/inference_oss/truncation_strategies.py.
+"""Tests for telos_interp/loudness_analysis/rollouts/truncation_strategies.py.
 
 Two things are load-bearing and neither is visible from the output of a run:
 
@@ -23,7 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-ts = importlib.import_module("scripts.inference_oss.truncation_strategies")
+ts = importlib.import_module("telos_interp.loudness_analysis.rollouts.truncation_strategies")
 
 NAME = "together_ai_openai_gpt-oss-20b_size5_comp0.0_1"
 

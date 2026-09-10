@@ -24,8 +24,8 @@ sentence-end detector (``get_indices_for_eos_tokens``), so no extra dependencies
 ``openai_harmony``) are required.
 
 Run on the GPU host, e.g.:
-    python scripts/inference_oss/run_inference.py \
-        --trajectory-paths scripts/inference_oss/together_ai_openai_gpt-oss-20b_size11_comp1.0_987.json
+    python telos_interp/loudness_analysis/rollouts/run_inference.py \
+        --trajectory-paths telos_interp/loudness_analysis/rollouts/together_ai_openai_gpt-oss-20b_size11_comp1.0_987.json
 """
 
 import argparse
@@ -38,36 +38,20 @@ import torch
 from telos_interp.commands.gather_activations.gather_activations_fn import _resolve_torch_dtype
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-try:  # run as a script: its own directory is on sys.path
-    from truncation_strategies import (
-        DEFAULT_LAYER,
-        DEFAULT_LENS_ROOT,
-        DEFAULT_TOP_K,
-        STRATEGIES,
-        Cutoff,
-        LoudnessUnavailable,
-        TruncationStrategy,
-        analysis_positions,
-        build_strategy,
-        find_action_cut,
-        get_final_prefix_ids,
-        reasoning_eos_positions,
-    )
-except ImportError:  # imported as scripts.inference_oss.run_inference
-    from scripts.inference_oss.truncation_strategies import (  # noqa: F401
-        DEFAULT_LAYER,
-        DEFAULT_LENS_ROOT,
-        DEFAULT_TOP_K,
-        STRATEGIES,
-        Cutoff,
-        LoudnessUnavailable,
-        TruncationStrategy,
-        analysis_positions,
-        build_strategy,
-        find_action_cut,
-        get_final_prefix_ids,
-        reasoning_eos_positions,
-    )
+from telos_interp.loudness_analysis.rollouts.truncation_strategies import (
+    DEFAULT_LAYER,
+    DEFAULT_LENS_ROOT,
+    DEFAULT_TOP_K,
+    STRATEGIES,
+    Cutoff,
+    LoudnessUnavailable,
+    TruncationStrategy,
+    analysis_positions,
+    build_strategy,
+    find_action_cut,
+    get_final_prefix_ids,
+    reasoning_eos_positions,
+)
 
 DEFAULT_TRAJECTORY = str(Path(__file__).with_name("together_ai_openai_gpt-oss-20b_size11_comp1.0_987.json"))
 DEFAULT_OUTPUT_DIR = str(Path(__file__).with_name("inference_results"))
