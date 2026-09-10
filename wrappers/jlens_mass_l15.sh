@@ -29,7 +29,7 @@
 #     bash wrappers/jlens_mass_l15.sh
 #
 # No random arm there: the control's draw already exists in this tree's records and must be
-# read, never re-drawn (scripts/inference_oss/truncation_strategies.py::recorded_selection).
+# read, never re-drawn (telos_interp/loudness_analysis/rollouts/truncation_strategies.py::recorded_selection).
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)   # so uv finds pyproject.toml

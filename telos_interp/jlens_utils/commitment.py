@@ -1,6 +1,6 @@
 """Place a reasoning token inside its sentence, and label it against the commitment boundary.
 
-The rollouts written by `scripts/inference_oss/run_inference.py` truncate a reasoning chain at
+The rollouts written by `telos_interp/loudness_analysis/rollouts/run_inference.py` truncate a reasoning chain at
 every sentence end and ask the model to answer, giving one `sentence_evals` entry per sentence
 with an `eos_token_pos` and whether that truncation answered correctly. From those, `commitment_
 metrics` derives the two indices this module labels against:

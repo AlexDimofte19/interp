@@ -379,7 +379,7 @@ class TrajectoryExporter:
 def expand_paths(patterns: list[str]) -> list[Path]:
     """Files, globs or directories -> trajectory JSON files.
 
-    Same contract as ``expand_paths`` in scripts/inference_oss/run_inference.py, but
+    Same contract as ``expand_paths`` in telos_interp/loudness_analysis/rollouts/run_inference.py, but
     stdlib-only: that module imports torch at import time, and this script must run on a
     laptop without it.
     """

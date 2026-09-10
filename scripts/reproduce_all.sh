@@ -242,7 +242,7 @@ run_cognitive_map_probes() {
 # batching. Anything needing current-code sentence-end labels must write elsewhere, which is what
 # rollout_more_belief_arms.sh does (stage more_belief_rollout_arms).
 run_sentence_end_rollout() {
-    x $UV python "$REPO/scripts/inference_oss/run_inference.py" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/rollouts/run_inference.py" \
         --strategy eos --trajectory-paths "$TRAJ" \
         --output-dir "$RT/trajectories_train_single_step_probs" \
         --skip-existing
@@ -470,7 +470,7 @@ run_sentence_loudness() {
 run_loud_rollout_arms() {
     x env TRAJECTORIES="$TRAJ" LENS_ROOT="$ACT/jlens_mass_l15" \
         OUT_ROOT="$RT/rollout_strategies" NAMES_FILE="$MASS_NAMES" \
-        bash "$REPO/scripts/inference_oss/run_inference_strategies.sh" \
+        bash "$REPO/telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh" \
         jlens_argmax_per_sentence jlens_top_k_global
     for arm in jlens_argmax_per_sentence jlens_top_k_global; do
         x $UVC python "$REPO/scripts/plot_loud_vs_sentence_end.py" --arm "$arm"
@@ -484,7 +484,7 @@ run_loud_rollout_arms() {
 # tokens the mass gather already saved.
 run_local_belief_probes() {
     local lbp="$RT/local_belief_probes"
-    x $UV python "$REPO/scripts/inference_oss/gather_local_belief_activations.py" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/rollouts/gather_local_belief_activations.py" \
         --rollout-dir "$RT/rollout_strategies/jlens_argmax_per_sentence" \
         --trajectory-paths "$TRAJ" --names-file "$MASS_NAMES" \
         --out "$ACT/argmax_per_sentence_l15"
@@ -492,10 +492,10 @@ run_local_belief_probes() {
         --activations-dir "$ACT/argmax_per_sentence_l15" --trajectories-dir "$TRAJ" \
         --probe-type next_action --layers 15 --steps all --output-indices all \
         --output-path "$PREPARED/local_belief_p1_final"
-    x $UVC python "$REPO/scripts/inference_oss/relabel_manifest_from_rollout.py" \
+    x $UVC python "$REPO/telos_interp/loudness_analysis/rollouts/relabel_manifest_from_rollout.py" \
         "$PREPARED/local_belief_p1_final" "$RT/rollout_strategies/jlens_argmax_per_sentence" \
         "$PREPARED/local_belief_p1_local" --report-csv "$lbp/p1_relabel_report.csv"
-    x $UVC python "$REPO/scripts/inference_oss/relabel_manifest_from_rollout.py" \
+    x $UVC python "$REPO/telos_interp/loudness_analysis/rollouts/relabel_manifest_from_rollout.py" \
         "$PREPARED/next_action_mass_l15_jlens" "$RT/rollout_strategies/jlens_top_k_global" \
         "$PREPARED/local_belief_p2_local" --report-csv "$lbp/p2_relabel_report.csv"
 
@@ -505,7 +505,7 @@ run_local_belief_probes() {
     lb_train local_belief_p2       "$PREPARED/local_belief_p2_local" ""
 
     for p in "$lbp"/probes/*.pt; do
-        [ -e "$p" ] && x $UVC python "$REPO/scripts/inference_oss/eval_local_belief.py" \
+        [ -e "$p" ] && x $UVC python "$REPO/telos_interp/loudness_analysis/rollouts/eval_local_belief.py" \
             "$p" "$PREPARED/${p##*/}_split_eval"
     done
 }
@@ -565,7 +565,7 @@ run_belief_probes_commitment() {
 run_heldout_every_token_rollout() {
     x env NAMES_FILE="$HELDOUT_NAMES" TRAJECTORIES="$HELDOUT_TRAJ" \
         LENS_ROOT="$ACT/heldout360_lens" OUT_ROOT="$RT/rollout_strategies_heldout360" \
-        bash "$REPO/scripts/inference_oss/run_inference_strategies.sh" every_token
+        bash "$REPO/telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh" every_token
 }
 
 # ---- stage 19: loudness with the selection removed -----------------------------------------

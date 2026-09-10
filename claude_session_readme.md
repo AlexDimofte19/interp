@@ -49,7 +49,7 @@ through a sentence* (entry 42) and *probe vs. rollout* (entries 39-41). The "Res
 here" section below is the round-2 grid-probing thread and is older than all of them.
 
 **What is committed, as of entry 48.** The truncation-strategy line is now in the repo:
-`scripts/inference_oss/{truncation_strategies.py, run_inference.py, run_inference_strategies.sh,
+`telos_interp/loudness_analysis/rollouts/{truncation_strategies.py, run_inference.py, run_inference_strategies.sh,
 rollout_status.sh}`, `tests/test_truncation_strategies.py`, plus
 `scripts/build_probe_loudness_heldout.py`. Entry 45's scripts are still outside the repo
 (see *Where things live / what needs merging*), and the round-2 grid-probing working state
@@ -432,7 +432,7 @@ pulled ~40 untouched files into the diff here.
 ## Probe vs. rollout — what the probe is decoding (2026-08-28)
 
 New, and orthogonal to selection: `/workspace/reasoning_theatre/trajectories_train_single_step_probs/`
-(written by `scripts/inference_oss/run_inference.py`) re-runs the model at every reasoning
+(written by `telos_interp/loudness_analysis/rollouts/run_inference.py`) re-runs the model at every reasoning
 sentence end with reasoning truncated there, and records what it *would* answer. That joins to
 entry 38's `heldout360_all_probes.csv` for free — `eos_token_pos`, `token_idx` and the `.pt`
 filename all index the same `step["output_tokens"]` list — so every reasoning token can be placed
@@ -549,7 +549,7 @@ does not exist yet — the only output on disk is the 10-trajectory smoke at
 (n = 10) are not a result. Launching the three arms is the next action.
 
 `run_inference.py` no longer only cuts at sentence ends. Where it cuts is `--strategy`, and
-the registry is `scripts/inference_oss/truncation_strategies.py`:
+the registry is `telos_interp/loudness_analysis/rollouts/truncation_strategies.py`:
 
 | `--strategy` | cutoffs per step | what it cuts at |
 | --- | --- | --- |
@@ -563,9 +563,9 @@ monotone) and the mass table is never read without its `.meta.json` — the voca
 baked against is copied into every results JSON.
 
 ```bash
-bash scripts/inference_oss/run_inference_strategies.sh                     # all three arms
-bash scripts/inference_oss/run_inference_strategies.sh jlens_top_k_global  # one arm
-DRY_RUN=1 bash scripts/inference_oss/run_inference_strategies.sh           # cutoffs only, no model
+bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh                     # all three arms
+bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh jlens_top_k_global  # one arm
+DRY_RUN=1 bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh           # cutoffs only, no model
 ```
 
 Output root `/workspace/reasoning_theatre/rollout_strategies/<strategy>/`, logs in
@@ -619,8 +619,8 @@ holds 3,600 result JSONs per arm.
 supplies the sentence-end answers. See the noise floor below before relying on that.
 
 ```bash
-bash scripts/inference_oss/run_inference_strategies.sh jlens_argmax_per_sentence jlens_top_k_global
-watch -n 1 bash scripts/inference_oss/rollout_status.sh     # live, work-weighted ETA, read-only
+bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh jlens_argmax_per_sentence jlens_top_k_global
+watch -n 1 bash telos_interp/loudness_analysis/rollouts/rollout_status.sh     # live, work-weighted ETA, read-only
 python scripts/plot_loud_vs_sentence_end.py                 # -> comparison/loud_vs_sentence_end.{png,csv}
 python scripts/analyze_truncation_strategies.py             # the full arm comparison -- NOT YET RUN
 ```
@@ -663,7 +663,7 @@ Five things to carry:
   produce the whole .560/.397 lean. Without a matched random-position arm we cannot tell "the
   loud token knows" from "a token that far into the sentence knows", and the coincident-cutoff
   row (.503/.450) says the margin is small enough for that to matter. Spec: one registry entry
-  in `scripts/inference_oss/truncation_strategies.py`, same shape as `JlensTopKGlobalStrategy`
+  in `telos_interp/loudness_analysis/rollouts/truncation_strategies.py`, same shape as `JlensTopKGlobalStrategy`
   with a seeded uniform draw of the same K, endpoints kept, `arm_seed()`-style frozen draw;
   ~4 h of GPU for 3,600 trajectories. Then re-run `plot_loud_vs_sentence_end.py --arm random`
   and read entry 44(d)'s table against it.
@@ -751,7 +751,7 @@ tracking belief without them. The ±k proximity window of 42(e) is still uncontr
 
 - New scripts live under `.../local_belief_probes/scripts/` (not in the repo — the
   `reasoning_theatre` branch had unrelated uncommitted state and the bg-isolation guard).
-  They belong at `scripts/inference_oss/` (gather, relabel, eval) when someone commits.
+  They belong at `telos_interp/loudness_analysis/rollouts/` (gather, relabel, eval) when someone commits.
 - `SESSION_LOG.txt` → append to `ICLR log.txt` via `ICLR_LOG_ENTRY_DRAFT.txt` (entry 44).
 - This file → append to `claude_session_readme.md`.
 - Probes: `.../local_belief_probes/probes/`. Datasets: `/workspace/prepared/local_belief_p*`.
@@ -955,7 +955,7 @@ NAMES_FILE=/workspace/trajectories/heldout360_names.txt \
 TRAJECTORIES=/workspace/trajectories/heldout360 \
 LENS_ROOT=/workspace/activations/heldout360_lens \
 OUT_ROOT=/workspace/reasoning_theatre/rollout_strategies_heldout360 \
-  bash scripts/inference_oss/run_inference_strategies.sh every_token
+  bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh every_token
 # 2. all ten probes in one pass                                      (1h40m)
 python telos_interp/loudness_analysis/score_probes_per_token.py --probe ...x10 --full-probs ...
 # 3. join -> entry 46's exact schema, then analyze/plot UNEDITED

@@ -113,7 +113,7 @@ direction-mass table, whole vocabulary).
 
 ## 5. Rollout arms (truncation strategies) — the local-belief label
 
-`scripts/inference_oss/truncation_strategies.py`. Cut the chain at position *p*, append the
+`telos_interp/loudness_analysis/rollouts/truncation_strategies.py`. Cut the chain at position *p*, append the
 final-channel prefix, read the single action token. Everything else is identical between arms, so
 any difference **is** the cut points.
 

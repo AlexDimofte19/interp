@@ -49,7 +49,7 @@ UV="uv run --project $REPO --extra gpu"
 
 relabel() {  # relabel <prepared-in> <rollout-dir> <prepared-out> <tag>
     echo "[$(ts)] === $4: relabel from $(basename "$2") ==="
-    $UV python "$REPO/scripts/inference_oss/relabel_manifest_from_rollout.py" \
+    $UV python "$REPO/telos_interp/loudness_analysis/rollouts/relabel_manifest_from_rollout.py" \
         "$1" "$2" "$3" --report-csv "$HERE/$4_relabel_report.csv" \
         2>&1 | tee "$LOGS/$4_relabel.txt"
 }
@@ -82,7 +82,7 @@ split_and_train random_belief "${BELIEF_BASELINE_PREPARED_PREFIX}_random_belief"
 
 # ---- arm 2: logitlens P1 -> belief ------------------------------------------------------
 echo "[$(ts)] === logitlens_p1: gather L15 at the per-sentence-loudest cutoffs ==="
-$UV python "$REPO/scripts/inference_oss/gather_local_belief_activations.py" \
+$UV python "$REPO/telos_interp/loudness_analysis/rollouts/gather_local_belief_activations.py" \
     --rollout-dir "$OUT_ROOT/jlens_argmax_per_sentence" \
     --trajectory-paths "$TRAJ" --names-file "$NAMES_FILE" --out "$ACT_P1" \
     2>&1 | tee "$LOGS/logitlens_p1_gather.txt"

@@ -31,7 +31,7 @@ unrelated; always ignore it. Note `--doctest-modules` is on, so docstring exampl
 Linux GPU hosts; on this Mac there is no conda.
 
 **GPU-only work.** Anything that loads gpt-oss-20b — `gather_activations`, `scripts/jlens_*.py`,
-`jlens/jlens_fit_gpt_oss.py`, `scripts/inference_oss/run_inference.py` — cannot run on the laptop. Locally
+`jlens/jlens_fit_gpt_oss.py`, `telos_interp/loudness_analysis/rollouts/run_inference.py` — cannot run on the laptop. Locally
 you can only work on the code paths that consume already-extracted artifacts (CSVs, `.pt` files, manifests,
 notebooks). Extract activations on a **single** GPU: `device_map="auto"` across multiple GPUs produces NaNs
 for this MoE model.
@@ -276,13 +276,13 @@ strings, embedded commas and newlines, which pandas' NA handling silently corrup
 ### The rollout line (truncation strategies)
 
 The lens line asks what a *probe* reads off a token. The rollout line asks what the **model** would answer
-if its reasoning stopped there. `scripts/inference_oss/run_inference.py` keeps `output_tokens[:pos + 1]`,
+if its reasoning stopped there. `telos_interp/loudness_analysis/rollouts/run_inference.py` keeps `output_tokens[:pos + 1]`,
 appends the fixed final-channel prefix (`<|end|>...{\n  "action": "`), and reads the single action token the
 model then emits. That label is the **local belief** at `pos`, as against the trajectory's `agent_action`,
 which is where it *ends up*; the two coming apart before the model commits is the whole point of entries
 39-41 and 46-48.
 
-**Where to cut is a third registry**, `scripts/inference_oss/truncation_strategies.py`
+**Where to cut is a third registry**, `telos_interp/loudness_analysis/rollouts/truncation_strategies.py`
 (`STRATEGIES` / `build_strategy`), dispatched by name exactly as the methods and scores are. Nothing else
 about the rollout changes between arms, so any difference between two arms is the cut points and nothing
 else. `--strategy`:

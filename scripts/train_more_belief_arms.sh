@@ -68,7 +68,7 @@ want() { [ "$WANT" = all ] || [ "$WANT" = "$1" ]; }
 relabel() {  # relabel <prepared-in> <rollout-dir> <prepared-out> <tag> [extra flags...]
     local pin=$1 rollout=$2 pout=$3 tag=$4; shift 4
     echo "[$(ts)] === $tag: relabel from $(basename "$rollout") ==="
-    $UV python "$REPO/scripts/inference_oss/relabel_manifest_from_rollout.py" \
+    $UV python "$REPO/telos_interp/loudness_analysis/rollouts/relabel_manifest_from_rollout.py" \
         "$pin" "$rollout" "$pout" --report-csv "$HERE/${tag}_relabel_report.csv" "$@" \
         2>&1 | tee "$LOGS/${tag}_relabel.txt"
 }
@@ -130,7 +130,7 @@ fi
 # it, so pointing a second kind at another arm's tree would skip every write silently.
 if want random_sentence_belief; then
     echo "[$(ts)] === random_sentence_belief: gather L15 at the random-in-sentence cutoffs ==="
-    $UV python "$REPO/scripts/inference_oss/gather_local_belief_activations.py" \
+    $UV python "$REPO/telos_interp/loudness_analysis/rollouts/gather_local_belief_activations.py" \
         --rollout-dir "$OUT_ROOT/random_per_sentence" --interior-kinds random_in_sentence \
         --trajectory-paths "$TRAJ" --names-file "$NAMES_FILE" --out "$ACT_RANDOM" \
         2>&1 | tee "$LOGS/random_sentence_belief_gather.txt"

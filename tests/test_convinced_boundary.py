@@ -1,4 +1,4 @@
-"""Tests for the PER-TOKEN commitment boundary in scripts/build_probe_loudness_heldout.py.
+"""Tests for the PER-TOKEN commitment boundary in telos_interp/loudness_analysis/join_rollouts.py.
 
 Every figure that reads "the model becomes convinced here" is downstream of one rule, and
 until entry 50 that rule only ever ran over sentence ENDS. The rule itself is unchanged --
@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-bl = importlib.import_module("scripts.build_probe_loudness_heldout")
+bl = importlib.import_module("telos_interp.loudness_analysis.join_rollouts")
 
 
 def ev(pos, correct, kind="every_token"):

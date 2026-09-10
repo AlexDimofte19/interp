@@ -10,7 +10,7 @@ foreach ($SIZE_DIR in Get-ChildItem -Path $TRAJECTORY_DIR -Directory -Filter "si
     $SIZE_NAME = $SIZE_DIR.Name
 
     $env:CUDA_VISIBLE_DEVICES = "0"
-    python scripts/inference_oss/run_inference.py `
+    python telos_interp/loudness_analysis/rollouts/run_inference.py `
         --trajectory-paths "$($SIZE_DIR.FullName)/*.json" `
         --output-dir $OUTPUT_DIR `
         --torch-dtype bfloat16 `

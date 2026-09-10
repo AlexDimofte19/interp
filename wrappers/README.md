@@ -32,7 +32,7 @@ how much of the tree is *kept*.
 
 ## The rollout arms
 
-Both drive `scripts/inference_oss/run_inference_strategies.sh`, which drives `run_inference.py`.
+Both drive `telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh`, which drives `run_inference.py`.
 
 | Wrapper | Arms it produced |
 |---|---|
@@ -48,7 +48,7 @@ Both drive `scripts/inference_oss/run_inference_strategies.sh`, which drives `ru
 | `run_next_action_arms.sh` | prepare + train, in order | the end-to-end convenience path |
 | `build_convinced_datasets.sh` | `scripts/build_convinced_dataset.py` | the three convinced datasets: train 2880 / val 720 / eval 360 |
 | `delete_non_jlens_selected.sh` | `scripts/delete_non_jlens_selected.py` | the prune that was actually applied — **dry-run by default** |
-| `run_analysis.sh` | `scripts/inference_oss/analysis.py` | the sentence-end rollout's 13 figures |
+| `run_analysis.sh` | `telos_interp/loudness_analysis/rollouts/analysis.py` | the sentence-end rollout's 13 figures |
 
 ## Older rounds
 

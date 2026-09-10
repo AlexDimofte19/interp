@@ -11,7 +11,7 @@ Two keys join three artifacts, one row per reasoning token:
 
   * ``{stem}_jlens_direction_mass.csv`` -- the loudness. ``reasoning_pos`` indexes the
     analysis-tagged tokens of ``step["output_tokens"]``.
-  * ``scripts/inference_oss/run_inference.py`` rollouts -- ``eos_token_pos`` indexes
+  * ``telos_interp/loudness_analysis/rollouts/run_inference.py`` rollouts -- ``eos_token_pos`` indexes
     ``step["output_tokens"]`` itself, so the offset is ``eos[0] + 1`` (the analysis header
     ``<|channel|>analysis<|message|>``, always 3 here but read, not assumed).
   * the probe's own train/eval split -- only trajectories the probe TRAINED on are kept.

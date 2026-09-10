@@ -60,7 +60,7 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | `build_activation_view.sh` (55L) | Symlink view of **any** activation tree restricted to one name list. Links at the trajectory level, so the lens CSV, mass table, `.meta.json` and selection record come along. `SRC` defaults to the sentence-end tree. *(was `build_eos_view.sh`)* | `SRC` tree + a names file | `<view>/activations` + `<view>/trajectories` symlink trees |
 | `build_mass_era_split.sh` (105L) | Materialises the mass-era 3,600 as **two separate datasets** — train 2,880 and eval 720 — as name lists plus a view each. Does not re-draw the split. Idempotent, `DRY_RUN=1`, `VERIFY_ONLY=1`. | `mass_l15_names.txt`, `next_action_mass_l15_eval_names.txt`, `ACT/jlens_mass_l15` | `SPLITS/mass_{train_2880,eval_720}.txt`, `ACT/mass_{train2880,eval720}_view` |
 | `verify_mass_era_split.py` (135L) | That split's contract: disjointness, closure, no dangling links, and that neither half drifted from the pinned definitions. Exits non-zero on failure. | the lists + the views | stdout |
-| `inference_oss/gather_local_belief_activations.py` (247L) | Layer-15 residuals at the per-sentence cutoffs a rollout arm chose. | `RT/rollout_strategies/jlens_argmax_per_sentence`, `TRAJ`, `mass_l15_names.txt` | `ACT/argmax_per_sentence_l15` |
+| `telos_interp/loudness_analysis/rollouts/gather_local_belief_activations.py` (247L) | Layer-15 residuals at the per-sentence cutoffs a rollout arm chose. | `RT/rollout_strategies/jlens_argmax_per_sentence`, `TRAJ`, `mass_l15_names.txt` | `ACT/argmax_per_sentence_l15` |
 | `link_end_of_reasoning_activations.py` (171L) | Restores the final-sentence row `_dedupe` dropped, by symlinking from a source tree. | a rollout dir + arm tree + `--source-tree` | symlinks into the arm tree |
 
 ## B. Prepare — activation tree → `manifest.json` dataset
@@ -71,7 +71,7 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | `grid_cell_analysis/prepare_grid_arms.sh` (134L) | The `grid_tile` twin of the above — same tree, same tokens, different label. `MAX_CELLS` caps cells per (trajectory, step). | same | `PREPARED/grid_<arm>` |
 | `wrappers/prepare_next_action_jlens_by_complexity.sh` (59L) | The same prepare restricted to complexity 0.0/0.2/0.4 via a view. | `ACT/jlens_reasoning_tokens_comp0.0-0.2-0.4` | `PREPARED/next_action_comp0.0-0.2-0.4_jlens` |
 | `split_next_action_manifest.py` (622L) | **Thin + split.** `--tokens-per-trajectory K`, `--layers-per-token M`, `--single-layer L`, `--thin-mode`, and a by-trajectory train/eval split (`--eval-names` pins it). Copies nothing. | a token-major `PREPARED/<ds>/manifest.json` | `<ds>_train/manifest.json`, `<ds>_eval/manifest.json` |
-| `inference_oss/relabel_manifest_from_rollout.py` (237L) | Replaces each entry's label with the model's **local belief** at that cutoff. | a token-major manifest + a rollout dir | a new prepared dir + optional report CSV |
+| `telos_interp/loudness_analysis/rollouts/relabel_manifest_from_rollout.py` (237L) | Replaces each entry's label with the model's **local belief** at that cutoff. | a token-major manifest + a rollout dir | a new prepared dir + optional report CSV |
 | `intersect_belief_arms.py` (100L) | Cuts several per-sentence arms down to the `(name, step, cut_sentence_idx)` sentences all of them hold. | several prepared arm dirs | `<arm><out_suffix>/manifest.json` each |
 
 ## C. Train
@@ -90,14 +90,14 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 
 | Script | Does | Reads | Writes |
 |---|---|---|---|
-| `inference_oss/run_inference.py` (872L) | Re-runs gpt-oss at cutoffs inside its own reasoning; one results JSON per trajectory. | `TRAJ`, `--lens-root` (mass table), a names file | `--output-dir/size*/NAME.json` |
-| `inference_oss/truncation_strategies.py` (807L) | The `STRATEGIES` registry deciding **where** to cut: `eos`, `jlens_argmax_per_sentence`, `jlens_top_k_global`, `every_token`, `recorded_selection`. Library, not a CLI. | mass tables + `.meta.json`, selection records | — |
-| `inference_oss/run_inference_strategies.sh` (165L) | One arm per strategy; the recorded invocation. | `TRAJ`, `ACT/jlens_mass_l15`, `mass_l15_names.txt` | `RT/rollout_strategies/<arm>` |
+| `telos_interp/loudness_analysis/rollouts/run_inference.py` (872L) | Re-runs gpt-oss at cutoffs inside its own reasoning; one results JSON per trajectory. | `TRAJ`, `--lens-root` (mass table), a names file | `--output-dir/size*/NAME.json` |
+| `telos_interp/loudness_analysis/rollouts/truncation_strategies.py` (807L) | The `STRATEGIES` registry deciding **where** to cut: `eos`, `jlens_argmax_per_sentence`, `jlens_top_k_global`, `every_token`, `recorded_selection`. Library, not a CLI. | mass tables + `.meta.json`, selection records | — |
+| `telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh` (165L) | One arm per strategy; the recorded invocation. | `TRAJ`, `ACT/jlens_mass_l15`, `mass_l15_names.txt` | `RT/rollout_strategies/<arm>` |
 | `wrappers/rollout_belief_baseline_arms.sh` (73L) | Three baseline arms (random replay + two logitlens loud arms) — a wrapper around the above. | same | `RT/rollout_strategies_baselines/<arm>` |
 | `wrappers/rollout_more_belief_arms.sh` (78L) | Two more arms (`eos`, `random_per_sentence`) — the same wrapper shape. | same | same |
-| `inference_oss/analysis.py` (536L) | Aggregates the results JSONs into 13 figures + summary stats. | a `run_inference` output dir | `--output-dir/*.png` |
+| `telos_interp/loudness_analysis/rollouts/analysis.py` (536L) | Aggregates the results JSONs into 13 figures + summary stats. | a `run_inference` output dir | `--output-dir/*.png` |
 | `wrappers/run_analysis.sh` (31L) | Runs the above on `RT/trajectories_train_single_step_probs`. | that dir | `RT/trajectories_train_single_step_plots` |
-| `inference_oss/rollout_status.sh` (194L) | Live progress of the rollout arms (readdirs + log tails only). | `RT/rollout_strategies` | stdout |
+| `telos_interp/loudness_analysis/rollouts/rollout_status.sh` (194L) | Live progress of the rollout arms (readdirs + log tails only). | `RT/rollout_strategies` | stdout |
 
 ## E. Eval / scoring
 
@@ -108,7 +108,7 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | `eval_belief_arms_heldout.sh` (146L) | Reads every belief probe of a round on all 87,221 held-out tokens. `24probes` = the entry-49/50 round; `equal_n` = those plus the 14 that supersede them. *(merged from `eval_more_belief_arms.sh` + `eval_equal_n_belief_arms.sh`, which were 83% identical)* | `PROBES/{local_belief*,local_belief_equalN,next_action_mass_l15}`, `ACT/heldout360_lens` | `RT/probe_loudness_heldout360_{24probes,equal_n}` |
 | `score_probes_heldout.py` (111L) | Balanced accuracy per probe against both label definitions. | a per-token CSV | table + optional JSON |
 | `compare_equal_n_arms.py` (116L) | Old arms vs. their equal-N rebuilds, from `results.best_balanced_accuracy` in each checkpoint. **Unreferenced.** | `PROBES/**/*.pt` | stdout + optional JSON |
-| `inference_oss/eval_local_belief.py` (106L) | A belief probe against both the local belief and the final action. | a probe + an eval prepared dir | stdout |
+| `telos_interp/loudness_analysis/rollouts/eval_local_belief.py` (106L) | A belief probe against both the local belief and the final action. | a probe + an eval prepared dir | stdout |
 
 ## F. Joins — the per-token tables everything downstream reads
 
@@ -214,7 +214,7 @@ when the grid round is next touched — or, better, fold the grid evaluator into
 verbatim) collapse cleanly into one `--metric {object,per-class} --source {json,csv}`. Same
 reasoning: dormant round, and all four are unreferenced.
 
-**Smaller repeats.** `load_probe` (`build_probe_loudness.py` ↔ `inference_oss/eval_local_belief.py`)
+**Smaller repeats.** `load_probe` (`build_probe_loudness.py` ↔ `telos_interp/loudness_analysis/rollouts/eval_local_belief.py`)
 and `bal_acc` (`analyze_direction_word_isolation.py` ↔ `plot_probe_loudness.py`) are byte-identical.
 Re-implemented rather than copied, but the same idea in several places: `load` (×4),
 `make_figure` (×4), `bal_acc`/`balanced_accuracy` (×5), `qbin`, `wilson`, `zscore`, `read_rows`,

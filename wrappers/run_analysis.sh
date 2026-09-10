@@ -21,7 +21,7 @@ mkdir -p "$LOG_DIR" "$OUTPUT_DIR"
 LOG_FILE="$LOG_DIR/analysis_$(date +%Y%m%d_%H%M%S).txt"
 echo "=== START: $(date) ===" > "$LOG_FILE"
 
-uv run --project "$REPO" python "$REPO/scripts/inference_oss/analysis.py" \
+uv run --project "$REPO" python "$REPO/telos_interp/loudness_analysis/rollouts/analysis.py" \
         --input-folder "$INPUT_DIR" \
         --trajectory-folder "$TRAJECTORY_DIR" \
         --output-dir "$OUTPUT_DIR" \

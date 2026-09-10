@@ -61,14 +61,14 @@ if [ "$WANT" = all ] || [ "$WANT" = eos ]; then
     echo "### arm 1/2: sentence ends -> belief"
     NAMES_FILE="$NAMES_FILE" OUT_ROOT="$OUT_ROOT" \
     LENS=jlens LENS_ROOT="$JLENS_ROOT" \
-        bash "$REPO/scripts/inference_oss/run_inference_strategies.sh" eos
+        bash "$REPO/telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh" eos
 fi
 
 if [ "$WANT" = all ] || [ "$WANT" = random ]; then
     echo "### arm 2/2: a random token per sentence -> belief (seed $SEED)"
     NAMES_FILE="$NAMES_FILE" OUT_ROOT="$OUT_ROOT" SEED="$SEED" \
     LENS=jlens LENS_ROOT="$JLENS_ROOT" \
-        bash "$REPO/scripts/inference_oss/run_inference_strategies.sh" random_per_sentence
+        bash "$REPO/telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh" random_per_sentence
 fi
 
 echo

@@ -43,7 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.inference_oss.truncation_strategies import (  # noqa: E402
+from telos_interp.loudness_analysis.rollouts.truncation_strategies import (  # noqa: E402
     KIND_NO_REASONING,
     LoudnessUnavailable,
     MassTableLoudness,
@@ -98,7 +98,7 @@ REBUILD_HINT = """no rollout for {name}. The every_token arm is built with:
   TRAJECTORIES={trajectories} \\
   LENS_ROOT={lens_root} \\
   OUT_ROOT={out_root} \\
-    bash scripts/inference_oss/run_inference_strategies.sh every_token"""
+    bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh every_token"""
 
 
 def lens_columns(lens: str, layer: int) -> tuple[str, str]:

@@ -3,7 +3,7 @@
 
 Three artifacts, one key. For a held-out trajectory we have
 
-  * `scripts/inference_oss/run_inference.py` output — for every reasoning sentence end, what
+  * `telos_interp/loudness_analysis/rollouts/run_inference.py` output — for every reasoning sentence end, what
     the model ACTUALLY answers if reasoning is truncated there (`model_action`, `answer_prob`).
     Its `eos_token_pos` indexes `step["output_tokens"]`.
   * `/workspace/probes/heldout360_all_probes.csv` — every reasoning token of the same 360

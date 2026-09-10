@@ -49,7 +49,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.inference_oss.truncation_strategies import (  # noqa: E402
+from telos_interp.loudness_analysis.rollouts.truncation_strategies import (  # noqa: E402
     KIND_END_OF_REASONING,
     KIND_NO_REASONING,
     KIND_SENTENCE_END,

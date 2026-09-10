@@ -112,14 +112,14 @@ if want prepare; then
             2>&1 | tee "$LOGS/${arm}_prepare.txt"
 
         echo "[$(ts)] === $arm: relabel to the local belief ==="
-        $UV python "$REPO/scripts/inference_oss/relabel_manifest_from_rollout.py" \
+        $UV python "$REPO/telos_interp/loudness_analysis/rollouts/relabel_manifest_from_rollout.py" \
             "${PREPARED}_${arm}_final" "$rollout" "${PREPARED}_${arm}_local" \
             --report-csv "$HERE/${arm}_relabel_report.csv" \
             2>&1 | tee "$LOGS/${arm}_relabel.txt"
     done
 
     echo "[$(ts)] === eos: relabel to the local belief, endpoints KEPT this time ==="
-    $UV python "$REPO/scripts/inference_oss/relabel_manifest_from_rollout.py" \
+    $UV python "$REPO/telos_interp/loudness_analysis/rollouts/relabel_manifest_from_rollout.py" \
         "/workspace/prepared/more_belief_eos_belief_final" "$OUT_ROOT/eos" \
         "${PREPARED}_eos_local" --report-csv "$HERE/eos_relabel_report.csv" \
         2>&1 | tee "$LOGS/eos_relabel.txt"

@@ -55,14 +55,14 @@ if [ "$WANT" = all ] || [ "$WANT" = random ]; then
     echo "### arm 1/3: random selection -> belief (replaying the recorded control)"
     NAMES_FILE="$NAMES_FILE" OUT_ROOT="$OUT_ROOT" \
     LENS=jlens LENS_ROOT="$JLENS_ROOT" SELECTION_ARM=random \
-        bash "$REPO/scripts/inference_oss/run_inference_strategies.sh" recorded_selection
+        bash "$REPO/telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh" recorded_selection
 fi
 
 if [ "$WANT" = all ] || [ "$WANT" = logitlens ]; then
     echo "### arms 2-3/3: logitlens P1 and P2 -> belief"
     NAMES_FILE="$NAMES_FILE" OUT_ROOT="$OUT_ROOT" \
     LENS=logitlens LENS_ROOT="$LOGITLENS_ROOT" \
-        bash "$REPO/scripts/inference_oss/run_inference_strategies.sh" \
+        bash "$REPO/telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh" \
             jlens_argmax_per_sentence jlens_top_k_global
 fi
 
