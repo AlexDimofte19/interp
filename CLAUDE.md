@@ -17,7 +17,7 @@ extra, which is *not* installed into `.venv`, so `make test` (and `.venv/bin/pyt
 "No module named pytest". Run tests through uv instead:
 
 ```bash
-uv run --extra lint pytest -c pyproject.toml -q --ignore=tests/test_trajectory_activations.py   # 301 pass
+uv run --extra lint pytest -c pyproject.toml -q --ignore=tests/test_trajectory_activations.py   # 397 pass
 uv run --extra lint pytest -c pyproject.toml tests/test_grid_utils.py::test_name -vv             # single test
 make fix-style     # ruff format + ruff check --fix (line length 119, notebooks included)
 make check-style
