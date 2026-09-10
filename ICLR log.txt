@@ -3941,3 +3941,122 @@ the same footing. Same-round gaps are.
 	  /workspace/probes/grid_mass_l15/heldout360_grid_per_token.csv (87,221 rows)
 	  /workspace/probes/grid_mass_l15/grid_loudness_{jlens,logitlens}_L15.json
 	  /workspace/prepared/grid_mass_l15_random{,_split_train,_split_eval}
+
+
+56. THE LOUDNESS LINE BECOMES A MODULE: telos_interp/loudness_analysis (2026-09-10)
+
+	No new measurement. This is the refactor that entry 55 made unavoidable: running
+	the specificity control meant writing a second copy of the evaluator, a second
+	copy of the decile analysis and a second balanced accuracy, and the line was
+	already carrying five copies of bal_acc and four hand-rolled trajectory
+	bootstraps. The loudness line grew by FORKING -- each new question copied the
+	previous script and changed one join -- so the same operation existed four times
+	under four names and the same number was written under three different column
+	names.
+
+	WHERE IT LIVES. telos_interp/loudness_analysis/, not a top-level folder, because
+	pyproject.toml declares packages = ["telos_interp"]: that is the only installed
+	package, so anywhere else the module is path-invoked rather than importable.
+	Importing it pulls in neither torch nor matplotlib, on purpose and verified --
+	the analysis layer runs without either, as jlens_utils already did.
+
+	THE DECOMPOSITION IS BY ARTIFACT PRODUCED, not by which outcome is joined:
+
+	  build_loudness_tables.py   lens + signal -> analysis CSV, mass table, the token
+	                             selection, and the selected .pt files. Stages 1 and 4
+	                             were ALREADY one file: --select-methods runs the
+	                             selection in the same forward pass.
+	  rollouts/run_inference.py  the rollout line, moved wholesale, unchanged.
+	  score_probes_per_token.py  every probe on every reasoning token.
+	  join_rollouts.py           adds what the ROLLOUT knows.
+	  analysis/ (2)  plotting/   tables and figures.
+
+	THE FINDING THAT DROVE IT. All four builders were the same operation -- join
+	rollout-derived columns onto a per-token table, keyed on (name, step, token
+	index) -- and only the LEFT TABLE differed. And eval_probe_per_token.py already
+	emitted the loudness columns itself, both lenses in one pass, so a probe CSV was
+	always already a loudness table. That is why the two probe builders never needed
+	to exist.
+
+	WHAT MERGED, AND WHAT VERIFIED IT. Eight files deleted. The evaluator merge
+	(eval_probe_per_token + eval_grid_probe_per_token -> --probe-type) was gated on
+	golden CSVs written by BOTH originals on a synthetic fixture and committed before
+	the originals were deleted, then asserted column for column. The rest carry new
+	tests. 442 pass, up from 408.
+
+	LANDMINES, all of them new surface:
+
+	(a) COLUMN NAMES. {lens}_{signal}_logmass_L{layer}. Every legacy spelling is
+	    accepted on read -- dir_logmass_L15, dir_logmass, {lens}_mass_L{layer},
+	    {lens}_logmass_L{layer} -- so every CSV on disk still loads. dir_* is REFUSED
+	    for a non-direction signal: it predates any other vocabulary, so it identifies
+	    the signal and nothing else, and accepting it for grid would silently read
+	    direction loudness into a table labelled grid.
+
+	(b) THE TWO BALANCED ACCURACIES ARE NOT THE SAME NUMBER, and both are in use.
+	    stats.bal_acc averages over ROWS; stats.bal_acc_from_counts pools per-class
+	    COUNTS. A grid row summarises a whole step's cells, so averaging per-token
+	    accuracies weights a token with 2 cells the same as one with 25. Entry 55's
+	    numbers used the counts form; the action numbers it compares against used the
+	    rows form. They are named apart and run_config.json records which ran.
+
+	(c) THE GRID ANALYSIS IS A DIFFERENT TABLE SHAPE, not a different class list.
+	    This looked like a flag and is not. The row-mode analysis reads a JOINED table
+	    -- label_local, label_final, {probe}_pred, sentence coordinates. A grid
+	    evaluator table has none of those. --probe-type grid_tile therefore routes to
+	    a counts mode; a flag that only swapped the class list would have failed on a
+	    missing column or, worse, binned everything as empty and reported nan.
+
+	(d) TWO OVERLOADED NAMES ARE NOW RESOLVED IN ONE PLACE. sentence_frac means
+	    position WITHIN a sentence in the loudness tables and sentence_idx/n_sentences
+	    in probe_vs_rollout/per_token.csv; rowset selected TOKENS in one builder and
+	    only WHICH PROBES ARE READ in the next. columns.py maps both and refuses to
+	    guess across the sentence_frac collision.
+
+	(e) THE VERBALISATION CONTROL IS A FLAG NOW. --exclude-signal-words plus
+	    --exclude-radius N on either analyser reproduces every table and figure with
+	    the signal words, and optionally their +-N neighbours, removed. This
+	    generalises the near1/near2/near3 controls that analyze_sentence_loudness
+	    already had. Neighbours are computed within (name, step): shifting over the
+	    whole frame lets the last token of one chain drop the first of the next, and
+	    there is a test for exactly that.
+
+	(f) run_config.json IN EVERY RESULT FOLDER, and it is a GUARD as well as a
+	    record. It refuses a second run with a different lens into a folder that
+	    already holds one -- at layer 15 the two lenses' top-20 sets overlap only
+	    about half, so a folder holding both is a folder of figures that cannot be
+	    compared with each other. It records a hash of the vocabulary's CONTENTS, not
+	    just its path: the same vocabulary is data/jlens/... in the repo and
+	    /workspace/jlens/... when deployed, and a file edited in place keeps its path.
+
+	SIGNALS ARE OPEN-ENDED. signals.SIGNALS is seeded with direction and grid because
+	those are committed and deployed, but resolve() accepts any {class: [tokens]} JSON
+	under any name, so a new signal is a file plus --signal-name rather than a patch
+	across 18 call sites. There is a test that registers a "shape" vocabulary with no
+	code change. The rule from entry 19 still stands: build vocabularies from the
+	MODEL vocabulary alone, never from what is frequent in the j-space, since the
+	j-space is what they are used to measure.
+
+	A BUG FOUND, AND IT WAS MINE. reproduce_all.sh invoked "$REPO/script.sh", correct
+	until the previous round moved that file to wrappers/. That round reported "all 44
+	scripts exist" and was wrong -- its check resolved paths loosely enough to miss
+	it. The check now asserts each named path against the filesystem, and a second
+	check walks every shell driver: 50 distinct paths across 34 drivers, 0 missing.
+
+	NOT DONE, DELIBERATELY. join_rollout_answers.py and build_sentence_loudness.py are
+	both "mass tree + rollout -> per-token table" and should fold into join_rollouts.py
+	as a --lens-root mode. Every merge above was gated on golden-file equivalence
+	against the originals; that gate does not exist for these two, and they produce
+	published tables. Doing it without the gate is precisely where a silent change to
+	a published number would come from. Written up in scripts/INVENTORY.md.
+
+	COUNTS, honestly. The 16 loudness CLIs became 10 and eight files were deleted, but
+	repo-wide .py/.sh went 135 -> 141: the six shared library modules are new files.
+	The duplication moved into named, tested modules rather than vanishing. Loose
+	script files (scripts/ + wrappers/ + grid_cell_analysis/ + root) went 97 -> 74.
+
+	ARTIFACTS: no data. telos_interp/loudness_analysis/ (README.md documents the three
+	axes and the conventions), wrappers/loudness_report.sh, RENAMES.md's 2026-09-10
+	section for the full rename table, and tests/data/score_probes_per_token/*.csv --
+	the golden output of the two deleted evaluators, which is the only surviving record
+	of what they emitted.

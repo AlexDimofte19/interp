@@ -7,13 +7,24 @@ this file names one of them as "the working branch", read that as history rather
 somewhere to go looking.
 
 **Newest first, if you only read one thing:** the file is append-only and chronological, so
-the last section is the current state. As of 2026-09-10 that is *Direction loudness does NOT
-predict the grid* (log entry 55): the specificity control on entry 37's headline finding, run
-and passed — direction loudness buys +15.6 points of *action* decodability and −2.4 points of
-*grid* decodability, so the score is action-specific rather than generic saliency. **It also
-records two live landmines** — `prepare_grid_arms.sh`'s default still yields 4 cells per step
-instead of 25, and entry 37(b)'s "overlap ZERO" holds for the mass-era tree only (heldout360
-shares 33 trajectories with the count-era tree). Read those before touching the grid arms.
+the last section is the current state. As of 2026-09-10 that is *The loudness line is a module
+now* (log entry 56). **It is a refactor, not a finding: every script that produces, joins,
+analyses or draws loudness moved to
+[`telos_interp/loudness_analysis/`](telos_interp/loudness_analysis/README.md), and eight were
+deleted.** Start at that README for anything in this line; `RENAMES.md`'s 2026-09-10 section is
+the full where-did-it-go table. Three things it changes that will bite otherwise: loudness
+columns are now `{lens}_{signal}_logmass_L{layer}` (every legacy spelling still reads, but
+`dir_*` is refused for a non-direction signal); the two balanced accuracies are **not** the same
+number and both are in use; and every result folder now carries a `run_config.json` that also
+*guards* against mixing two lens rulers in one directory.
+
+The last measurement is one section earlier: *Direction loudness does NOT predict the grid*
+(log entry 55), the specificity control on entry 37's headline finding, run and passed —
+direction loudness buys +15.6 points of *action* decodability and −2.4 points of *grid*
+decodability, so the score is action-specific rather than generic saliency. **It also records
+two live landmines** — `prepare_grid_arms.sh`'s default still yields 4 cells per step instead
+of 25, and entry 37(b)'s "overlap ZERO" holds for the mass-era tree only (heldout360 shares 33
+trajectories with the count-era tree). Read those before touching the grid arms.
 
 One day older, and the close of the probe-loudness line: *The per-sentence arms did not
 hold the same sentences* (log entry 52, 2026-09-09) -- **done**, fourteen probes in
@@ -695,7 +706,7 @@ Join key: `(name, step, token_id == eos_token_pos)` — all three index `step["o
 
 ```bash
 # 1. probe-1 gather: layer-15 residual at every per-sentence-loudest token (GPU, ~45 min)
-uv run --project /workspace/repo/interp python scripts/gather_local_belief_activations.py \
+uv run --project /workspace/repo/interp python telos_interp/loudness_analysis/rollouts/gather_local_belief_activations.py \
     --rollout-dir /workspace/reasoning_theatre/rollout_strategies/jlens_argmax_per_sentence \
     --out /workspace/activations/argmax_per_sentence_l15
 # tree is size{N}/{stem}/openai__gpt-oss-20b/layer_15/step_0/output/{eos_token_pos}.pt
@@ -709,7 +720,7 @@ interp-cli prepare_activations_for_probing --activations-dir /workspace/activati
 # 3. relabel: label <- rollout model_action, keep final_label / rollout_answer_prob /
 #    rollout_correct / cutoff_kind / dir_logmass; direction_count = dir_logmass so the
 #    split can rank by loudness. Drops rows with no matching cutoff / null model_action.
-uv run ... python scripts/relabel_manifest_from_rollout.py \
+uv run ... python telos_interp/loudness_analysis/rollouts/relabel_manifest_from_rollout.py \
     /workspace/prepared/local_belief_p1_final \
     /workspace/reasoning_theatre/rollout_strategies/jlens_argmax_per_sentence \
     /workspace/prepared/local_belief_p1_local --report-csv p1_relabel_report.csv
@@ -720,7 +731,7 @@ python scripts/split_next_action_manifest.py /workspace/prepared/local_belief_p1
 # scripts/train_all.sh does all 6 (p1 full, p1 top20, p2) x (lr, mlp)
 
 # 5. analysis: pred vs local belief, vs final action, verbalization-confound split
-uv run ... python scripts/eval_local_belief.py <probe.pt> <split_eval_dir>
+uv run ... python telos_interp/loudness_analysis/rollouts/eval_local_belief.py <probe.pt> <split_eval_dir>
 ```
 
 ### Results (balanced accuracy, shared 720-trajectory held-out eval)
@@ -1304,3 +1315,88 @@ an action (entry 42's picture), crowding out map information. Untested.
 - Datasets: `/workspace/prepared/grid_mass_l15_random{,_split_train,_split_eval}`.
 - Next: the same two scripts answer the **grid-vocabulary** version unchanged — point
   `--signal-json` at `data/jlens/grid_tokens_full.json`.
+
+## The loudness line is a module now (2026-09-10, log entry 56)
+
+**No new measurement.** This is the refactor entry 55 made unavoidable: running the
+specificity control meant writing a second evaluator, a second decile analysis and a second
+balanced accuracy, and the line was already carrying five copies of `bal_acc` and four
+hand-rolled trajectory bootstraps. **Everything that produces, joins, analyses or draws
+loudness now lives in [`telos_interp/loudness_analysis/`](telos_interp/loudness_analysis/README.md).**
+
+Start at that README, not here, for anything in this line.
+
+### Where things went
+
+| Was | Now |
+|---|---|
+| `scripts/jlens_reasoning_tokens.py` | `loudness_analysis/build_loudness_tables.py` |
+| `scripts/eval_probe_per_token.py` + `grid_cell_analysis/eval_grid_probe_per_token.py` | `loudness_analysis/score_probes_per_token.py --probe-type {next_action,grid_tile}` |
+| `scripts/build_probe_loudness_heldout.py` | `loudness_analysis/join_rollouts.py` |
+| `scripts/analyze_probe_loudness.py` + `analyze_grid_loudness_correlation.py` | `loudness_analysis/analysis/probe_accuracy_by_loudness.py` |
+| `scripts/analyze_sentence_loudness.py` | `loudness_analysis/analysis/loudness_distribution.py` |
+| `scripts/analyze_direction_word_isolation.py` | `--exclude-signal-words` on **both** analysers |
+| the three `plot_*_loudness*.py` | `loudness_analysis/plotting/figures.py` (16 figures, one CLI) |
+| `scripts/inference_oss/**` | `loudness_analysis/rollouts/**` |
+| `scripts/build_probe_loudness.py` | **deleted** — `score_probes_per_token` + `join_rollouts` |
+
+`RENAMES.md`'s 2026-09-10 section is the full table. **`jlens_reasoning_tokens` was NOT renamed
+where it names the activation tree on disk** (`/workspace/activations/jlens_reasoning_tokens`,
+plus a CSV and several probe-inventory entries) — the tree was named after the script that made
+it, and renaming those strings would break every path to real data.
+
+### What this changes for you
+
+**Loudness columns are `{lens}_{signal}_logmass_L{layer}`** — `jlens_direction_logmass_L15`.
+Every legacy spelling still loads (`dir_logmass_L15`, `dir_logmass`, `{lens}_mass_L{layer}`,
+`{lens}_logmass_L{layer}`), so no CSV on disk is stranded. But `dir_*` is **refused** for a
+non-direction signal: it predates any other vocabulary, so accepting it for `grid` would
+silently read direction loudness into a table labelled grid.
+
+**The two balanced accuracies are not the same number.** `stats.bal_acc` averages over rows;
+`stats.bal_acc_from_counts` pools per-class counts. Entry 55's grid numbers used the counts
+form and the action numbers it compares against used the rows form — a grid row summarises a
+whole step's cells, so averaging per-token accuracies weights a token with 2 cells the same as
+one with 25. `run_config.json` records which ran.
+
+**`--probe-type grid_tile` is a different table shape, not a different class list.** This
+looked like a flag and is not: the row-mode analysis reads a *joined* table (`label_local`,
+`{probe}_pred`, sentence coordinates) and a grid evaluator table has none of those. It routes
+to a counts mode instead.
+
+**Every result folder gets a `run_config.json`**, recording the ruler, a hash of the
+vocabulary's *contents* (not its path — the same vocabulary is `data/jlens/…` in the repo and
+`/workspace/jlens/…` deployed), the bin edges, the aggregation, the bootstrap seed and row
+counts per filter. It is also a **guard**: a second run with a different `--lens` into the same
+folder fails rather than overwriting half the figures.
+
+**Signals are open-ended.** `--signal-json <any {class: [tokens]} JSON> --signal-name <name>`.
+Entry 55's "next" step — the grid-vocabulary version — needs no code change, and there is a
+test that registers a "shape" vocabulary to prove it.
+
+### Corrections to earlier sections of this file
+
+- The trap listed above as "`eval_probe_per_token.py` strips `next_action_probe_` from its
+  column keys" still holds, under the name `score_probes_per_token.py`.
+- Three commands in the local-belief section named `scripts/gather_local_belief_activations.py`,
+  `scripts/relabel_manifest_from_rollout.py` and `scripts/eval_local_belief.py`. Those paths
+  never existed — the files were always under `scripts/inference_oss/` — so the commands were
+  copy-paste-broken before this round too. They now point at `loudness_analysis/rollouts/`.
+- **`scripts/train_all.sh` does not exist and never has.** The comment in that same section
+  claims it runs all six local-belief probes; use `scripts/train_belief_baseline_probes.sh`
+  and the two sibling arm drivers instead.
+- `wrappers/loudness_report.sh` is the recorded invocation for the analysers and figures. Run
+  it once per `LENS`; the guard refuses to put two rulers in one folder.
+
+### Still open
+
+`join_rollout_answers.py` and `build_sentence_loudness.py` are both "mass tree + rollout →
+per-token table" and should fold into `join_rollouts.py` as a `--lens-root` mode. Every merge
+in this round was gated on golden-file equivalence against the originals — the evaluator merge
+is checked against CSVs written by **both** deleted scripts, kept in
+`tests/data/score_probes_per_token/`. That gate does not exist for these two and they produce
+published tables, so the merge is written up in `scripts/INVENTORY.md` rather than done.
+
+442 tests pass (was 408). Loose script files 97 → 74; repo-wide `.py`/`.sh` went 135 → **141**,
+because the six shared library modules are new files — the duplication moved into named, tested
+modules rather than vanishing.
