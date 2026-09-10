@@ -3,11 +3,17 @@
 Notes for a fresh Claude session picking up this work. Branch: `reasoning_theatre`.
 
 **Newest first, if you only read one thing:** the file is append-only and chronological, so
-the last section is the current state. As of 2026-08-31 that is *Truncation strategies —
-cutting where the lens is loud* (log entry 43): three rollout arms built and verified, none
-of them run yet. Before it: *Loudness through a sentence* (entry 42) and *Probe vs. rollout*
-(entries 39-41). The "Resuming — start here" section below is the round-2 grid-probing thread
-and is older than all three.
+the last section is the current state. As of 2026-09-10 that is *Direction loudness does NOT
+predict the grid* (log entry 46): the specificity control on entry 37's headline finding, run
+and passed — direction loudness buys +15.6 points of *action* decodability and −2.4 points of
+*grid* decodability, so the score is action-specific rather than generic saliency. **It also
+records two live landmines** — `prepare_grid_arms.sh`'s default still yields 4 cells per step
+instead of 25, and entry 37(b)'s "overlap ZERO" holds for the mass-era tree only (heldout360
+shares 33 trajectories with the count-era tree). Read those before touching the grid arms.
+Before it: *Local-belief probes* (entry 45), *Both loud arms are run* (entry 44),
+*Truncation strategies* (entry 43), *Loudness through a sentence* (entry 42) and *Probe vs.
+rollout* (entries 39-41). The "Resuming — start here" section below is the round-2
+grid-probing thread and is older than all of them.
 
 Covers two connected changes: `scripts/jlens_reasoning_tokens.py` now persists activations
 alongside its lens analysis (committed as `2296c92`), and
@@ -704,3 +710,115 @@ tracking belief without them. The ±k proximity window of 42(e) is still uncontr
 - `SESSION_LOG.txt` → append to `ICLR log.txt` via `ICLR_LOG_ENTRY_DRAFT.txt` (entry 44).
 - This file → append to `claude_session_readme.md`.
 - Probes: `.../local_belief_probes/probes/`. Datasets: `/workspace/prepared/local_belief_p*`.
+
+## Direction loudness does NOT predict the grid (2026-09-10, log entry 46)
+
+The specificity control entry 37 never ran. Entry 37(c) finding 1 — jlens L15 direction
+mass predicts where the **next action** is decodable, monotonically across ten deciles — is
+only worth anything if the score is *direction*-specific rather than a generic "informative
+token" measure that would flatter any probe. Reading the **grid_tile** label off the same
+87,221 held-out tokens under the same binning is that test. It passes.
+
+### Result (9,969,453 cell evaluations)
+
+| probe (grid_tile, L15) | decile 1 | decile 10 | gap |
+| --- | --- | --- | --- |
+| random lr | .2821 | .2597 | **−0.0224**  CI [−0.028, −0.016] |
+| random mlp | .3831 | .3596 | **−0.0236**  CI [−0.032, −0.015] |
+| *action reference, same tokens, matched uniform draw — lr* | .3518 | .5066 | *+0.1548* |
+| *action reference — mlp* | .3924 | .5483 | *+0.1559* |
+
+~15 % of the action gap in magnitude, **opposite in sign**. Loudness buys +15.6 points of
+action decodability and −2.4 points of grid decodability. The logit-lens ranking agrees
+(lr −0.0191, mlp −0.0263), so it is not a Jacobian-lens artefact.
+
+**Both grid CIs exclude zero, and that is not the result.** At n=87k a 2pp gap is trivially
+resolvable, so a significance test fires either way and says almost nothing; the effect size
+against the action bar is the finding. The first version of the analysis script printed
+"EXCLUDES ZERO -> correlated" for −0.02 — true, and exactly the wrong takeaway. It now
+reports the gap as a fraction of `--reference` (default 0.1559).
+
+### Pipeline
+
+```bash
+# 1. prepare the random (uniform 20-token) arm at L15 from the MASS-ERA tree
+interp-cli prepare_activations_for_probing \
+    --activations-dir /workspace/activations/jlens_mass_l15 \
+    --trajectories-dir /workspace/trajectories/reveng/trajectories_train_single_step \
+    --probe-type grid_tile --layers 15 --steps all --output-indices all \
+    --token-selection recorded_random --seed 42 \
+    --max-positions-per-trajectory 25 \
+    --output-path /workspace/prepared/grid_mass_l15_random          # 71,913 samples
+# NO --balance-classes-per-trajectory: see the landmine below.
+
+# 2. split (token-major -> the trainer refuses its own --eval-split) + train lr/mlp
+python scripts/split_next_action_manifest.py /workspace/prepared/grid_mass_l15_random \
+    --seed 42 --single-layer 15 --eval-split 0.2 ...                # 2880/720
+interp-cli train_cognitive_map_probe --model-type {lr,mlp} --class-weight balanced \
+    --normalize --cache-activations ...                             # .4051 / .5400
+
+# 3. score EVERY reasoning token of heldout360, then bin by loudness
+python scripts/eval_grid_probe_per_token.py --probe <lr.pt> --probe <mlp.pt> \
+    --activations-dir /workspace/activations/heldout360_l15 \
+    --lens-dir /workspace/activations/heldout360_lens \
+    --signal-json /workspace/jlens/direction_tokens_full.json --layer 15 ...
+python scripts/analyze_grid_loudness_correlation.py <per_token.csv> --score jlens_mass_L15
+```
+
+Two trees on purpose: `heldout360_l15` holds the layer-15 `.pt` for every reasoning token,
+`heldout360_lens` holds both lenses' CSVs and mass tables across L7–L23, so
+`logitlens_mass_L15` comes along free.
+
+### New scripts (committed on `worktree-grid-loudness-corr`)
+
+- `scripts/eval_grid_probe_per_token.py` — grid twin of `eval_probe_per_token.py`. One row
+  per (trajectory, step, token), **not** per cell: a token owns C cells, so each row carries
+  `n_true_{c}` / `correct_{c}` per class and balanced accuracy for any bucket is a group-by
+  over per-class counts. Per-cell rows would multiply the file ~100× and buy nothing.
+  Has `--exclude-names` for the partly-overlapping-tree case below.
+- `scripts/analyze_grid_loudness_correlation.py` — decile table, Spearman, reversal count,
+  and a trajectory-clustered bootstrap of the gap that **recomputes the decile edges inside
+  each resample** (the edges are themselves a function of the sample).
+
+### Two landmines
+
+1. **Entry 34's balancing bug is confirmed LIVE.**
+   `--balance-classes-per-trajectory` takes `samples_per_class = min(..., min_count)`, and
+   every grid holds exactly one `A` and one `G`, so `min_count` is 1 and a
+   `--max-positions-per-trajectory 25` request yields **4 cells per (trajectory, step)**,
+   one per class present. Verified directly. **`scripts/prepare_grid_arms.sh` still defaults
+   to the broken combination** — fix it before the grid arm sweep. The workaround is a plain
+   cap plus `--class-weight balanced` at train time, which is what entry 34 proposed.
+
+2. **Entry 37(b)'s "overlap ZERO" is tree-specific, and the trees are NOT interchangeable.**
+   It holds for the mass-era tree `/workspace/activations/jlens_mass_l15` only.
+   `heldout360` shares **33** trajectories with the count-era tree
+   `/workspace/activations/jlens_reasoning_tokens`, and the two 3600-trees share **348** with
+   each other. A first grid probe trained on the count-era tree was discarded for this
+   reason. Corollary: `/workspace/splits/eval_trajectories_720.txt` pins COUNT-ERA names —
+   only 63 of its 720 exist in the mass tree, and `split_next_action_manifest.py` correctly
+   refuses it there. Use a seeded `--eval-split` against the mass tree.
+
+### Caveats
+
+Layer 15 only. The grid label is **static within a step** while the action label is what the
+model is deciding, so the two are not symmetric in difficulty — this shows loudness fails to
+predict the grid, not that the grid is equally predictable in principle. The held-out grid
+balanced accuracy (.359 mlp, 4 real classes) is **not** comparable to the internal eval
+(.540, 5 classes): prepare auto-pads to 15 so padding is a trained class, while the eval
+scores each grid at native size where no cell is padding. Padding is trivially predictable
+from `(row, col)` and would dilute every decile equally. The small negative slope is real
+but unexplained — plausibly loud tokens sit mid-sentence where the residual is committed to
+an action (entry 42's picture), crowding out map information. Untested.
+
+### Where things live
+
+- Branch `worktree-grid-loudness-corr` @ `8e0b00d`, off `reasoning_theatre` (clean
+  fast-forward). **Not pushed — no SSH key in that environment.**
+- Probes + artifacts: `/workspace/probes/grid_mass_l15/` —
+  `grid_probe_random_l15_{lr,mlp}.pt` (input_dim **2882** = one L15 activation + row + col,
+  not the legacy 8642 = 3×2880 + 2), `heldout360_grid_per_token.csv` (87,221 rows),
+  `grid_loudness_{jlens,logitlens}_L15.json`.
+- Datasets: `/workspace/prepared/grid_mass_l15_random{,_split_train,_split_eval}`.
+- Next: the same two scripts answer the **grid-vocabulary** version unchanged — point
+  `--signal-json` at `data/jlens/grid_tokens_full.json`.
