@@ -123,8 +123,6 @@ def follows(df: pd.DataFrame, probes: list[str]) -> dict:
     return out
 
 
-
-
 def _prepare(df: pd.DataFrame, args) -> tuple[pd.DataFrame, str, int, int]:
     """Map whatever the table calls its columns onto this module's internal names.
 
@@ -315,8 +313,7 @@ def main() -> int:
         "--probe-type",
         default=_probes.DEFAULT_PROBE_TYPE,
         choices=_probes.probe_type_names(),
-        help="What the probes decode. Sets the classes balanced accuracy averages over "
-        "(default: %(default)s).",
+        help="What the probes decode. Sets the classes balanced accuracy averages over (default: %(default)s).",
     )
     ap.add_argument(
         "--lens",
@@ -618,44 +615,30 @@ def main() -> int:
 
     cfg = _prov.RunConfig("loudness_analysis/analysis/probe_accuracy_by_loudness.py")
 
-    cfg.measurement(lens=args.lens, signal=args.signal_name, layer=args.layer,
-
-                    signal_json=args.signal_words)
+    cfg.measurement(lens=args.lens, signal=args.signal_name, layer=args.layer, signal_json=args.signal_words)
 
     cfg.input("per_token", args.per_token)
 
     if args.all_token_loudness:
-
         cfg.input("all_token_loudness", args.all_token_loudness)
 
-    cfg.params.update({
-
-        "probe_type": args.probe_type,
-
-        "deciles": args.deciles,
-
-        "exclude_signal_words": args.exclude_signal_words,
-
-        "exclude_radius": args.exclude_radius,
-
-        "extra_probes": extra,
-
-    })
+    cfg.params.update(
+        {
+            "probe_type": args.probe_type,
+            "deciles": args.deciles,
+            "exclude_signal_words": args.exclude_signal_words,
+            "exclude_radius": args.exclude_radius,
+            "extra_probes": extra,
+        }
+    )
 
     cfg.aggregation(
-
         balanced_accuracy=ptype.aggregation,
-
         classes=list(CLASSES),
-
         resolved_loudness_column=mass_col,
-
         bootstrap="trajectory-clustered",
-
         n_boot=args.boot,
-
         seed=0,
-
     )
 
     cfg.rows("input", n_before)
@@ -665,7 +648,6 @@ def main() -> int:
     cfg.guard(args.out, "lens", "signal", "layer")
 
     cfg.write(args.out)
-
 
     (args.out / "summary.json").write_text(json.dumps(summary, indent=2))
     print(

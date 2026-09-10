@@ -10,12 +10,19 @@ Read [CLAUDE.md](../CLAUDE.md) first for the pipeline shape and the on-disk cont
 
 | Directory | Holds | n |
 |---|---|---|
-| `scripts/` | **the machinery** — everything that does work | 62 |
-| [`wrappers/`](../wrappers/README.md) | **the record** — recorded invocations that pin one run's parameters onto a script here. Do not refactor them; changing a default rewrites history. | 16 |
-| [`grid_cell_analysis/`](../grid_cell_analysis/README.md) | the grid-cell ("cognitive map") line: the published round-1 probes, and the round-2 grid-label arms that **never produced a result** | 20 |
+| [`telos_interp/loudness_analysis/`](../telos_interp/loudness_analysis/README.md) | **the lens → probe → loudness pipeline**, and the rollout line. An importable package, not a script folder. | 29 |
+| `scripts/` | **the machinery** — everything that does work and is not part of that pipeline | 40 |
+| [`wrappers/`](../wrappers/README.md) | **the record** — recorded invocations that pin one run's parameters onto a script here. Do not refactor them; changing a default rewrites history. | 14 |
+| [`grid_cell_analysis/`](../grid_cell_analysis/README.md) | the grid-cell ("cognitive map") line: the published round-1 probes, and the round-2 grid-label arms that **never produced a result** | 18 |
 | `configs/**/*.conf` | recorded `interp-cli` invocations, same role as `wrappers/` | — |
 
 Only `runpod_setup.sh` is left loose at the repo root.
+
+**The loudness line no longer lives here.** Everything that produces, joins, analyses or draws
+loudness moved to `telos_interp/loudness_analysis/`, which has [its own
+README](../telos_interp/loudness_analysis/README.md) and is the place to start for that work.
+Rows below that point into it are kept because the inventory is also a map of where things went.
+See [RENAMES.md](../RENAMES.md) for the full table.
 
 ## Data roots
 
@@ -195,58 +202,46 @@ top-level function bodies. Re-run it after any merge.
 
 | Was | Now |
 |---|---|
-| `eval_equal_n_belief_arms.sh` ↔ `eval_more_belief_arms.sh` (0.83) | `eval_belief_arms_heldout.sh <round>` — a round is a `case` entry. Both key maps verified byte-identical to the originals before deletion. |
-| `jlens_action_ranks.py` ↔ `jlens_action_ranks_sampled.py` (0.73, `ensure_unembed_assets` verbatim) | one `jlens_action_ranks.py`; `--runs_per_combo` and `--trajectories_root` are optional and the narrow CSV schema is unchanged without them |
+| `eval_equal_n_belief_arms.sh` ↔ `eval_more_belief_arms.sh` (0.83) | `eval_belief_arms_heldout.sh <round>` — a round is a `case` entry. Both key maps verified byte-identical before deletion. |
+| `jlens_action_ranks.py` ↔ `jlens_action_ranks_sampled.py` (0.73) | one `jlens_action_ranks.py`; the extra flags are optional and the narrow CSV schema is unchanged without them |
 | 11 parameter-record wrappers scattered through `scripts/` and the repo root | [`wrappers/`](../wrappers/README.md), where the copied `CMD=(...)` assembly is the *point* rather than a defect |
 | the grid-cell line spread over `scripts/`, `plotting_scripts/`, `evaluation_scripts/` | [`grid_cell_analysis/`](../grid_cell_analysis/README.md); the two now-empty root folders are gone |
+| **the five duplicated lens-IO helpers** (`find_act_folder`, `read_lens_tables`, `read_mass_columns`, `load_trajectory`, `trajectory_dirs`) | `loudness_analysis/lens_io.py`. `eval_grid_probe_per_token.py` is gone: `score_probes_per_token.py --probe-type grid_tile`. |
+| **`bal_acc` × 5, in two non-equivalent forms**, and the trajectory-clustered bootstrap × 4 | `loudness_analysis/stats.py`. Both balanced accuracies are kept and named apart — a grid row summarises many predictions, so pooling counts and averaging rows are different numbers. |
+| **the four builders** (`build_sentence_loudness`, `build_probe_loudness`, `build_probe_loudness_heldout`, `build_token_loudness_x_…`) | one join (`join_rollouts.py`) plus two tree-side joins; `build_probe_loudness.py` deleted outright as superseded. |
+| **the four analysis scripts** | two: `analysis/probe_accuracy_by_loudness.py` and `analysis/loudness_distribution.py`. The confound script became `--exclude-signal-words`; the grid twin became `--probe-type grid_tile`. |
+| **the three loudness plotters** (16 figures) | `plotting/figures.py` + `plotting/_style.py`, behind one registry and one CLI. |
+| three spellings of the same loudness column | `{lens}_{signal}_logmass_L{layer}`, with every legacy name accepted on read — see `loudness_analysis/columns.py`. |
 
 ### Left, and why
 
-**Five duplicated lens-IO helpers.** `find_act_folder`, `read_lens_tables`, `read_mass_columns`,
-`load_trajectory` and `trajectory_dirs` are byte-identical in `telos_interp/loudness_analysis/score_probes_per_token.py`
-and `telos_interp/loudness_analysis/score_probes_per_token.py`. The obvious fix is one module in
-`telos_interp/`. It is deliberately not done here: the grid round is dormant and pulling its
-evaluator back across the folder boundary would undo the separation that was just made. Do it
-when the grid round is next touched — or, better, fold the grid evaluator into
-`eval_probe_per_token.py --probe-type grid_tile`, which kills the file and the five helpers at once.
+**The two tree-side joins.** `join_rollout_answers.py` and `build_sentence_loudness.py` are both
+"mass tree + rollout → per-token table"; they differ in how many lenses they read and which
+rollout fields they carry. Folding them into `join_rollouts.py` as a `--lens-root` mode is the
+remaining merge in this line. It is listed rather than done because both produce published
+tables and every merge in this round was gated on golden-file equivalence against the originals
+— that gate has not been built for these two, and doing the merge without it is exactly where a
+silent change to a published number would come from.
 
 **The four `*_by_distance` plots** (0.45–0.53 pairwise, `_facets` and `_complexity_levels`
-verbatim) collapse cleanly into one `--metric {object,per-class} --source {json,csv}`. Same
-reasoning: dormant round, and all four are unreferenced.
+verbatim) collapse cleanly into one `--metric {object,per-class} --source {json,csv}`. Dormant
+round, and all four are unreferenced.
 
-**Smaller repeats.** `load_probe` (`build_probe_loudness.py` ↔ `telos_interp/loudness_analysis/rollouts/eval_local_belief.py`)
-and `bal_acc` (`analyze_direction_word_isolation.py` ↔ `plot_probe_loudness.py`) are byte-identical.
-Re-implemented rather than copied, but the same idea in several places: `load` (×4),
-`make_figure` (×4), `bal_acc`/`balanced_accuracy` (×5), `qbin`, `wilson`, `zscore`, `read_rows`,
-`expand_paths`, `entries_key`, `clustered_band`, `draw`, `score`, `collect`.
+**Three belief-round drivers.** `train_belief_baseline_probes.sh`, `train_more_belief_arms.sh`
+and `train_equal_n_belief_arms.sh` each run relabel → prepare → split → train per arm, with the
+same `EVAL_NAMES` / `SINGLE_LAYER=15` / `SEED=42` / `EPOCHS=50` block. Pairwise ratios are only
+0.32–0.43 — low, because the arm *lists* differ, not the machinery. The biggest remaining merge
+in the active pipeline.
 
-**Three belief-round drivers.** `train_belief_baseline_probes.sh`, `train_more_belief_arms.sh` and
-`train_equal_n_belief_arms.sh` each run relabel → prepare → split → train per arm, with the same
-`EVAL_NAMES` / `SINGLE_LAYER=15` / `SEED=42` / `EPOCHS=50` block. Pairwise ratios are only
-0.32–0.43 — low, because the arm *lists* differ, not the machinery. They are the next real merge
-in the active pipeline, and the biggest remaining one.
+**`prepare_grid_arms.sh` ↔ `prepare_next_action_arms.sh` (0.57)** and `train_grid_arms.sh` ↔
+`train_next_action_arms.sh` (0.42) are label-twins a `--label` flag would collapse. They sit
+either side of the `grid_cell_analysis/` boundary, so merging them means deciding that boundary
+matters less than the duplication. It currently does not.
 
-**`prepare_grid_arms.sh` ↔ `prepare_next_action_arms.sh` (0.57)** and
-`train_grid_arms.sh` ↔ `train_next_action_arms.sh` (0.42) are label-twins that a `--label` flag
-would collapse. They now sit either side of the `grid_cell_analysis/` boundary, so merging them
-means deciding that boundary matters less than the duplication. It currently does not.
+### Unreferenced by any script, doc, config or test
 
-### The 15 analysis and figure scripts
-
-`analyze_*.py` (6) and `plot_*.py` (8) plus `build_loudness_x_reasoning_pos_heatmap.py` each read
-one per-token CSV and write one set of tables or figures. Pairwise similarity is *low* (0.05–0.13)
-because the statistics genuinely differ — but the shape does not, and a registry keyed by analysis
-name would fit this codebase, which already dispatches `METHODS`, `STRATEGIES` and the scoring
-modes that way. That is the one remaining change that would move the file count a lot, and it is
-also the one that touches published figure provenance, so it is listed rather than done.
-
-### Unreferenced by any script, doc, config or test (8)
-
-`build_loudness_x_reasoning_pos_heatmap.py`, `compare_equal_n_arms.py`,
-`gather_reasoning_steps_statistics.py`, `jlens_slice_page.py`,
-`plot_token_loudness_x_infered_action_probability.py`, the two
+`compare_equal_n_arms.py`, `gather_reasoning_steps_statistics.py`, `jlens_slice_page.py`, the two
 `grid_cell_analysis/plots/*_from_csv.py`, and `wrappers/run_next_action_arms.sh`.
 
-"Unreferenced" is not "dead" — `build_loudness_x_reasoning_pos_heatmap.py` was committed
-deliberately. It means nothing else will run them, so they are the ones whose provenance has to be
+"Unreferenced" is not "dead" — it means nothing else will run them, so their provenance has to be
 read out of `ICLR log.txt` rather than off a call graph.

@@ -49,6 +49,14 @@ Both drive `telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh`
 | `build_convinced_datasets.sh` | `scripts/build_convinced_dataset.py` | the three convinced datasets: train 2880 / val 720 / eval 360 |
 | `delete_non_jlens_selected.sh` | `scripts/delete_non_jlens_selected.py` | the prune that was actually applied — **dry-run by default** |
 | `run_analysis.sh` | `telos_interp/loudness_analysis/rollouts/analysis.py` | the sentence-end rollout's 13 figures |
+| `loudness_report.sh` | `loudness_analysis/analysis/*` + `plotting/figures.py` | one ruler per run: `LENS`, `SIGNAL`, `PROBE_TYPE`, and `EXCLUDE_SIGNAL_WORDS` for the verbalisation control |
+
+`loudness_report.sh` is the one wrapper here that does **not** record a published run: it
+is the recorded invocation for the analysis and figure CLIs that replaced four analysis
+scripts and three plotters. Run it twice, once per `LENS` -- at layer 15 the two lenses'
+top-20 sets overlap only about half, so a folder holding both rulers is a folder of figures
+that cannot be compared with each other. `provenance.RunConfig.guard` refuses the second
+run into the same `--out` rather than overwriting half of them.
 
 ## Older rounds
 

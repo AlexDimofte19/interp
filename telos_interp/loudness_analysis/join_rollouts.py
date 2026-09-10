@@ -367,9 +367,9 @@ def _resolve_loudness_column(args) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     out_default = Path("/workspace/reasoning_theatre/probe_loudness_heldout360")
-    ap.add_argument("--table",
-        "--probe-csv",
-        dest="probe_csv", type=Path, default=out_default / "heldout360_10probes.csv")
+    ap.add_argument(
+        "--table", "--probe-csv", dest="probe_csv", type=Path, default=out_default / "heldout360_10probes.csv"
+    )
     ap.add_argument(
         "--rollout-dir",
         type=Path,
@@ -435,7 +435,9 @@ def main() -> int:
 
     args.mass_column = _resolve_loudness_column(args)
 
-    print(f"loudness axis: {args.mass_column}  ({cols.axis_label(args.lens, args.signal_name, args.layer)})", flush=True)
+    print(
+        f"loudness axis: {args.mass_column}  ({cols.axis_label(args.lens, args.signal_name, args.layer)})", flush=True
+    )
     register_extra_probes(args.extra_probes, args.extra_probes_rowset)
 
     wanted = list(ROWSETS) if args.rowsets == "all" else args.rowsets.split(",")

@@ -132,3 +132,82 @@ fork's `(ids, tok)` return, which is what they expect.
 
 `DRY_RUN=1 FORCE=1 GRID_ROUND=1 UNRUN=1 ./scripts/reproduce_all.sh` names 44 distinct scripts;
 all 44 exist. 408 tests pass. Nothing was deleted except the four files the two merges replaced.
+
+
+---
+
+# 2026-09-10 — `telos_interp/loudness_analysis`
+
+The loudness line grew by forking: each new question copied the previous script and changed one
+join. Four builders were the same operation, `bal_acc` existed five times in two non-equivalent
+forms, the trajectory-clustered bootstrap was rolled by hand four times, and the same number was
+written under three different column names. It is now one module, decomposed by **artifact
+produced** rather than by which outcome happens to be joined.
+
+`telos_interp/` was chosen over a top-level `loudness_analysis/` because `pyproject.toml`
+declares `packages = ["telos_interp"]` — it is the only installed package, so anywhere else the
+module is path-invoked rather than importable.
+
+## Moved and renamed
+
+| Was | Now | Why the name changed |
+|---|---|---|
+| `scripts/jlens_reasoning_tokens.py` | `loudness_analysis/build_loudness_tables.py` | said neither what it produces nor, since `--lens` grew a logitlens arm, which lens it uses |
+| `scripts/eval_probe_per_token.py` | `loudness_analysis/score_probes_per_token.py` | — |
+| `scripts/analyze_probe_loudness.py` | `loudness_analysis/analysis/probe_accuracy_by_loudness.py` | names the question |
+| `scripts/analyze_sentence_loudness.py` | `loudness_analysis/analysis/loudness_distribution.py` | names the question |
+| `scripts/build_probe_loudness_heldout.py` | `loudness_analysis/join_rollouts.py` | reads as "build the loudness of the probe", which is not what it does |
+| `scripts/build_token_loudness_x_infered_action_probability.py` | `loudness_analysis/join_rollout_answers.py` | — |
+| `scripts/build_loudness_x_reasoning_pos_heatmap.py` | `loudness_analysis/plotting/loudness_x_chain_position.py` | had a `build_` prefix but is a figure script |
+| `scripts/score_probes_heldout.py` | `loudness_analysis/summarise_probe_accuracy.py` | it is a scoreboard, not a loudness analysis |
+| `scripts/build_sentence_loudness.py` | `loudness_analysis/build_sentence_loudness.py` | moved only |
+| `scripts/inference_oss/**` | `loudness_analysis/rollouts/**` | the whole rollout line, moved unchanged |
+
+## Merged
+
+| Was | Now | Verified by |
+|---|---|---|
+| `eval_probe_per_token.py` + `grid_cell_analysis/eval_grid_probe_per_token.py` | `score_probes_per_token.py --probe-type {next_action,grid_tile}` | golden CSVs written by **both originals** before deletion, asserted column for column (`tests/data/score_probes_per_token/`) |
+| `analyze_probe_loudness.py` + `analyze_grid_loudness_correlation.py` | `probe_accuracy_by_loudness.py --probe-type grid_tile` (counts mode) | `tests/test_loudness_analysis.py` |
+| `analyze_direction_word_isolation.py` | `--exclude-signal-words` / `--exclude-radius` on **both** analysers | ditto |
+| `plot_probe_loudness.py` + `plot_sentence_loudness.py` + `plot_token_loudness_x_…py` | `plotting/figures.py` (16 figures) + `plotting/_style.py` | `tests/test_loudness_plotting.py` draws end to end |
+
+## Deleted outright
+
+`scripts/build_probe_loudness.py`. It loaded probes and ran torch inline over the eval
+manifests; `score_probes_per_token.py` produces the same left table and the join that follows is
+then CPU-only, which is what lets a second lens ruler be produced without the GPU.
+
+## Deliberately NOT renamed
+
+`jlens_reasoning_tokens` is also the name of an activation **tree** on disk
+(`/workspace/activations/jlens_reasoning_tokens`), plus a CSV and several probe-inventory
+entries — 24+ references. The tree was named after the script that made it; renaming those
+strings would break every path to real data. The tree keeps its name and is now orphaned from
+the script, as this file already records for three other directories.
+
+`wrappers/jlens_reasoning_tokens{,_filtered}.sh` keep their filenames: a wrapper is the record
+of a run that happened under that name. Only the script path inside was updated.
+
+## Column names
+
+`{lens}_{signal}_logmass_L{layer}`, e.g. `jlens_direction_logmass_L15`. Every legacy spelling —
+`dir_logmass_L15`, `dir_logmass`, `{lens}_mass_L{layer}`, `{lens}_logmass_L{layer}` — is
+accepted on read, so **every CSV already on disk still loads**. `dir_*` is refused for a
+non-direction signal, because it predates any other vocabulary and so identifies the signal.
+
+## Silent breakages the moves would otherwise have caused
+
+* `run_inference.py` resolves its default trajectory with `Path(__file__).with_name()`, so the
+  example JSON had to travel with it.
+* `run_inference_strategies.sh` computed `REPO` as `$HERE/../..`, correct two levels deep;
+  `rollouts/` is three, so `REPO` would have resolved to `telos_interp/`.
+* Three files carried `sys.path.insert(..., parents[1])`, the repo root from `scripts/` and
+  `telos_interp/` from two levels deeper.
+* The grid call sites needed `--probe-type grid_tile`, not just a new path: the merged evaluator
+  defaults to `next_action`, so a path-only update would have silently scored the wrong label.
+
+## Verified
+
+442 tests pass. Every script path named across 34 shell drivers exists (49 distinct paths, 0
+missing). Loose script files: 99 → 73 (`wrappers/loudness_report.sh` is new).

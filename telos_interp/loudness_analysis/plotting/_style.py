@@ -19,11 +19,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
-import seaborn as sns  # noqa: E402
+import seaborn as sns  # noqa: E402,F401  (re-exported: used by the rollout figures)
 
 from telos_interp.loudness_analysis import columns as _cols  # noqa: E402
 from telos_interp.loudness_analysis import stats as _stats  # noqa: E402
-from telos_interp.loudness_analysis.analysis.probe_accuracy_by_loudness import (  # noqa: E402
+
+# Re-exported for figures.py. They come from the ANALYSIS module on purpose: the bin
+# edges belong to the analysis that defines them, so a figure and the table it is read
+# beside cannot disagree about where a bin starts.
+from telos_interp.loudness_analysis.analysis.probe_accuracy_by_loudness import (  # noqa: E402,F401
     REL_TOKEN_BINS,
     REL_TOKEN_LABELS,
 )
@@ -78,7 +82,6 @@ COLOR = {
 }
 
 
-
 COMPLEXITIES = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
 CMAP = plt.get_cmap("viridis")
 CCOLOR = {c: CMAP(i / (len(COMPLEXITIES) - 1) * 0.9) for i, c in enumerate(COMPLEXITIES)}
@@ -89,7 +92,6 @@ VALUES = {
     "dir_prob_L15": "direction probability mass (layer 15)",
     "dir_logmass_L15": "log direction mass (layer 15)",
 }
-
 
 
 DEFAULT_CSV = Path("/workspace/reasoning_theatre/loudness_vs_answer_prob/heldout360_per_token.csv")
@@ -110,7 +112,6 @@ METRICS = (
 
 # Per-trajectory loudness rank -> bucket, mirroring the shape entry 37(c) reports.
 RANK_EDGES = [(1, 1, "top-1"), (2, 5, "2-5"), (6, 20, "6-20"), (21, 99, "21-99"), (100, 10**9, "100+")]
-
 
 
 # ---- helpers -------------------------------------------------------------------------
@@ -138,7 +139,6 @@ def curve(d: pd.DataFrame, bincol: str, probes: list[str], truth: str) -> pd.Dat
             r[p] = acc_by(g, p, truth)
         rows.append(r)
     return pd.DataFrame(rows).sort_values("bin")
-
 
 
 def binned(df: pd.DataFrame, xcol: str, value: str, edges: np.ndarray) -> pd.DataFrame:
@@ -245,7 +245,6 @@ def group_frames(df: pd.DataFrame, min_len: int) -> dict[str, tuple[pd.DataFrame
 # --------------------------------------------------------------------------- figures
 
 
-
 def load(path: Path, lenses: list[str], layer: int) -> pd.DataFrame:
     """The join, plus the two per-chain quantities the figures need but it does not store."""
     cols = ["name", "step", "token_idx", "reasoning_pos", "model_action", "answer_prob", "correct"]
@@ -315,5 +314,3 @@ def finish(fig, out: Path) -> None:
     fig.savefig(out, dpi=170, bbox_inches="tight", facecolor=SURFACE)
     plt.close(fig)
     print(f"wrote {out}", flush=True)
-
-

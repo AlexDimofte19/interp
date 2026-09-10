@@ -84,6 +84,12 @@ trajectory JSONs → gather_activations → per-token .pt tree
   grid row strings into `[row, col, cell_id]` triples with optional padding.
 - `probe_models.py` / `training.py` — the LR/MLP classification and regression probes, plus
   train-epoch, seeding, and normalization helpers used by all trainers.
+- `loudness_analysis/` — **the whole lens → probe → loudness pipeline**, and the fourth
+  registry. See [its README](telos_interp/loudness_analysis/README.md). Three axes vary
+  independently and every stage takes all three: the **lens** (`jlens_utils.methods`), the
+  **signal** (`signals.SIGNALS` — any `{class: [tokens]}` JSON, not just the two committed
+  vocabularies) and the **probe** (`probes.PROBE_TYPES`). Importing the package pulls in
+  neither torch nor matplotlib, on purpose: the analysis layer runs without either.
 
 ### On-disk contracts (do not break these)
 
@@ -381,6 +387,36 @@ original on-disk spelling behind `BELIEF_BASELINE_*` variables. An ICLR log numb
 header as a cross-reference, not in a filename.
 
 ## Conventions and gotchas
+
+- **Loudness is never unqualified, and its column says so.** The canonical name is
+  `{lens}_{signal}_logmass_L{layer}` — `jlens_direction_logmass_L15` — because at layer 15
+  the two lenses' top-20 sets overlap only about half, so a number without a lens and a
+  vocabulary is not a quantity. `loudness_analysis/columns.py` builds those names, owns the
+  one axis label every table and figure uses, and accepts every legacy spelling on read
+  (`dir_logmass_L15`, `dir_logmass`, `{lens}_mass_L{layer}`, `{lens}_logmass_L{layer}`), so
+  every CSV already on disk still loads. `dir_*` is refused for a non-direction signal: it
+  predates any other vocabulary, so it identifies the signal and nothing else.
+- **`columns.py` also disambiguates two names that have already cost a debugging round.**
+  `sentence_frac` means position *within* a sentence in the loudness tables but
+  `sentence_idx / n_sentences` in `probe_vs_rollout/per_token.csv`; and `rowset` selected
+  *tokens* in one builder and only *which probes are read* in the next. Canonically
+  `frac_in_sentence` / `frac_of_chain` and `probe_set`.
+- **The two balanced accuracies are not the same number.** `stats.bal_acc` averages over
+  rows; `stats.bal_acc_from_counts` pools per-class counts. A grid row summarises a whole
+  step's cells, so averaging per-token accuracies weights a token with 2 cells the same as
+  one with 25. Both are kept, named apart; `run_config.json` records which ran.
+- **Every result folder gets a `run_config.json`.** `loudness_analysis/provenance.py` writes
+  the ruler, the vocabulary and a hash of its *contents* (the path cannot decide
+  comparability — the same vocabulary is `data/jlens/…` in the repo and `/workspace/jlens/…`
+  when deployed), the bin edges, the aggregation method, the bootstrap seed, and row counts
+  before and after each filter. It is also a **guard**: a second run with a different lens
+  into the same folder fails rather than overwriting half the figures.
+- **The verbalisation control is a flag, not a script.** `--exclude-signal-words` plus
+  `--exclude-radius N` on either analyser reproduces every table and figure with the signal
+  words — and optionally their ±N neighbours — removed. The lens predicts the *next* tokens,
+  so the token just before ` up` is loud without being a signal word itself; the radius is
+  what separates "the residual is signal-loaded here" from "a signal word is about to be
+  written".
 
 - **`wrappers/` is the record, `scripts/` is the machinery.** A file under `wrappers/` exists to pin the
   *parameter values* of a published run onto one other script -- `configs/**/*.conf` and the `*.ps1`

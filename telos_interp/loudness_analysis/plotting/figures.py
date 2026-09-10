@@ -239,7 +239,6 @@ def fig_label_comparison(d: pd.DataFrame, out: Path) -> None:
     plt.close(fig)
 
 
-
 def q1_within(df: pd.DataFrame, ref: pd.DataFrame, value: str, min_len: int, out: Path, tab: Path, suffix: str):
     edges = np.linspace(0, 1, 11)
     sub = df[df["sentence_len"] >= min_len]
@@ -560,7 +559,6 @@ def q2_chain_by_complexity(df: pd.DataFrame, value: str, out: Path, tab: Path, s
     save(fig, out / f"q2_along_chain_overlay{suffix}.png")
 
 
-
 def fig_loudness_vs_answer(df: pd.DataFrame, lenses: list[str], layer: int, out: Path) -> pd.DataFrame:
     """The headline: what the model does at a token, against how loud that token is."""
     fig, axes = plt.subplots(1, len(METRICS), figsize=(15, 4.6))
@@ -759,8 +757,6 @@ def fig_position_control(df: pd.DataFrame, lenses: list[str], layer: int, out: P
     finish(fig, out)
 
 
-
-
 # ---------------------------------------------------------------------------------------------
 # The registry
 # ---------------------------------------------------------------------------------------------
@@ -779,38 +775,79 @@ class Figure:
 FIGURES: dict[str, Figure] = {
     f.name: f
     for f in [
-        Figure("loudness_distribution", "probe", fig_distribution,
-               "Where the selected tokens sit in the whole-chain loudness distribution."),
-        Figure("accuracy_by_bin", "probe", fig_by_bin,
-               "Balanced accuracy per bin of a chosen axis, against both label definitions."),
-        Figure("loudness_x_position", "probe", fig_grid,
-               "The 3x3 loudness x within-sentence-position grid."),
-        Figure("which_label_followed", "probe", fig_follows,
-               "On disagreement rows, which label the probe follows, by loudness decile."),
-        Figure("chain_length_control", "probe", fig_chain_length,
-               "Loudness terciles re-cut inside chain-length quartiles."),
-        Figure("label_comparison", "probe", fig_label_comparison,
-               "Belief label vs final-action baseline vs random control on one token set."),
-        Figure("within_sentence", "distribution", q1_within,
-               "Loudness against position within a sentence."),
-        Figure("within_sentence_by_complexity", "distribution", q1_within_by_complexity,
-               "The same, split by grid complexity."),
-        Figure("around_commitment", "distribution", q1_commitment,
-               "Loudness in a +-1 sentence window around the commitment boundary."),
-        Figure("around_commitment_by_complexity", "distribution", q1_commitment_by_complexity,
-               "The same, split by grid complexity."),
-        Figure("by_rel_sentence", "distribution", q1_by_rel_sentence,
-               "Five readouts against sentence distance from the boundary."),
-        Figure("along_chain", "distribution", q2_chain,
-               "Loudness along the whole reasoning chain, 20 bins."),
-        Figure("along_chain_by_complexity", "distribution", q2_chain_by_complexity,
-               "The same, split by grid complexity."),
-        Figure("loudness_vs_answer", "rollout", fig_loudness_vs_answer,
-               "Loudness decile against the answer the model gives if cut there."),
-        Figure("rulers", "rollout", fig_rulers,
-               "The two lenses as selectors, plus their agreement."),
-        Figure("position_control", "rollout", fig_position_control,
-               "The loudness curve re-run within terciles of chain position."),
+        Figure(
+            "loudness_distribution",
+            "probe",
+            fig_distribution,
+            "Where the selected tokens sit in the whole-chain loudness distribution.",
+        ),
+        Figure(
+            "accuracy_by_bin",
+            "probe",
+            fig_by_bin,
+            "Balanced accuracy per bin of a chosen axis, against both label definitions.",
+        ),
+        Figure("loudness_x_position", "probe", fig_grid, "The 3x3 loudness x within-sentence-position grid."),
+        Figure(
+            "which_label_followed",
+            "probe",
+            fig_follows,
+            "On disagreement rows, which label the probe follows, by loudness decile.",
+        ),
+        Figure(
+            "chain_length_control",
+            "probe",
+            fig_chain_length,
+            "Loudness terciles re-cut inside chain-length quartiles.",
+        ),
+        Figure(
+            "label_comparison",
+            "probe",
+            fig_label_comparison,
+            "Belief label vs final-action baseline vs random control on one token set.",
+        ),
+        Figure("within_sentence", "distribution", q1_within, "Loudness against position within a sentence."),
+        Figure(
+            "within_sentence_by_complexity",
+            "distribution",
+            q1_within_by_complexity,
+            "The same, split by grid complexity.",
+        ),
+        Figure(
+            "around_commitment",
+            "distribution",
+            q1_commitment,
+            "Loudness in a +-1 sentence window around the commitment boundary.",
+        ),
+        Figure(
+            "around_commitment_by_complexity",
+            "distribution",
+            q1_commitment_by_complexity,
+            "The same, split by grid complexity.",
+        ),
+        Figure(
+            "by_rel_sentence",
+            "distribution",
+            q1_by_rel_sentence,
+            "Five readouts against sentence distance from the boundary.",
+        ),
+        Figure("along_chain", "distribution", q2_chain, "Loudness along the whole reasoning chain, 20 bins."),
+        Figure(
+            "along_chain_by_complexity", "distribution", q2_chain_by_complexity, "The same, split by grid complexity."
+        ),
+        Figure(
+            "loudness_vs_answer",
+            "rollout",
+            fig_loudness_vs_answer,
+            "Loudness decile against the answer the model gives if cut there.",
+        ),
+        Figure("rulers", "rollout", fig_rulers, "The two lenses as selectors, plus their agreement."),
+        Figure(
+            "position_control",
+            "rollout",
+            fig_position_control,
+            "The loudness curve re-run within terciles of chain position.",
+        ),
     ]
 }
 
@@ -1096,9 +1133,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.figure == "all":
         wanted = [f for f in FIGURES.values() if tables.get(f.table)]
         if not wanted:
-            raise SystemExit(
-                "no input tables given; pass at least one of " + ", ".join(sorted(TABLE_FLAGS.values()))
-            )
+            raise SystemExit("no input tables given; pass at least one of " + ", ".join(sorted(TABLE_FLAGS.values())))
     else:
         fig = get_figure(args.figure)
         if not tables.get(fig.table):

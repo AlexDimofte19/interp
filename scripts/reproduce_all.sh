@@ -229,7 +229,7 @@ run_fit_jacobian_lens() {
 # NOTE: the probes on this host under $PROBES/{start,end}_of_reasoning/downloaded/ were pulled
 # from the Hub, not trained here; this stage retrains them from the activations.
 run_cognitive_map_probes() {
-    x bash "$REPO/script.sh"
+    x bash "$REPO/wrappers/script.sh"
 }
 
 # ---- stage 4: the sentence-end rollout -----------------------------------------------------
