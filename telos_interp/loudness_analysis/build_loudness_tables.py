@@ -1128,6 +1128,7 @@ def save_selected_activations(
         Number of activation files queued for writing.
     """
     import torch
+
     from telos_interp.commands.gather_activations.gather_activations_utils import extract_activations_batched
 
     jobs = []
@@ -1225,8 +1226,9 @@ def save_selected_activations(
 
 def main() -> None:
     import torch
-    from telos_interp.loudness_analysis.rollouts.run_inference import expand_paths
     from scripts.jlens_action_ranks import action_token_ids, ensure_unembed_assets
+    from transformers import AutoModelForCausalLM
+
     from telos_interp.commands.gather_activations.gather_activations_fn import _resolve_torch_dtype
     from telos_interp.commands.gather_activations.gather_activations_utils import (
         ActivationWriter,
@@ -1234,7 +1236,7 @@ def main() -> None:
         parse_index_specification,
         sanitize_model_id,
     )
-    from transformers import AutoModelForCausalLM
+    from telos_interp.loudness_analysis.rollouts.run_inference import expand_paths
 
     ap = argparse.ArgumentParser()
     ap.add_argument(

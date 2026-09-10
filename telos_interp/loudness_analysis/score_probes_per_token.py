@@ -78,19 +78,19 @@ def build_parser(probe_type_name: str | None = None) -> argparse.ArgumentParser:
         "--probe-type",
         default=DEFAULT_PROBE_TYPE,
         choices=probe_type_names(),
-        help="What the probes decode. Decides the label, the features and the row shape "
-        "(default: %(default)s).",
+        help="What the probes decode. Decides the label, the features and the row shape (default: %(default)s).",
     )
     ap.add_argument("--probe", type=Path, action="append", required=True, help="Trained probe .pt (repeatable).")
     ap.add_argument("--activations-dir", type=Path, required=True, help="Tree holding the per-token .pt files.")
-    ap.add_argument("--lens-dir", type=Path, default=None, help="Tree holding the lens CSVs (default: --activations-dir).")
+    ap.add_argument(
+        "--lens-dir", type=Path, default=None, help="Tree holding the lens CSVs (default: --activations-dir)."
+    )
     ap.add_argument("--trajectories-dir", type=Path, required=True, help="Trajectory JSONs.")
     ap.add_argument("--signal-json", type=Path, required=True, help="Signal vocabulary JSON.")
     ap.add_argument(
         "--signal-name",
         default=None,
-        help="What that vocabulary measures; names the loudness columns. Inferred from the "
-        "filename when omitted.",
+        help="What that vocabulary measures; names the loudness columns. Inferred from the filename when omitted.",
     )
     ap.add_argument("--layer", type=int, default=15, help="Layer the probe reads (default 15).")
     ap.add_argument("--out", type=Path, required=True, help="Per-token CSV to write.")

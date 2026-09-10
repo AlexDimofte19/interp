@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 import torch
+
 from telos_interp.commands.prepare_activations_for_probing.manifest_loader import load_next_action_compact
 from telos_interp.probe_models import create_classification_model
 

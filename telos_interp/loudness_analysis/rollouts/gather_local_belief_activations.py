@@ -36,6 +36,8 @@ import time
 from pathlib import Path
 
 import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from telos_interp.commands.gather_activations.gather_activations_fn import _resolve_torch_dtype
 from telos_interp.commands.gather_activations.gather_activations_utils import (
     build_truncated_input,
@@ -43,7 +45,6 @@ from telos_interp.commands.gather_activations.gather_activations_utils import (
     sanitize_model_id,
     save_activations_to_files,
 )
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 LAYER = 15
 CATEGORY = "output"

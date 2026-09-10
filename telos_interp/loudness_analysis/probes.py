@@ -43,13 +43,23 @@ class ProbeType(ABC):
     name: str = "base"
     #: Class ids the balanced accuracy averages over. A class absent from a bucket is dropped.
     classes: tuple[int, ...] = ()
+    #: The same classes as they appear in a per-token CSV's label column -- action NAMES for
+    #: next_action, integer ids for grid_tile. NOT interchangeable with `classes`.
+    analysis_classes: tuple = ()
+    #: Which balanced accuracy applies: "rows" (one prediction per row) or "counts"
+    #: (a row summarises many). See stats.py -- they are not the same number.
+    aggregation: str = "rows"
     #: Stripped off a probe filename to make its column key, so a key names the arm not the trainer.
     strip_prefixes: tuple[str, ...] = ()
     #: True when one token fans out into several predictions and rows carry per-class counts.
     per_cell: bool = False
 
-    def add_arguments(self, ap) -> None:
-        """Probe-type-specific CLI flags. The shared ones live on the evaluator."""
+    def add_arguments(self, ap) -> None:  # noqa: B027
+        """Probe-type-specific CLI flags. The shared ones live on the evaluator.
+
+        Deliberately optional and non-abstract: next_action adds none, and forcing every
+        future probe type to declare an empty override would be noise.
+        """
 
     @abstractmethod
     def load_probe(self, path):
@@ -113,6 +123,9 @@ class NextActionProbeType(ProbeType):
         self._to_id = NEXT_ACTION_TO_ID
         self._id_to_name = ACTION_ID_TO_NAME
         self.classes = tuple(sorted(NEXT_ACTION_TO_ID.values()))
+        # The per-token CSVs carry `label_name` and the rollout carries `model_action`,
+        # both action names, so an analysis bins on names rather than ids.
+        self.analysis_classes = self.action_cols
 
     def load_probe(self, path):
         from telos_interp.commands.train_next_action_probe.train_next_action_probe_fn import NextActionProbe
@@ -199,11 +212,16 @@ class GridTileProbeType(ProbeType):
     name = "grid_tile"
     strip_prefixes = ("grid_probe_", "cognitive_map_probe_")
     per_cell = True
+    aggregation = "counts"
 
     def __init__(self) -> None:
-        from telos_interp.grid_utils import CELL_ID_TO_SYMBOL
+        from telos_interp.grid_utils import CELL_ID_TO_SYMBOL, CELL_SYMBOL_TO_ID
 
         self.classes = tuple(sorted(CELL_ID_TO_SYMBOL))
+        # Class 7 is padding -- a cell that does not exist. It is excluded from any
+        # balanced accuracy, because scoring a probe on cells outside the grid measures
+        # nothing about the grid.
+        self.analysis_classes = tuple(c for c in self.classes if c != CELL_SYMBOL_TO_ID["+"])
 
     def add_arguments(self, ap) -> None:
         ap.add_argument(

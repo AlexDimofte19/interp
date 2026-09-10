@@ -344,6 +344,26 @@ def register_extra_probes(spec: str, rowset: str) -> None:
         print(f"{len(PROBE_SOURCE)} probe(s) after --extra-probes: {', '.join(PROBE_SOURCE)}", flush=True)
 
 
+def _resolve_loudness_column(args) -> str:
+    """The loudness column to bin on, checked against the input table's OWN header.
+
+    Resolved rather than assumed, so a table from either evaluator generation joins without a
+    flag. An explicit --mass-column wins.
+    """
+    if args.mass_column is not None:
+        return args.mass_column
+    with open(args.probe_csv, newline="", encoding="utf-8") as fh:
+        fields = next(csv.reader(fh))
+    try:
+        return cols.resolve(fields, args.lens, args.signal_name, args.layer)
+    except KeyError as exc:
+        raise SystemExit(
+            f"{args.probe_csv} carries no {args.lens}/{args.signal_name} loudness at layer "
+            f"{args.layer}.\n{exc}\nPass --mass-column explicitly if the table uses a "
+            "spelling this does not know."
+        ) from None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     out_default = Path("/workspace/reasoning_theatre/probe_loudness_heldout360")
@@ -413,19 +433,7 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=None, help="first N trajectories (smoke test).")
     args = ap.parse_args()
 
-    # The column is resolved against the table's OWN header rather than assumed, so a table
-    # from either evaluator generation joins. An explicit --mass-column wins.
-    if args.mass_column is None:
-        with open(args.probe_csv, newline="", encoding="utf-8") as _fh:
-            _fields = next(csv.reader(_fh))
-        try:
-            args.mass_column = cols.resolve(_fields, args.lens, args.signal_name, args.layer)
-        except KeyError as exc:
-            raise SystemExit(
-                f"{args.probe_csv} carries no {args.lens}/{args.signal_name} loudness at layer "
-                f"{args.layer}.\n{exc}\nPass --mass-column explicitly if the table uses a "
-                "spelling this does not know."
-            ) from None
+    args.mass_column = _resolve_loudness_column(args)
 
     print(f"loudness axis: {args.mass_column}  ({cols.axis_label(args.lens, args.signal_name, args.layer)})", flush=True)
     register_extra_probes(args.extra_probes, args.extra_probes_rowset)

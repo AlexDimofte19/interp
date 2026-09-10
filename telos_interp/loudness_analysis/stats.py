@@ -85,9 +85,7 @@ def plain_accuracy(df: pd.DataFrame, probe: str) -> float:
     return n_correct / n_cells if n_cells else float("nan")
 
 
-def boot_bal_acc(
-    df: pd.DataFrame, truth_col: str, pred_col: str, n: int, rng, classes
-) -> tuple[float, float, float]:
+def boot_bal_acc(df: pd.DataFrame, truth_col: str, pred_col: str, n: int, rng, classes) -> tuple[float, float, float]:
     """Balanced accuracy with a 95% CI from resampling trajectory names.
 
     Returns `(nan, nan)` for the interval when there is only one trajectory or `n == 0` --
@@ -126,9 +124,7 @@ def spearman(df: pd.DataFrame, x_col: str, y_col: str) -> float:
     return float(df[x_col].corr(df[y_col], method="spearman"))
 
 
-def clustered_band(
-    df: pd.DataFrame, col: str, bin_id: np.ndarray, n_bins: int, seed: int = 0, n_boot: int = 300
-):
+def clustered_band(df: pd.DataFrame, col: str, bin_id: np.ndarray, n_bins: int, seed: int = 0, n_boot: int = 300):
     """Mean of `col` per bin, plus a 95% band from resampling TRAJECTORIES, not rows.
 
     `bin_id` is a per-row bin index; negative means "drop this row". Returns

@@ -35,9 +35,9 @@ from glob import glob
 from pathlib import Path
 
 import torch
-from telos_interp.commands.gather_activations.gather_activations_fn import _resolve_torch_dtype
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from telos_interp.commands.gather_activations.gather_activations_fn import _resolve_torch_dtype
 from telos_interp.loudness_analysis.rollouts.truncation_strategies import (
     DEFAULT_LAYER,
     DEFAULT_LENS_ROOT,
@@ -46,9 +46,7 @@ from telos_interp.loudness_analysis.rollouts.truncation_strategies import (
     Cutoff,
     LoudnessUnavailable,
     TruncationStrategy,
-    analysis_positions,
     build_strategy,
-    find_action_cut,
     get_final_prefix_ids,
     reasoning_eos_positions,
 )

@@ -71,7 +71,7 @@ def prob_column(lens: str, signal: str, layer: int | str) -> str:
 
 
 def membership_column(signal: str) -> str:
-    """"The model emitted a word of this vocabulary here". Lens-independent.
+    """ "The model emitted a word of this vocabulary here". Lens-independent.
 
     >>> membership_column("direction")
     'is_direction_token'
@@ -128,8 +128,7 @@ def resolve(fieldnames, lens: str, signal: str, layer: int | str) -> str:
         if name in present:
             return name
     raise KeyError(
-        f"no {lens}/{signal} loudness column at layer {layer}; "
-        f"looked for {wanted}, table has {sorted(present)}"
+        f"no {lens}/{signal} loudness column at layer {layer}; looked for {wanted}, table has {sorted(present)}"
     )
 
 
