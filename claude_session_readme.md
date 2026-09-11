@@ -7,13 +7,24 @@ this file names one of them as "the working branch", read that as history rather
 somewhere to go looking.
 
 **Newest first, if you only read one thing:** the file is append-only and chronological, so
-the last section is the current state. As of 2026-09-10 that is *Direction loudness does NOT
-predict the grid* (log entry 55): the specificity control on entry 37's headline finding, run
-and passed — direction loudness buys +15.6 points of *action* decodability and −2.4 points of
-*grid* decodability, so the score is action-specific rather than generic saliency. **It also
-records two live landmines** — `prepare_grid_arms.sh`'s default still yields 4 cells per step
-instead of 25, and entry 37(b)'s "overlap ZERO" holds for the mass-era tree only (heldout360
-shares 33 trajectories with the count-era tree). Read those before touching the grid arms.
+the last section is the current state. As of 2026-09-10 that is *The loudness line is a module
+now* (log entry 56). **It is a refactor, not a finding: every script that produces, joins,
+analyses or draws loudness moved to
+[`telos_interp/loudness_analysis/`](telos_interp/loudness_analysis/README.md), and eight were
+deleted.** Start at that README for anything in this line; `RENAMES.md`'s 2026-09-10 section is
+the full where-did-it-go table. Three things it changes that will bite otherwise: loudness
+columns are now `{lens}_{signal}_logmass_L{layer}` (every legacy spelling still reads, but
+`dir_*` is refused for a non-direction signal); the two balanced accuracies are **not** the same
+number and both are in use; and every result folder now carries a `run_config.json` that also
+*guards* against mixing two lens rulers in one directory.
+
+The last measurement is one section earlier: *Direction loudness does NOT predict the grid*
+(log entry 55), the specificity control on entry 37's headline finding, run and passed —
+direction loudness buys +15.6 points of *action* decodability and −2.4 points of *grid*
+decodability, so the score is action-specific rather than generic saliency. **It also records
+two live landmines** — `prepare_grid_arms.sh`'s default still yields 4 cells per step instead
+of 25, and entry 37(b)'s "overlap ZERO" holds for the mass-era tree only (heldout360 shares 33
+trajectories with the count-era tree). Read those before touching the grid arms.
 
 One day older, and the close of the probe-loudness line: *The per-sentence arms did not
 hold the same sentences* (log entry 52, 2026-09-09) -- **done**, fourteen probes in
@@ -49,13 +60,13 @@ through a sentence* (entry 42) and *probe vs. rollout* (entries 39-41). The "Res
 here" section below is the round-2 grid-probing thread and is older than all of them.
 
 **What is committed, as of entry 48.** The truncation-strategy line is now in the repo:
-`scripts/inference_oss/{truncation_strategies.py, run_inference.py, run_inference_strategies.sh,
+`telos_interp/loudness_analysis/rollouts/{truncation_strategies.py, run_inference.py, run_inference_strategies.sh,
 rollout_status.sh}`, `tests/test_truncation_strategies.py`, plus
-`scripts/build_probe_loudness_heldout.py`. Entry 45's scripts are still outside the repo
+`telos_interp/loudness_analysis/join_rollouts.py`. Entry 45's scripts are still outside the repo
 (see *Where things live / what needs merging*), and the round-2 grid-probing working state
 below is still uncommitted.
 
-Covers two connected changes: `scripts/jlens_reasoning_tokens.py` now persists activations
+Covers two connected changes: `telos_interp/loudness_analysis/build_loudness_tables.py` now persists activations
 alongside its lens analysis (committed as `2296c92`), and
 `prepare_activations_for_probing` can now select which of those tokens/layers a
 `next_action` probe trains on (uncommitted at time of writing).
@@ -63,12 +74,12 @@ alongside its lens analysis (committed as `2296c92`), and
 ## The pipeline
 
 ```
-jlens_reasoning_tokens.py                 prepare_activations_for_probing        train_next_action_probe
+build_loudness_tables.py                 prepare_activations_for_probing        train_next_action_probe
   forward pass + Jacobian lens              pick tokens & layers                   probe on (D,) activations
   -> .pt activations + per-traj CSV         -> manifest.json of samples
 ```
 
-## 1. `scripts/jlens_reasoning_tokens.py` — dual artefacts
+## 1. `telos_interp/loudness_analysis/build_loudness_tables.py` — dual artefacts
 
 One forward pass now produces both the lens statistics and the residual streams, so
 downstream work never re-runs `gather_activations` over the same trajectories.
@@ -87,7 +98,7 @@ downstream work never re-runs `gather_activations` over the same trajectories.
   rather than falsely skipped.
 - Activations are saved **before** the lens loop, so layers with no jlens `J` matrix (which
   the loop `continue`s past) still get their `.pt` files.
-- `scripts/jlens_reasoning_tokens.sh` defaults to `LAYERS="7:23"` (inclusive → 17 layers).
+- `wrappers/jlens_reasoning_tokens.sh` defaults to `LAYERS="7:23"` (inclusive → 17 layers).
 - Needs a GPU that fits gpt-oss-20b — this cannot run on the laptop.
 
 Deliberately unchanged: `reasoning_token_positions()` keeps its 3-tuple return, because
@@ -186,11 +197,11 @@ code.
   `(step, token)` pairs matched an independently computed ranking exactly, every `act_path`
   loaded the tensor for the right `(layer, step, token)`, `direction_count` monotonically
   non-increasing. Picks were `Ġleft`, `Ġright`, `ĠMove`, `Ġdown`, `Ġdown` at layers 9–18.
-- `scripts/jlens_reasoning_tokens.py --self-test` passes; its GPU-host run and the
+- `telos_interp/loudness_analysis/build_loudness_tables.py --self-test` passes; its GPU-host run and the
   `torch.allclose` cross-check against an existing `gather_activations` tree have **not**
   been done yet.
 
-## 3. `jlens_reasoning_tokens.py` — throughput rework
+## 3. `build_loudness_tables.py` — throughput rework
 
 The sweep was unacceptably slow on the high-complexity cells. The cause is not grid size:
 every per-step cost scales linearly with the length of the reasoning chain, and comp
@@ -227,7 +238,7 @@ slower, and which one you have decides whether the threading is enough.
 
 ### What is verified, and what is not
 
-`tests/test_jlens_reasoning_tokens.py` runs the whole script against a stub 24-layer model
+`tests/test_build_loudness_tables.py` runs the whole script against a stub 24-layer model
 whose activations are a closed-form function of (layer, token id, position). It asserts the
 rewritten loop reproduces **the pre-change implementation byte-for-byte** — the golden
 reference `_reference_run` is the old inner loop transcribed verbatim — for the CSV and
@@ -246,7 +257,7 @@ record with all three arms** — `jlens`, `logitlens`, `random` — and a
 `*_logitlens_analysis.csv`, 600 per size with no gaps. The remaining 4 have no record at all
 and are simply not in any arm.
 
-The logitlens arm came from `scripts/jlens_extend_logitlens.sh` (`--select-num-layers 3`),
+The logitlens arm came from `wrappers/jlens_extend_logitlens.sh` (`--select-num-layers 3`),
 which finished cleanly: log `/workspace/logs/jlens_extend_logitlens_run_16_00.txt`, last
 write 17:56 UTC, ending `done: 2994 trajectory folder(s)`. The only repeated message in it is
 the harmless `--extend but no selection record ... skipping`. Note the "2994" is what that
@@ -306,7 +317,7 @@ reads `${PREPARED}_${arm}`. Expect ~3600 × ≤20 × 1 = ≤72k rows per arm, ma
   every arm back with `recorded_<arm>` — re-scoring a CSV would still find the right tokens
   for a lens, but a uniform draw over the survivors is no longer a uniform draw over the
   reasoning chain, and the control would stop being one.
-- Watch out for a stopped (state `Tl`) leftover `jlens_reasoning_tokens.py` from the original
+- Watch out for a stopped (state `Tl`) leftover `build_loudness_tables.py` from the original
   gather, still parked in the process table days later alongside `watch`/`tail` watchdogs.
   Not writing, but a `pgrep` for a live run will match it — check the argv (`--extend`,
   `--select-num-layers`) and the state flag, not just the name.
@@ -337,7 +348,7 @@ tree, `/workspace/activations/grid_reasoning_tokens`, and does not touch round 1
 | gather | **NOT started.** Smoke-tested on 2 trajectories and passed. |
 | prepare / split / train | not started |
 
-Run `./scripts/grid_round_status.sh` for the live picture — it reads only `/workspace`, so it
+Run `./grid_cell_analysis/grid_round_status.sh` for the live picture — it reads only `/workspace`, so it
 works from any session.
 
 **One thing must be settled before the prepare stage** (entry 34, "OPEN LANDMINE"):
@@ -352,12 +363,12 @@ interrupted before producing numbers; it needs no GPU.
 ### The three round-2 scripts
 
 ```bash
-./scripts/gather_grid_arms.sh          # build the tree (~3-4h on one GPU; resumable)
+./grid_cell_analysis/gather_grid_arms.sh          # build the tree (~3-4h on one GPU; resumable)
 ARMS="jlens logitlens random" LAYERS=15 OUT=/workspace/prepared/grid_l15 \
-    ACT=/workspace/activations/grid_reasoning_tokens ./scripts/prepare_grid_arms.sh
+    ACT=/workspace/activations/grid_reasoning_tokens ./grid_cell_analysis/prepare_grid_arms.sh
 PREPARED=/workspace/prepared/grid_l15 TAG=l15 \
     EVAL_NAMES=/workspace/splits/eval_trajectories_720.txt \
-    ARMS="jlens logitlens random" SEEDS="42 43 44" ./scripts/train_grid_arms.sh
+    ARMS="jlens logitlens random" SEEDS="42 43 44" ./grid_cell_analysis/train_grid_arms.sh
 ```
 
 `DRY_RUN=1` on the gather prints its invocation and runs nothing. The planned sweep is 22
@@ -395,7 +406,7 @@ tree is safe:
 # 1. re-emit the CSVs + the direction-mass tables (no .pt written, tree untouched).
 #    --direction-mass-json is REQUIRED here: it defaults to --signal-json, which this
 #    (non-selective) invocation does not set, and without it no table is written.
-uv run python scripts/jlens_reasoning_tokens.py --overwrite --no-save-activations \
+uv run python telos_interp/loudness_analysis/build_loudness_tables.py --overwrite --no-save-activations \
     --trajectory-paths ... --jlens_dir /workspace/jlens/gridenv \
     --activations-dir /workspace/activations/grid_reasoning_tokens --lens both \
     --direction-mass-json /workspace/jlens/grid_tokens_full.json
@@ -406,7 +417,7 @@ uv run python scripts/jlens_layer_profile.py /workspace/activations/grid_reasoni
     --direction-score logprob_mass_full
 
 # 3. train the arms pinned to it (give the CONTROL the same explicit L; it has no scores)
-SINGLE_LAYER=<L> PREPARED=... ./scripts/train_grid_arms.sh
+SINGLE_LAYER=<L> PREPARED=... ./grid_cell_analysis/train_grid_arms.sh
 ```
 
 Caveat before spending GPU time: on a **pruned** tree a new score can only re-rank the ~20
@@ -420,7 +431,7 @@ arm needs a fresh selective gather (or `--extend`) on a tree that still holds th
 - Parked, not forgotten: the eos cap (`--tokens-per-trajectory 20`, entry 30), and an eos arm
   for round 2 — that one needs no gather, only prepare+train, since it uses no lens selection.
 - PID 1992 is a stopped (`Tl`) leftover from the original round-1 gather, days old and idle. A
-  bare `pgrep jlens_reasoning_tokens.py` matches it; check the argv, as `grid_round_status.sh`
+  bare `pgrep build_loudness_tables.py` matches it; check the argv, as `grid_round_status.sh`
   does.
 
 Everything above is **uncommitted working-tree state** on `reasoning_theatre`.
@@ -432,7 +443,7 @@ pulled ~40 untouched files into the diff here.
 ## Probe vs. rollout — what the probe is decoding (2026-08-28)
 
 New, and orthogonal to selection: `/workspace/reasoning_theatre/trajectories_train_single_step_probs/`
-(written by `scripts/inference_oss/run_inference.py`) re-runs the model at every reasoning
+(written by `telos_interp/loudness_analysis/rollouts/run_inference.py`) re-runs the model at every reasoning
 sentence end with reasoning truncated there, and records what it *would* answer. That joins to
 entry 38's `heldout360_all_probes.csv` for free — `eos_token_pos`, `token_idx` and the `.pt`
 filename all index the same `step["output_tokens"]` list — so every reasoning token can be placed
@@ -500,9 +511,9 @@ entry 42.
 Three stdlib+pandas scripts, no GPU, all reading artifacts that already exist:
 
 ```bash
-.venv/bin/python scripts/build_sentence_loudness.py    # -> loudness/per_token.csv  (~1m45s)
-.venv/bin/python scripts/plot_sentence_loudness.py     # -> loudness/plots|tables   (22 figures)
-.venv/bin/python scripts/analyze_sentence_loudness.py  # -> loudness/summary.json
+.venv/bin/python telos_interp/loudness_analysis/build_sentence_loudness.py    # -> loudness/per_token.csv  (~1m45s)
+.venv/bin/python telos_interp/loudness_analysis/plotting/figures.py     # -> loudness/plots|tables   (22 figures)
+.venv/bin/python telos_interp/loudness_analysis/analysis/loudness_distribution.py  # -> loudness/summary.json
 ```
 
 Output root `/workspace/reasoning_theatre/loudness/`. Report:
@@ -549,7 +560,7 @@ does not exist yet — the only output on disk is the 10-trajectory smoke at
 (n = 10) are not a result. Launching the three arms is the next action.
 
 `run_inference.py` no longer only cuts at sentence ends. Where it cuts is `--strategy`, and
-the registry is `scripts/inference_oss/truncation_strategies.py`:
+the registry is `telos_interp/loudness_analysis/rollouts/truncation_strategies.py`:
 
 | `--strategy` | cutoffs per step | what it cuts at |
 | --- | --- | --- |
@@ -563,9 +574,9 @@ monotone) and the mass table is never read without its `.meta.json` — the voca
 baked against is copied into every results JSON.
 
 ```bash
-bash scripts/inference_oss/run_inference_strategies.sh                     # all three arms
-bash scripts/inference_oss/run_inference_strategies.sh jlens_top_k_global  # one arm
-DRY_RUN=1 bash scripts/inference_oss/run_inference_strategies.sh           # cutoffs only, no model
+bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh                     # all three arms
+bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh jlens_top_k_global  # one arm
+DRY_RUN=1 bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh           # cutoffs only, no model
 ```
 
 Output root `/workspace/reasoning_theatre/rollout_strategies/<strategy>/`, logs in
@@ -619,8 +630,8 @@ holds 3,600 result JSONs per arm.
 supplies the sentence-end answers. See the noise floor below before relying on that.
 
 ```bash
-bash scripts/inference_oss/run_inference_strategies.sh jlens_argmax_per_sentence jlens_top_k_global
-watch -n 1 bash scripts/inference_oss/rollout_status.sh     # live, work-weighted ETA, read-only
+bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh jlens_argmax_per_sentence jlens_top_k_global
+watch -n 1 bash telos_interp/loudness_analysis/rollouts/rollout_status.sh     # live, work-weighted ETA, read-only
 python scripts/plot_loud_vs_sentence_end.py                 # -> comparison/loud_vs_sentence_end.{png,csv}
 python scripts/analyze_truncation_strategies.py             # the full arm comparison -- NOT YET RUN
 ```
@@ -663,7 +674,7 @@ Five things to carry:
   produce the whole .560/.397 lean. Without a matched random-position arm we cannot tell "the
   loud token knows" from "a token that far into the sentence knows", and the coincident-cutoff
   row (.503/.450) says the margin is small enough for that to matter. Spec: one registry entry
-  in `scripts/inference_oss/truncation_strategies.py`, same shape as `JlensTopKGlobalStrategy`
+  in `telos_interp/loudness_analysis/rollouts/truncation_strategies.py`, same shape as `JlensTopKGlobalStrategy`
   with a seeded uniform draw of the same K, endpoints kept, `arm_seed()`-style frozen draw;
   ~4 h of GPU for 3,600 trajectories. Then re-run `plot_loud_vs_sentence_end.py --arm random`
   and read entry 44(d)'s table against it.
@@ -695,7 +706,7 @@ Join key: `(name, step, token_id == eos_token_pos)` — all three index `step["o
 
 ```bash
 # 1. probe-1 gather: layer-15 residual at every per-sentence-loudest token (GPU, ~45 min)
-uv run --project /workspace/repo/interp python scripts/gather_local_belief_activations.py \
+uv run --project /workspace/repo/interp python telos_interp/loudness_analysis/rollouts/gather_local_belief_activations.py \
     --rollout-dir /workspace/reasoning_theatre/rollout_strategies/jlens_argmax_per_sentence \
     --out /workspace/activations/argmax_per_sentence_l15
 # tree is size{N}/{stem}/openai__gpt-oss-20b/layer_15/step_0/output/{eos_token_pos}.pt
@@ -709,7 +720,7 @@ interp-cli prepare_activations_for_probing --activations-dir /workspace/activati
 # 3. relabel: label <- rollout model_action, keep final_label / rollout_answer_prob /
 #    rollout_correct / cutoff_kind / dir_logmass; direction_count = dir_logmass so the
 #    split can rank by loudness. Drops rows with no matching cutoff / null model_action.
-uv run ... python scripts/relabel_manifest_from_rollout.py \
+uv run ... python telos_interp/loudness_analysis/rollouts/relabel_manifest_from_rollout.py \
     /workspace/prepared/local_belief_p1_final \
     /workspace/reasoning_theatre/rollout_strategies/jlens_argmax_per_sentence \
     /workspace/prepared/local_belief_p1_local --report-csv p1_relabel_report.csv
@@ -720,7 +731,7 @@ python scripts/split_next_action_manifest.py /workspace/prepared/local_belief_p1
 # scripts/train_all.sh does all 6 (p1 full, p1 top20, p2) x (lr, mlp)
 
 # 5. analysis: pred vs local belief, vs final action, verbalization-confound split
-uv run ... python scripts/eval_local_belief.py <probe.pt> <split_eval_dir>
+uv run ... python telos_interp/loudness_analysis/rollouts/eval_local_belief.py <probe.pt> <split_eval_dir>
 ```
 
 ### Results (balanced accuracy, shared 720-trajectory held-out eval)
@@ -751,7 +762,7 @@ tracking belief without them. The ±k proximity window of 42(e) is still uncontr
 
 - New scripts live under `.../local_belief_probes/scripts/` (not in the repo — the
   `reasoning_theatre` branch had unrelated uncommitted state and the bg-isolation guard).
-  They belong at `scripts/inference_oss/` (gather, relabel, eval) when someone commits.
+  They belong at `telos_interp/loudness_analysis/rollouts/` (gather, relabel, eval) when someone commits.
 - `SESSION_LOG.txt` → append to `ICLR log.txt` via `ICLR_LOG_ENTRY_DRAFT.txt` (entry 44).
 - This file → append to `claude_session_readme.md`.
 - Probes: `.../local_belief_probes/probes/`. Datasets: `/workspace/prepared/local_belief_p*`.
@@ -769,9 +780,13 @@ Report: <https://claude.ai/code/artifact/2e873b12-7c49-4ac6-b861-9c2a7aa707f0>
 (source `probe_loudness/report.html`).
 
 ```bash
-python scripts/build_probe_loudness.py     # -> probe_loudness/per_token.csv  (~15 min)
-python scripts/analyze_probe_loudness.py   # -> summary.json, tables/ (18 CSVs)
-python scripts/plot_probe_loudness.py      # -> plots/ (20 figures)
+python telos_interp/loudness_analysis/score_probes_per_token.py --probe ... \
+    --out probe_loudness/probe_per_token.csv
+python telos_interp/loudness_analysis/join_rollouts.py \
+    --table probe_loudness/probe_per_token.csv --rollout-dir <eos arm> \
+    --out probe_loudness/per_token.csv          # was build_probe_loudness.py
+python telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py   # -> summary.json, tables/ (18 CSVs)
+python telos_interp/loudness_analysis/plotting/figures.py      # -> plots/ (20 figures)
 ```
 
 The probe-side twin of the `build_/plot_/analyze_sentence_loudness.py` trio, reusing entry
@@ -885,7 +900,7 @@ Report: <https://claude.ai/code/artifact/95a74d99-bb0a-440f-839c-e6e4dbac8c65>
 
 ```bash
 # 1. score the 2 new probes on the same held-out tokens (GPU, ~2 h; the cost is 87k .pt reads)
-python scripts/eval_probe_per_token.py \
+python telos_interp/loudness_analysis/score_probes_per_token.py \
     --probe /workspace/probes/local_belief/next_action_probe_p1_mlp.pt \
     --probe /workspace/probes/local_belief/next_action_probe_p2_mlp.pt \
     --activations-dir /workspace/activations/heldout360_l15 \
@@ -955,13 +970,13 @@ NAMES_FILE=/workspace/trajectories/heldout360_names.txt \
 TRAJECTORIES=/workspace/trajectories/heldout360 \
 LENS_ROOT=/workspace/activations/heldout360_lens \
 OUT_ROOT=/workspace/reasoning_theatre/rollout_strategies_heldout360 \
-  bash scripts/inference_oss/run_inference_strategies.sh every_token
+  bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh every_token
 # 2. all ten probes in one pass                                      (1h40m)
-python scripts/eval_probe_per_token.py --probe ...x10 --full-probs ...
+python telos_interp/loudness_analysis/score_probes_per_token.py --probe ...x10 --full-probs ...
 # 3. join -> entry 46's exact schema, then analyze/plot UNEDITED
-python scripts/build_probe_loudness_heldout.py
-python scripts/analyze_probe_loudness.py --per-token <out>/per_token.csv --out <out>
-python scripts/plot_probe_loudness.py    --per-token <out>/per_token.csv --out <out>/plots
+python telos_interp/loudness_analysis/join_rollouts.py
+python telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py --per-token <out>/per_token.csv --out <out>
+python telos_interp/loudness_analysis/plotting/figures.py    --probe-table <out>/per_token.csv --out <out>/plots
 ```
 
 **`every_token` is the 4th truncation strategy**, the dense grid entry 43 named and never
@@ -1014,9 +1029,9 @@ reads **sixteen** probes on the identical 87,221 heldout-360 tokens.
 LENS=logitlens SELECT_METHODS=logitlens \
 ACTIVATIONS_DIR=/workspace/activations/logitlens_mass_l15 \
 NAMES_FILE=/workspace/reasoning_theatre/rollout_strategies/mass_l15_names.txt \
-  bash scripts/jlens_mass_l15.sh                  # 1h55m, 3600/3600, exit 0
+  bash wrappers/jlens_mass_l15.sh                  # 1h55m, 3600/3600, exit 0
 
-bash scripts/rollout_belief_baseline_arms.sh             # step 2, the three rollout arms
+bash wrappers/rollout_belief_baseline_arms.sh             # step 2, the three rollout arms
 bash scripts/train_belief_baseline_probes.sh           # steps 3-4, gather/relabel/split/train
 bash scripts/build_sixteen_probe_loudness_report.sh           # steps 5-6, score 16 + rebuild the page
 
@@ -1100,7 +1115,7 @@ which is the check that the six added arms sit on the same measurement.
 
 ### Still open
 
-- **`--names-file` on `jlens_reasoning_tokens.py` is UNCOMMITTED**, together with the
+- **`--names-file` on `build_loudness_tables.py` is UNCOMMITTED**, together with the
   `has_work()` guard that turns an empty trajectory list into an error instead of an
   `IndexError`, and its three tests. Both files also carry ~959 and ~220 lines of *older*
   uncommitted working state, so committing them lands that too — left for a human to decide.
@@ -1125,7 +1140,7 @@ No GPU. Re-running step 6a of `build_sixteen_probe_loudness_report.sh` is the wh
 6b/6c for the tables and figures, once per lens:
 
 ```bash
-python scripts/build_probe_loudness_heldout.py --probe-csv "$OUT/heldout360_16probes.csv" \
+python telos_interp/loudness_analysis/join_rollouts.py --probe-csv "$OUT/heldout360_16probes.csv" \
     --out "$OUT/per_token.csv" --extra-probes "$EXTRA_BUILD"      # ~2 min
 ```
 
@@ -1237,11 +1252,12 @@ interp-cli train_cognitive_map_probe --model-type {lr,mlp} --class-weight balanc
     --normalize --cache-activations ...                             # .4051 / .5400
 
 # 3. score EVERY reasoning token of heldout360, then bin by loudness
-python scripts/eval_grid_probe_per_token.py --probe <lr.pt> --probe <mlp.pt> \
+python telos_interp/loudness_analysis/score_probes_per_token.py --probe-type grid_tile \
+    --probe <lr.pt> --probe <mlp.pt> \
     --activations-dir /workspace/activations/heldout360_l15 \
     --lens-dir /workspace/activations/heldout360_lens \
     --signal-json /workspace/jlens/direction_tokens_full.json --layer 15 ...
-python scripts/analyze_grid_loudness_correlation.py <per_token.csv> --score jlens_mass_L15
+python telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py --probe-type grid_tile <per_token.csv> --score jlens_mass_L15
 ```
 
 Two trees on purpose: `heldout360_l15` holds the layer-15 `.pt` for every reasoning token,
@@ -1250,12 +1266,12 @@ Two trees on purpose: `heldout360_l15` holds the layer-15 `.pt` for every reason
 
 ### New scripts (merged into `reasoning_theatre`)
 
-- `scripts/eval_grid_probe_per_token.py` — grid twin of `eval_probe_per_token.py`. One row
+- `telos_interp/loudness_analysis/score_probes_per_token.py --probe-type grid_tile` — the grid label. One row
   per (trajectory, step, token), **not** per cell: a token owns C cells, so each row carries
   `n_true_{c}` / `correct_{c}` per class and balanced accuracy for any bucket is a group-by
   over per-class counts. Per-cell rows would multiply the file ~100× and buy nothing.
   Has `--exclude-names` for the partly-overlapping-tree case below.
-- `scripts/analyze_grid_loudness_correlation.py` — decile table, Spearman, reversal count,
+- `telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py --probe-type grid_tile` — decile table, Spearman, reversal count,
   and a trajectory-clustered bootstrap of the gap that **recomputes the decile edges inside
   each resample** (the edges are themselves a function of the sample).
 
@@ -1265,7 +1281,7 @@ Two trees on purpose: `heldout360_l15` holds the layer-15 `.pt` for every reason
    `--balance-classes-per-trajectory` takes `samples_per_class = min(..., min_count)`, and
    every grid holds exactly one `A` and one `G`, so `min_count` is 1 and a
    `--max-positions-per-trajectory 25` request yields **4 cells per (trajectory, step)**,
-   one per class present. Verified directly. **`scripts/prepare_grid_arms.sh` still defaults
+   one per class present. Verified directly. **`grid_cell_analysis/prepare_grid_arms.sh` still defaults
    to the broken combination** — fix it before the grid arm sweep. The workaround is a plain
    cap plus `--class-weight balanced` at train time, which is what entry 34 proposed.
 
@@ -1299,3 +1315,88 @@ an action (entry 42's picture), crowding out map information. Untested.
 - Datasets: `/workspace/prepared/grid_mass_l15_random{,_split_train,_split_eval}`.
 - Next: the same two scripts answer the **grid-vocabulary** version unchanged — point
   `--signal-json` at `data/jlens/grid_tokens_full.json`.
+
+## The loudness line is a module now (2026-09-10, log entry 56)
+
+**No new measurement.** This is the refactor entry 55 made unavoidable: running the
+specificity control meant writing a second evaluator, a second decile analysis and a second
+balanced accuracy, and the line was already carrying five copies of `bal_acc` and four
+hand-rolled trajectory bootstraps. **Everything that produces, joins, analyses or draws
+loudness now lives in [`telos_interp/loudness_analysis/`](telos_interp/loudness_analysis/README.md).**
+
+Start at that README, not here, for anything in this line.
+
+### Where things went
+
+| Was | Now |
+|---|---|
+| `scripts/jlens_reasoning_tokens.py` | `loudness_analysis/build_loudness_tables.py` |
+| `scripts/eval_probe_per_token.py` + `grid_cell_analysis/eval_grid_probe_per_token.py` | `loudness_analysis/score_probes_per_token.py --probe-type {next_action,grid_tile}` |
+| `scripts/build_probe_loudness_heldout.py` | `loudness_analysis/join_rollouts.py` |
+| `scripts/analyze_probe_loudness.py` + `analyze_grid_loudness_correlation.py` | `loudness_analysis/analysis/probe_accuracy_by_loudness.py` |
+| `scripts/analyze_sentence_loudness.py` | `loudness_analysis/analysis/loudness_distribution.py` |
+| `scripts/analyze_direction_word_isolation.py` | `--exclude-signal-words` on **both** analysers |
+| the three `plot_*_loudness*.py` | `loudness_analysis/plotting/figures.py` (16 figures, one CLI) |
+| `scripts/inference_oss/**` | `loudness_analysis/rollouts/**` |
+| `scripts/build_probe_loudness.py` | **deleted** — `score_probes_per_token` + `join_rollouts` |
+
+`RENAMES.md`'s 2026-09-10 section is the full table. **`jlens_reasoning_tokens` was NOT renamed
+where it names the activation tree on disk** (`/workspace/activations/jlens_reasoning_tokens`,
+plus a CSV and several probe-inventory entries) — the tree was named after the script that made
+it, and renaming those strings would break every path to real data.
+
+### What this changes for you
+
+**Loudness columns are `{lens}_{signal}_logmass_L{layer}`** — `jlens_direction_logmass_L15`.
+Every legacy spelling still loads (`dir_logmass_L15`, `dir_logmass`, `{lens}_mass_L{layer}`,
+`{lens}_logmass_L{layer}`), so no CSV on disk is stranded. But `dir_*` is **refused** for a
+non-direction signal: it predates any other vocabulary, so accepting it for `grid` would
+silently read direction loudness into a table labelled grid.
+
+**The two balanced accuracies are not the same number.** `stats.bal_acc` averages over rows;
+`stats.bal_acc_from_counts` pools per-class counts. Entry 55's grid numbers used the counts
+form and the action numbers it compares against used the rows form — a grid row summarises a
+whole step's cells, so averaging per-token accuracies weights a token with 2 cells the same as
+one with 25. `run_config.json` records which ran.
+
+**`--probe-type grid_tile` is a different table shape, not a different class list.** This
+looked like a flag and is not: the row-mode analysis reads a *joined* table (`label_local`,
+`{probe}_pred`, sentence coordinates) and a grid evaluator table has none of those. It routes
+to a counts mode instead.
+
+**Every result folder gets a `run_config.json`**, recording the ruler, a hash of the
+vocabulary's *contents* (not its path — the same vocabulary is `data/jlens/…` in the repo and
+`/workspace/jlens/…` deployed), the bin edges, the aggregation, the bootstrap seed and row
+counts per filter. It is also a **guard**: a second run with a different `--lens` into the same
+folder fails rather than overwriting half the figures.
+
+**Signals are open-ended.** `--signal-json <any {class: [tokens]} JSON> --signal-name <name>`.
+Entry 55's "next" step — the grid-vocabulary version — needs no code change, and there is a
+test that registers a "shape" vocabulary to prove it.
+
+### Corrections to earlier sections of this file
+
+- The trap listed above as "`eval_probe_per_token.py` strips `next_action_probe_` from its
+  column keys" still holds, under the name `score_probes_per_token.py`.
+- Three commands in the local-belief section named `scripts/gather_local_belief_activations.py`,
+  `scripts/relabel_manifest_from_rollout.py` and `scripts/eval_local_belief.py`. Those paths
+  never existed — the files were always under `scripts/inference_oss/` — so the commands were
+  copy-paste-broken before this round too. They now point at `loudness_analysis/rollouts/`.
+- **`scripts/train_all.sh` does not exist and never has.** The comment in that same section
+  claims it runs all six local-belief probes; use `scripts/train_belief_baseline_probes.sh`
+  and the two sibling arm drivers instead.
+- `wrappers/loudness_report.sh` is the recorded invocation for the analysers and figures. Run
+  it once per `LENS`; the guard refuses to put two rulers in one folder.
+
+### Still open
+
+`join_rollout_answers.py` and `build_sentence_loudness.py` are both "mass tree + rollout →
+per-token table" and should fold into `join_rollouts.py` as a `--lens-root` mode. Every merge
+in this round was gated on golden-file equivalence against the originals — the evaluator merge
+is checked against CSVs written by **both** deleted scripts, kept in
+`tests/data/score_probes_per_token/`. That gate does not exist for these two and they produce
+published tables, so the merge is written up in `scripts/INVENTORY.md` rather than done.
+
+442 tests pass (was 408). Loose script files 97 → 74; repo-wide `.py`/`.sh` went 135 → **141**,
+because the six shared library modules are new files — the duplication moved into named, tested
+modules rather than vanishing.

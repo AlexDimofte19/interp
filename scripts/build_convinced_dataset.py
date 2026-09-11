@@ -11,7 +11,7 @@ Two artifacts, one row per reasoning token, joined on ``(step, abs_pos)``:
     ``log P(any direction word)`` at that (token, layer) over the whole 446-token
     ``direction_tokens_full.json``, computed on-device while the logits were still there. This
     is the full-vocabulary mass of log entry 42, not the top-20 count of entries 39/40.
-  * ``scripts/inference_oss/run_inference.py`` rollouts -- the LABEL, via
+  * ``telos_interp/loudness_analysis/rollouts/run_inference.py`` rollouts -- the LABEL, via
     ``convinced_sentence_idx``: the first sentence from which every later truncation answers
     correctly. See ``jlens_utils.commitment`` for the index-space trap between the mass table's
     ``reasoning_pos`` and the rollout's ``eos_token_pos``.

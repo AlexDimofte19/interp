@@ -552,7 +552,7 @@ def _make_jlens_fixture(
 ) -> tuple[Path, Path, Path]:
     """Activations + trajectory JSONs + per-trajectory jlens CSVs + a direction-token JSON.
 
-    Mirrors what scripts/jlens_reasoning_tokens.py writes:
+    Mirrors what telos_interp/loudness_analysis/build_loudness_tables.py writes:
       activations/{traj}/org__model/layer_{L}/step_{S}/output/{out_idx}.pt
       activations/{traj}/{traj}_{lens}_analysis.csv
 
@@ -1290,7 +1290,7 @@ class TestLogitLensSelection:
         _prune_fixture(acts, trajs, directions)
         folder = acts / "traj_0000"
 
-        # Add a logitlens arm the way jlens_reasoning_tokens.py --extend would.
+        # Add a logitlens arm the way build_loudness_tables.py --extend would.
         existing, _ = read_selection_record(record_path(folder))
         step, token_idx = 0, 1
         arm = {

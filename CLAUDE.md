@@ -31,7 +31,7 @@ unrelated; always ignore it. Note `--doctest-modules` is on, so docstring exampl
 Linux GPU hosts; on this Mac there is no conda.
 
 **GPU-only work.** Anything that loads gpt-oss-20b — `gather_activations`, `scripts/jlens_*.py`,
-`jlens/jlens_fit_gpt_oss.py`, `scripts/inference_oss/run_inference.py` — cannot run on the laptop. Locally
+`jlens/jlens_fit_gpt_oss.py`, `telos_interp/loudness_analysis/rollouts/run_inference.py` — cannot run on the laptop. Locally
 you can only work on the code paths that consume already-extracted artifacts (CSVs, `.pt` files, manifests,
 notebooks). Extract activations on a **single** GPU: `device_map="auto"` across multiple GPUs produces NaNs
 for this MoE model.
@@ -47,7 +47,7 @@ needs it spelled out.
 required even for `--lens logitlens`, which never reads the Jacobian — get it wrong and the first run
 re-downloads a 4.2 GB shard to rebuild the unembed cache. The direction vocabulary is one level **up**, at
 `/workspace/jlens/direction_tokens_full.json` — the deployed copy of the repo's
-`data/jlens/direction_tokens_full.json`, which is where the notebooks write it. The `scripts/*.sh`
+`data/jlens/direction_tokens_full.json`, which is where the notebooks write it. The `wrappers/*.sh`
 defaults encode this layout; pass `JLENS_DIR` / `SIGNAL_JSON` to override.
 
 ```
@@ -84,6 +84,12 @@ trajectory JSONs → gather_activations → per-token .pt tree
   grid row strings into `[row, col, cell_id]` triples with optional padding.
 - `probe_models.py` / `training.py` — the LR/MLP classification and regression probes, plus
   train-epoch, seeding, and normalization helpers used by all trainers.
+- `loudness_analysis/` — **the whole lens → probe → loudness pipeline**, and the fourth
+  registry. See [its README](telos_interp/loudness_analysis/README.md). Three axes vary
+  independently and every stage takes all three: the **lens** (`jlens_utils.methods`), the
+  **signal** (`signals.SIGNALS` — any `{class: [tokens]}` JSON, not just the two committed
+  vocabularies) and the **probe** (`probes.PROBE_TYPES`). Importing the package pulls in
+  neither torch nor matplotlib, on purpose: the analysis layer runs without either.
 
 ### On-disk contracts (do not break these)
 
@@ -93,7 +99,7 @@ trajectory JSONs → gather_activations → per-token .pt tree
 objects that `apply_cognitive_map_probe` writes back). That README also documents the jlens fork viewer.
 
 **Activation tree** (written by `gather_activations`, and byte-compatibly by
-`scripts/jlens_reasoning_tokens.py`):
+`telos_interp/loudness_analysis/build_loudness_tables.py`):
 
 ```
 {out}/{trajectory_name}/{model}/layer_{N}/step_{M}/{prompt_prefix|prompt_suffix|grid_state|output}/{token_idx}.pt
@@ -114,7 +120,7 @@ under `cells`, keyed by each entry's `cells_key`. Loaders live in
 
 ### The lens line (jlens and logitlens)
 
-`scripts/jlens_reasoning_tokens.py` does one forward pass per trajectory and emits both the activations
+`telos_interp/loudness_analysis/build_loudness_tables.py` does one forward pass per trajectory and emits both the activations
 and a per-trajectory `{stem}_{lens}_analysis.csv` of top-20 lens predictions per (reasoning token, layer),
 each with its `top_{i}_logprob`. Tokens are scored by how direction-loaded those predictions are, against a
 vocabulary JSON (`data/jlens/direction_tokens_full.json`, `data/jlens/grid_tokens_full.json` in the repo;
@@ -164,7 +170,7 @@ decide what lands on disk can import it without the model stack. It is **method-
 a branch in four files. See its README. Three consumers share one `top_filter`, which is what makes them
 agree:
 
-- `jlens_reasoning_tokens.py --signal-json --select-methods ...` saves *only* the selection (~75x less
+- `build_loudness_tables.py --signal-json --select-methods ...` saves *only* the selection (~75x less
   disk than saving every (token, layer), which is what filled the volume up).
 - `scripts/delete_non_jlens_selected.py` applies the same filter negatively to trees already gathered in
   full. Dry-run by default; `tests/test_delete_non_jlens_selected.py` asserts prune(full) == filtered
@@ -195,7 +201,7 @@ another gather — it is a guarantee, not a method.
 **The tree is already pruned.** Everything outside the jlens ∪ random selection is gone, so a new lens arm
 cannot be recovered by re-filtering — the tokens it would pick were deleted. `delete_non_jlens_selected.py`
 refuses to widen an existing selection for exactly that reason. The path that works is
-`jlens_reasoning_tokens.py --extend` (wrapped by `scripts/jlens_extend_logitlens.sh`, dry-run by default):
+`build_loudness_tables.py --extend` (wrapped by `wrappers/jlens_extend_logitlens.sh`, dry-run by default):
 one CSV-only forward pass for the new lens, gather only the `.pt` files not already present, and **merge**
 the arm into the record. Arms already recorded keep their picks and config verbatim; the control is
 inherited, never redrawn, because a fresh draw could only sample the survivors. The selection record is
@@ -213,7 +219,7 @@ as well as over layers), where every token is scored at every layer, and that is
 from. A control arm
 carries no scores and cannot pick: give it the same explicit `L`.
 
-Or pin the layer at *gather* time, which is stronger: `jlens_reasoning_tokens.py
+Or pin the layer at *gather* time, which is stronger: `build_loudness_tables.py
 --select-candidate-layers 15` narrows the pool the selection ranks and saves from, so tokens are
 ranked by their layer-15 score rather than by a cross-layer total, and only layer 15 lands on disk.
 It does **not** narrow the CSV or the mass table — those still cover `--layers` — so one run can
@@ -221,7 +227,7 @@ select a single layer and still leave the full `(token x layer)` profile behind 
 `jlens_layer_profile.py`. It mirrors `--candidate-layers` on `delete_non_jlens_selected.py`, and the
 two must be given the same pool or a prune keeps different files than the filtered gather wrote; the
 value is recorded in each arm's `config.candidate_layers` (absent/`null` = every layer the artifact
-covers). `scripts/jlens_mass_l15.sh` is the recorded invocation: `logprob_mass_full` ranking at layer
+covers). `wrappers/jlens_mass_l15.sh` is the recorded invocation: `logprob_mass_full` ranking at layer
 15 over the same 3600 trajectories the count-era tree drew.
 
 Narrow at training time, not prepare time: `split_next_action_manifest.py --tokens-per-trajectory K
@@ -232,7 +238,25 @@ It takes either token-major manifest despite the name; a `grid_tile` one has no 
 strata by grid size instead. `--eval-names FILE` pins the eval set to a name list, which is how arms
 prepared from different trees end up scored on the same test trajectories.
 
-**The same arms with the grid label.** `scripts/prepare_grid_arms.sh` and `scripts/train_grid_arms.sh`
+**The mass-era 3,600 is two datasets, not one with a flag.** `scripts/build_mass_era_split.sh`
+materialises the partition `--eval-names` used to imply: `splits/mass_train_2880.txt` and
+`splits/mass_eval_720.txt`, plus an `activations/mass_{train2880,eval720}_view` pair holding an
+`activations/` + `trajectories/` directory each. Point a tool at one view and the other half is
+*unreachable* — which matters because everything that walks a TREE rather than a manifest (the
+rollouts, `eval_probe_per_token.py`, the loudness builds, `build_convinced_dataset.py`) saw all
+3,600 at once and stayed honest only by being handed the right `--eval-names`/`--exclude-names`.
+The link is at the trajectory level, so a view carries the gather's analysis CSV, direction-mass
+table, `.meta.json` and selection record along with the tensors. **It does not re-draw the
+split**: the 720 are byte-for-byte the pinned `next_action_mass_l15_eval_names.txt` every probe on
+disk was scored against, and the train half is their complement — verified against both that list
+and the 2,880 `audit_trajectory_sets.py` used to recover from `local_belief_p2_split_train`'s
+manifest. Nothing is moved or rewritten, so every existing `activations_root` still resolves.
+`scripts/verify_mass_era_split.py` is the contract (dangling links, closure, leakage, the two
+identities); `build_mass_era_split.sh` runs it, and `VERIFY_ONLY=1` re-checks without building.
+Note the eval 720 is a plain random draw, **not stratified** — its (size × complexity) cells run
+14–29 against the 20 a stratified draw would give, while the 3,600 is exactly 100 per cell.
+
+**The same arms with the grid label.** `grid_cell_analysis/prepare_grid_arms.sh` and `grid_cell_analysis/train_grid_arms.sh`
 are the `grid_tile` twins of the `*_next_action_arms.sh` pair: same tree, same records, same tokens,
 same layers, `train_cognitive_map_probe` instead of `train_next_action_probe`. Any difference between a
 grid arm and an action arm is therefore the label and nothing else. Two knobs matter there. `MAX_CELLS`
@@ -258,13 +282,13 @@ strings, embedded commas and newlines, which pandas' NA handling silently corrup
 ### The rollout line (truncation strategies)
 
 The lens line asks what a *probe* reads off a token. The rollout line asks what the **model** would answer
-if its reasoning stopped there. `scripts/inference_oss/run_inference.py` keeps `output_tokens[:pos + 1]`,
+if its reasoning stopped there. `telos_interp/loudness_analysis/rollouts/run_inference.py` keeps `output_tokens[:pos + 1]`,
 appends the fixed final-channel prefix (`<|end|>...{\n  "action": "`), and reads the single action token the
 model then emits. That label is the **local belief** at `pos`, as against the trajectory's `agent_action`,
 which is where it *ends up*; the two coming apart before the model commits is the whole point of entries
 39-41 and 46-48.
 
-**Where to cut is a third registry**, `scripts/inference_oss/truncation_strategies.py`
+**Where to cut is a third registry**, `telos_interp/loudness_analysis/rollouts/truncation_strategies.py`
 (`STRATEGIES` / `build_strategy`), dispatched by name exactly as the methods and scores are. Nothing else
 about the rollout changes between arms, so any difference between two arms is the cut points and nothing
 else. `--strategy`:
@@ -364,8 +388,42 @@ header as a cross-reference, not in a filename.
 
 ## Conventions and gotchas
 
-- `configs/**/*.conf`, `script.sh`, `general_probe_train.sh`, `*.ps1` are **recorded `interp-cli`
-  invocations**, not parsed config files. They are the record of how published results were produced.
+- **Loudness is never unqualified, and its column says so.** The canonical name is
+  `{lens}_{signal}_logmass_L{layer}` — `jlens_direction_logmass_L15` — because at layer 15
+  the two lenses' top-20 sets overlap only about half, so a number without a lens and a
+  vocabulary is not a quantity. `loudness_analysis/columns.py` builds those names, owns the
+  one axis label every table and figure uses, and accepts every legacy spelling on read
+  (`dir_logmass_L15`, `dir_logmass`, `{lens}_mass_L{layer}`, `{lens}_logmass_L{layer}`), so
+  every CSV already on disk still loads. `dir_*` is refused for a non-direction signal: it
+  predates any other vocabulary, so it identifies the signal and nothing else.
+- **`columns.py` also disambiguates two names that have already cost a debugging round.**
+  `sentence_frac` means position *within* a sentence in the loudness tables but
+  `sentence_idx / n_sentences` in `probe_vs_rollout/per_token.csv`; and `rowset` selected
+  *tokens* in one builder and only *which probes are read* in the next. Canonically
+  `frac_in_sentence` / `frac_of_chain` and `probe_set`.
+- **The two balanced accuracies are not the same number.** `stats.bal_acc` averages over
+  rows; `stats.bal_acc_from_counts` pools per-class counts. A grid row summarises a whole
+  step's cells, so averaging per-token accuracies weights a token with 2 cells the same as
+  one with 25. Both are kept, named apart; `run_config.json` records which ran.
+- **Every result folder gets a `run_config.json`.** `loudness_analysis/provenance.py` writes
+  the ruler, the vocabulary and a hash of its *contents* (the path cannot decide
+  comparability — the same vocabulary is `data/jlens/…` in the repo and `/workspace/jlens/…`
+  when deployed), the bin edges, the aggregation method, the bootstrap seed, and row counts
+  before and after each filter. It is also a **guard**: a second run with a different lens
+  into the same folder fails rather than overwriting half the figures.
+- **The verbalisation control is a flag, not a script.** `--exclude-signal-words` plus
+  `--exclude-radius N` on either analyser reproduces every table and figure with the signal
+  words — and optionally their ±N neighbours — removed. The lens predicts the *next* tokens,
+  so the token just before ` up` is loud without being a signal word itself; the radius is
+  what separates "the residual is signal-loaded here" from "a signal word is about to be
+  written".
+
+- **`wrappers/` is the record, `scripts/` is the machinery.** A file under `wrappers/` exists to pin the
+  *parameter values* of a published run onto one other script -- `configs/**/*.conf` and the `*.ps1`
+  files there are the same thing. They are **recorded invocations**, not parsed config files, and not
+  code to refactor: changing a default there rewrites history. `scripts/` holds the things that
+  actually do the work, and `grid_cell_analysis/` holds the round-2 grid-cell line, which never
+  produced a result (see its README).
 - `ICLR log.txt` is the running research log (findings, planned phases, known landmines) and
   `claude_session_readme.md` is the handoff note for the current branch — `worktree-probe-loudness` as of
   entry 48, forked from `reasoning_theatre`. Read them before touching the jlens → probe or rollout path;

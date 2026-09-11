@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Four more belief arms: the per-sentence cadence, completed.
 #
-# The eight probes from the two rollout arms of scripts/rollout_more_belief_arms.sh, plus one
+# The eight probes from the two rollout arms of wrappers/rollout_more_belief_arms.sh, plus one
 # thinning that needed no rollout at all. Run AFTER those finish and the GPU is free.
 #
 #   eos_belief                    last token of each sentence   uncapped, ~71.4k
@@ -68,7 +68,7 @@ want() { [ "$WANT" = all ] || [ "$WANT" = "$1" ]; }
 relabel() {  # relabel <prepared-in> <rollout-dir> <prepared-out> <tag> [extra flags...]
     local pin=$1 rollout=$2 pout=$3 tag=$4; shift 4
     echo "[$(ts)] === $tag: relabel from $(basename "$rollout") ==="
-    $UV python "$REPO/scripts/inference_oss/relabel_manifest_from_rollout.py" \
+    $UV python "$REPO/telos_interp/loudness_analysis/rollouts/relabel_manifest_from_rollout.py" \
         "$pin" "$rollout" "$pout" --report-csv "$HERE/${tag}_relabel_report.csv" "$@" \
         2>&1 | tee "$LOGS/${tag}_relabel.txt"
 }
@@ -108,7 +108,7 @@ fi
 # ---- arm 1: sentence ends -> belief -------------------------------------------------------
 if want eos_belief; then
     echo "[$(ts)] === eos_belief: view the existing sentence-end tree at the mass-era names ==="
-    bash "$REPO/scripts/build_eos_view.sh" "$NAMES_FILE" "$ACT_EOS_VIEW" \
+    bash "$REPO/scripts/build_activation_view.sh" "$NAMES_FILE" "$ACT_EOS_VIEW" \
         2>&1 | tee "$LOGS/eos_belief_view.txt"
 
     echo "[$(ts)] === eos_belief: prepare (token-selection all, layer 15) ==="
@@ -130,7 +130,7 @@ fi
 # it, so pointing a second kind at another arm's tree would skip every write silently.
 if want random_sentence_belief; then
     echo "[$(ts)] === random_sentence_belief: gather L15 at the random-in-sentence cutoffs ==="
-    $UV python "$REPO/scripts/inference_oss/gather_local_belief_activations.py" \
+    $UV python "$REPO/telos_interp/loudness_analysis/rollouts/gather_local_belief_activations.py" \
         --rollout-dir "$OUT_ROOT/random_per_sentence" --interior-kinds random_in_sentence \
         --trajectory-paths "$TRAJ" --names-file "$NAMES_FILE" --out "$ACT_RANDOM" \
         2>&1 | tee "$LOGS/random_sentence_belief_gather.txt"

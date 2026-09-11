@@ -1,6 +1,6 @@
 """Read a `{stem}_jlens_analysis.csv` and score its reasoning tokens against a vocabulary.
 
-`scripts/jlens_reasoning_tokens.py` writes, per trajectory, both the residual-stream
+`telos_interp/loudness_analysis/build_loudness_tables.py` writes, per trajectory, both the residual-stream
 activations (gather_activations layout) and a `{stem}_jlens_analysis.csv` holding the
 top-20 j-space predictions for every (reasoning token, layer). This module turns that CSV
 into per-token, per-layer *direction scores* — how direction-loaded a token's top-k lens
@@ -31,7 +31,7 @@ from pathlib import Path
 
 from .scoring import DEFAULT_SCORE, DirectionScore, get_score
 
-# Written next to the activations by scripts/jlens_reasoning_tokens.py.
+# Written next to the activations by telos_interp/loudness_analysis/build_loudness_tables.py.
 DEFAULT_JLENS_CSV_SUFFIX = "_jlens_analysis.csv"
 
 DIRECTION_CLASSES = ("UP", "DOWN", "LEFT", "RIGHT")
@@ -75,7 +75,7 @@ class TokenScore:
 
 
 def jlens_csv_path(trajectory_folder: Path, suffix: str = DEFAULT_JLENS_CSV_SUFFIX) -> Path:
-    """`<folder>/<folder name>_jlens_analysis.csv`, as jlens_reasoning_tokens.py writes it."""
+    """`<folder>/<folder name>_jlens_analysis.csv`, as build_loudness_tables.py writes it."""
     return trajectory_folder / f"{trajectory_folder.name}{suffix}"
 
 
@@ -139,7 +139,7 @@ def require_logprob_columns(csv_path: Path, score_mode: str, top_k: int = 20) ->
     raise ValueError(
         f"{csv_path} has no top_i_logprob columns, so direction_score='{score_mode}' cannot be "
         f"computed from it. Either use direction_score='count', or re-emit the CSV with "
-        f"scripts/jlens_reasoning_tokens.py --overwrite --no-save-activations (a CSV-only pass; "
+        f"telos_interp/loudness_analysis/build_loudness_tables.py --overwrite --no-save-activations (a CSV-only pass; "
         f"it touches no .pt file, so a pruned tree stays pruned)."
     )
 
@@ -346,7 +346,7 @@ def artifact_layers(path: Path, score_mode: str = DEFAULT_SCORE) -> list[int]:
 def output_start(trajectory_data: dict, step_index: int) -> int:
     """Absolute position of the step's first output token.
 
-    Mirrors how scripts/jlens_reasoning_tokens.py derives the .pt filename:
+    Mirrors how telos_interp/loudness_analysis/build_loudness_tables.py derives the .pt filename:
     out_idx = abs_pos - output_start.
     """
     prompt = trajectory_data["prompt"]

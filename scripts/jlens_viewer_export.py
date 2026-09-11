@@ -12,7 +12,7 @@ fork loads a FOLDER, not a single file). Schema is documented in
 `telos_interp/trace_viewer/README.md` ("Fork: jlens per-step files").
 
 The CSV is never held in memory: rows arrive grouped by trajectory -> step -> layer
-(see scripts/jlens_reasoning_tokens.py), so we buffer one step at a time and flush.
+(see telos_interp/loudness_analysis/build_loudness_tables.py), so we buffer one step at a time and flush.
 
 Usage:
   python scripts/jlens_viewer_export.py \
@@ -34,7 +34,7 @@ from pathlib import Path
 # sibling `scripts.*` imports below would miss. Put the repo root first.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.jlens_reasoning_tokens import (  # noqa: E402  (stdlib-only module)
+from telos_interp.loudness_analysis.build_loudness_tables import (  # noqa: E402  (stdlib-only module)
     ACTIONS,
     TOP_K,
     parse_name,
@@ -379,7 +379,7 @@ class TrajectoryExporter:
 def expand_paths(patterns: list[str]) -> list[Path]:
     """Files, globs or directories -> trajectory JSON files.
 
-    Same contract as ``expand_paths`` in scripts/inference_oss/run_inference.py, but
+    Same contract as ``expand_paths`` in telos_interp/loudness_analysis/rollouts/run_inference.py, but
     stdlib-only: that module imports torch at import time, and this script must run on a
     laptop without it.
     """

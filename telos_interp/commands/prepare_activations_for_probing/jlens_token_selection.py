@@ -1,6 +1,6 @@
 """Pick which reasoning tokens and layers a `next_action` probe trains on.
 
-`scripts/jlens_reasoning_tokens.py` writes, per trajectory, both the residual-stream
+`telos_interp/loudness_analysis/build_loudness_tables.py` writes, per trajectory, both the residual-stream
 activations (gather_activations layout) and one `{stem}_{lens}_analysis.csv` per lens,
 holding the top-20 predictions for every (reasoning token, layer). This module turns those
 CSVs into a selection: the tokens whose lens output is most *direction-loaded* (the
@@ -208,7 +208,7 @@ def _select_from_record(
     if not arm and verbose:
         # A record that predates this method -- e.g. asking for `logitlens` on a tree pruned
         # before that arm existed. Nothing to train on, and nothing that can be recovered
-        # here: the arm has to be added by jlens_reasoning_tokens.py --extend.
+        # here: the arm has to be added by build_loudness_tables.py --extend.
         print(f"  Skipped: selection record at {path} has no '{method}' arm (has {kept.names})")
     step_set, layer_set = set(candidate_steps), set(candidate_layers)
 

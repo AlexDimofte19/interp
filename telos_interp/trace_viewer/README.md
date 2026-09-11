@@ -257,7 +257,7 @@ Action sequence probes decode the model's planned multi-step action sequence fro
 `trace_viewer_fork.html` is a separate viewer for Jacobian-lens data. It does **not** read the
 format above: it loads a **folder** of per-step JSON files produced by
 `scripts/jlens_viewer_export.py`, which joins a trajectory JSON with the reasoning-token CSV
-written by `scripts/jlens_reasoning_tokens.py`.
+written by `telos_interp/loudness_analysis/build_loudness_tables.py`.
 
 ```bash
 python scripts/jlens_viewer_export.py \

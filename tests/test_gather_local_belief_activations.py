@@ -1,4 +1,4 @@
-"""Tests for scripts/inference_oss/gather_local_belief_activations.py's position filter.
+"""Tests for telos_interp/loudness_analysis/rollouts/gather_local_belief_activations.py's position filter.
 
 The filter decides which of a rollout's cutoffs get a ``.pt`` saved, and it used to be a
 module constant. Now it is ``--interior-kinds``, so the same script serves the
@@ -22,7 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 pytest.importorskip("torch")
-g = importlib.import_module("scripts.inference_oss.gather_local_belief_activations")
+g = importlib.import_module("telos_interp.loudness_analysis.rollouts.gather_local_belief_activations")
 
 
 def test_the_default_is_the_old_hard_coded_kind():

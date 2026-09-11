@@ -25,7 +25,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-jrt = importlib.import_module("scripts.jlens_reasoning_tokens")
+jrt = importlib.import_module("telos_interp.loudness_analysis.build_loudness_tables")
 
 # Layer 19 has no jlens matrix, so it gets no CSV rows and cannot be scored -- the filter's
 # candidate pool is the *scorable* layers, not everything --layers asked for. Both the
@@ -161,7 +161,7 @@ def env(tmp_path, monkeypatch):
         "from_pretrained",
         classmethod(lambda cls, *a, **k: _StubModel()),
     )
-    sampled = importlib.import_module("scripts.jlens_action_ranks_sampled")
+    sampled = importlib.import_module("scripts.jlens_action_ranks")
     monkeypatch.setattr(sampled, "action_token_ids", lambda: (ACTION_IDS, _StubTokenizer()))
     # built once: every run in a test must see the same unembed, or two runs of the same
     # trajectory would differ for reasons that have nothing to do with the code under test
@@ -177,7 +177,7 @@ def env(tmp_path, monkeypatch):
 def _run(env, out_name, *extra):
     out = env["tmp"] / out_name
     argv = [
-        "jlens_reasoning_tokens.py",
+        "build_loudness_tables.py",
         "--trajectory-paths",
         str(env["traj_path"]),
         "--jlens_dir",

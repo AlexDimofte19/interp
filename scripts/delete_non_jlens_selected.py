@@ -1,6 +1,6 @@
 """Prune an already-gathered activation tree down to the jlens selection.
 
-Damage control for trajectories gathered before `jlens_reasoning_tokens.py` learned to
+Damage control for trajectories gathered before `build_loudness_tables.py` learned to
 filter as it writes. Those folders hold a `.pt` for *every* (reasoning token, layer) — a
 700-token chain over 17 layers is ~12k files and ~68 MB per step — of which a probe reads
 around 40 tokens' worth.
@@ -43,7 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.jlens_reasoning_tokens import parse_name  # noqa: E402
+from telos_interp.loudness_analysis.build_loudness_tables import parse_name  # noqa: E402
 from telos_interp.jlens_utils import (  # noqa: E402
     DEFAULT_ALWAYS_LAYERS,
     DEFAULT_METHODS,
@@ -164,7 +164,7 @@ def prune_trajectory(csv_path: Path, args) -> Outcome:
                 stem,
                 "skipped",
                 f"record holds {sorted(existing_record.get('arms', {}))}, cannot add {new_arms} by "
-                f"deleting -- use jlens_reasoning_tokens.py --extend",
+                f"deleting -- use build_loudness_tables.py --extend",
             )
 
     kept = top_filter(
@@ -203,7 +203,7 @@ def prune_trajectory(csv_path: Path, args) -> Outcome:
             "skipped",
             f"{len(absent)}/{len(keep_paths)} selected files missing (arm(s) {starved}); a lens arm "
             f"whose tokens were already pruned cannot be recovered here -- "
-            f"use jlens_reasoning_tokens.py --extend",
+            f"use build_loudness_tables.py --extend",
         )
 
     on_disk = list(model.rglob("*.pt"))
@@ -300,7 +300,7 @@ def main() -> None:
         f"Available: {','.join(METHODS)}. The union of every arm survives. Asking "
         "for an arm a trajectory's record does not already hold is refused: the "
         "tokens it would select were removed by the earlier prune, and only "
-        "jlens_reasoning_tokens.py --extend can gather them back.",
+        "build_loudness_tables.py --extend can gather them back.",
     )
     ap.add_argument("--select-num-tokens", type=int, default=20)
     ap.add_argument("--select-num-layers", type=int, default=3)

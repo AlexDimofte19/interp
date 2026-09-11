@@ -56,6 +56,11 @@ COUNT_NAMES=${COUNT_NAMES:-$WS/splits/lens_trajectories_3600.txt}
 COUNT_EVAL_NAMES=${COUNT_EVAL_NAMES:-$WS/splits/eval_trajectories_720.txt}
 MASS_NAMES=${MASS_NAMES:-$RT/rollout_strategies/mass_l15_names.txt}
 MASS_EVAL_NAMES=${MASS_EVAL_NAMES:-$PREPARED/next_action_mass_l15_eval_names.txt}
+# The same partition, materialised as two standalone datasets by stage `mass_era_split`.
+# MASS_EVAL_NAMES stays the pinned original: it is what every probe on disk was scored with,
+# and MASS_SPLIT_EVAL_NAMES is verified against it rather than replacing it.
+MASS_TRAIN_NAMES=${MASS_TRAIN_NAMES:-$WS/splits/mass_train_2880.txt}
+MASS_SPLIT_EVAL_NAMES=${MASS_SPLIT_EVAL_NAMES:-$WS/splits/mass_eval_720.txt}
 HELDOUT_NAMES=${HELDOUT_NAMES:-$TRAJ_ROOT/heldout360_names.txt}
 HELDOUT_TRAJ=${HELDOUT_TRAJ:-$TRAJ_ROOT/heldout360}
 
@@ -99,7 +104,7 @@ ndirs()  { [ "$(find "$1" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -n 
 STAGES="host_setup deploy_vocabularies fit_jacobian_lens cognitive_map_probes
         sentence_end_rollout sentence_end_activation_tree
         count_era_gather count_era_next_action_arms
-        mass_era_gather mass_era_next_action_probes
+        mass_era_gather mass_era_split mass_era_next_action_probes
         heldout_trees score_probes_on_heldout probe_vs_rollout
         sentence_loudness loud_rollout_arms local_belief_probes
         probe_loudness_eval720 belief_probes_commitment
@@ -123,6 +128,7 @@ meta() {
     count_era_gather)        echo "GPU|not recorded|Count-scored selective gather, then the logit-lens arm";;
     count_era_next_action_arms) echo "GPU|9h39m + 2h02m + 3h12m + 4h27m|Next-action arms: pooled 7:23, layer 15, sentence-end, three seeds";;
     mass_era_gather)         echo "GPU|2h34m|Probability-mass ranking at layer 15";;
+    mass_era_split)          echo "no|seconds|The mass-era 3,600 as two separate datasets: train 2,880 and eval 720";;
     mass_era_next_action_probes) echo "GPU|~1h|Mass-era probes: jlens top-1/2/3/all and the random control";;
     heldout_trees)           echo "GPU|45m + 6m|The held-out 360: layer-15 activations, and both lenses' tables";;
     score_probes_on_heldout) echo "GPU|~2h|Every probe on every held-out token, under both rankings";;
@@ -159,6 +165,9 @@ done_sentence_end_activation_tree() { ndirs "$ACT/activations_train_single_step_
 done_count_era_gather()        { nfiles "$ACT/jlens_reasoning_tokens" '*_logitlens_analysis.csv' 1 4; }
 done_count_era_next_action_arms() { nfiles "$PROBES/next_action_seeds" '*.pt' 18; }
 done_mass_era_gather()         { nfiles "$ACT/jlens_mass_l15" '*_direction_mass.csv' 1 4; }
+done_mass_era_split()          { [ -s "$MASS_TRAIN_NAMES" ] && [ -s "$MASS_SPLIT_EVAL_NAMES" ] \
+                                     && ndirs "$ACT/mass_train2880_view/activations" 6 \
+                                     && ndirs "$ACT/mass_eval720_view/activations" 6; }
 done_mass_era_next_action_probes() { nfiles "$PROBES/next_action_mass_l15" '*.pt' 8; }
 done_heldout_trees()           { ndirs "$ACT/heldout360_l15" 6 && nfiles "$ACT/heldout360_lens" '*_direction_mass.csv' 1 4; }
 done_score_probes_on_heldout() { [ -s "$PROBES/heldout360_all_probes.csv" ]; }
@@ -220,7 +229,7 @@ run_fit_jacobian_lens() {
 # NOTE: the probes on this host under $PROBES/{start,end}_of_reasoning/downloaded/ were pulled
 # from the Hub, not trained here; this stage retrains them from the activations.
 run_cognitive_map_probes() {
-    x bash "$REPO/script.sh"
+    x bash "$REPO/wrappers/script.sh"
 }
 
 # ---- stage 4: the sentence-end rollout -----------------------------------------------------
@@ -233,11 +242,11 @@ run_cognitive_map_probes() {
 # batching. Anything needing current-code sentence-end labels must write elsewhere, which is what
 # rollout_more_belief_arms.sh does (stage more_belief_rollout_arms).
 run_sentence_end_rollout() {
-    x $UV python "$REPO/scripts/inference_oss/run_inference.py" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/rollouts/run_inference.py" \
         --strategy eos --trajectory-paths "$TRAJ" \
         --output-dir "$RT/trajectories_train_single_step_probs" \
         --skip-existing
-    x bash "$REPO/scripts/inference_oss/run_analysis.sh"
+    x bash "$REPO/wrappers/run_analysis.sh"
 }
 
 # ---- stage 5: the sentence-end activation tree ---------------------------------------------
@@ -262,11 +271,11 @@ run_count_era_gather() {
         JLENS_DIR="$JLENS_DIR" SIGNAL_JSON="$SIGNAL_JSON" \
         ACTIVATIONS_DIR="$ACT/jlens_reasoning_tokens" LAYERS="$LAYERS" \
         NUM_TOKENS=20 NUM_LAYERS=3 ALWAYS_LAYERS=15 RANDOM_TOKENS=20 SELECT_SEED="$SELECT_SEED" \
-        bash "$REPO/scripts/jlens_reasoning_tokens_filtered.sh"
+        bash "$REPO/wrappers/jlens_reasoning_tokens_filtered.sh"
     x env ACT="$ACT/jlens_reasoning_tokens" TRAJ="$TRAJ" JLENS_DIR="$JLENS_DIR" \
         SIGNAL_JSON="$SIGNAL_JSON" METHODS=logitlens NUM_TOKENS=20 NUM_LAYERS=3 \
         ALWAYS_LAYERS=15 SELECT_SEED="$SELECT_SEED" APPLY=1 ASSUME_YES=1 \
-        bash "$REPO/scripts/jlens_extend_logitlens.sh"
+        bash "$REPO/wrappers/jlens_extend_logitlens.sh"
 }
 
 # ---- stage 7: the count-era next-action arms -----------------------------------------------
@@ -322,7 +331,7 @@ run_count_era_next_action_arms() {
 # A symlink view: 3600 activation dirs and 3600 trajectory JSONs, no bytes copied. Rebuilt only
 # when the link count is short, so a resumed run costs one readdir.
 build_eos_view() {  # build_eos_view [names-file] [view-dir]
-    x bash "$REPO/scripts/build_eos_view.sh" "${1:-$COUNT_NAMES}" "${2:-$ACT/eos_lens3600_view}"
+    x bash "$REPO/scripts/build_activation_view.sh" "${1:-$COUNT_NAMES}" "${2:-$ACT/eos_lens3600_view}"
 }
 
 # ---- stage 8: the mass-era gather ----------------------------------------------------------
@@ -334,7 +343,22 @@ build_eos_view() {  # build_eos_view [names-file] [view-dir]
 run_mass_era_gather() {
     x env NAMES_FILE="$MASS_NAMES" TRAJECTORIES="$TRAJ" JLENS_DIR="$JLENS_DIR" \
         SIGNAL_JSON="$SIGNAL_JSON" ACTIVATIONS_DIR="$ACT/jlens_mass_l15" \
-        bash "$REPO/scripts/jlens_mass_l15.sh"
+        bash "$REPO/wrappers/jlens_mass_l15.sh"
+}
+
+# ---- stage 8b: the mass-era train/eval split ----------------------------------------------
+# The 2,880 / 720 partition every mass-era number rests on, written down instead of implied.
+# Before this it existed only as `--eval-names`: the eval half was a file, the train half was
+# "whatever is left", and a tool that walked the TREE rather than a manifest saw both at once.
+# Now each half has a name list and its own activation + trajectory view, so pointing a tool at
+# one half makes the other unreachable. Costs 7,200 symlinks and copies nothing; the source
+# tree, every prepared manifest and every recorded invocation are untouched.
+run_mass_era_split() {
+    x env WS="$WS" ACT="$ACT" PREPARED="$PREPARED" RT="$RT" TRAJ="$TRAJ" \
+        SRC_TREE="$ACT/jlens_mass_l15" MASS_NAMES="$MASS_NAMES" \
+        MASS_EVAL_NAMES="$MASS_EVAL_NAMES" \
+        TRAIN_NAMES="$MASS_TRAIN_NAMES" EVAL_NAMES="$MASS_SPLIT_EVAL_NAMES" \
+        bash "$REPO/scripts/build_mass_era_split.sh"
 }
 
 # ---- stage 9: the mass-era next-action probes ----------------------------------------------
@@ -360,11 +384,11 @@ run_mass_era_next_action_probes() {
 # These 360 trajectories are disjoint from the 3600 -- they are the only set nothing was
 # selected or trained on.
 run_heldout_trees() {
-    x $UV python "$REPO/scripts/jlens_reasoning_tokens.py" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/build_loudness_tables.py" \
         --trajectory-paths "$HELDOUT_TRAJ" --names-file "$HELDOUT_NAMES" \
         --jlens_dir "$JLENS_DIR" --activations-dir "$ACT/heldout360_l15" \
         --signal-json "$SIGNAL_JSON" --lens jlens --layers 15 --steps all
-    x $UV python "$REPO/scripts/jlens_reasoning_tokens.py" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/build_loudness_tables.py" \
         --trajectory-paths "$HELDOUT_TRAJ" --names-file "$HELDOUT_NAMES" \
         --jlens_dir "$JLENS_DIR" --activations-dir "$ACT/heldout360_lens" \
         --signal-json "$SIGNAL_JSON" --lens both --layers "$LAYERS" --steps all \
@@ -381,7 +405,7 @@ run_score_probes_on_heldout() {
              "$PROBES"/next_action_mass_l15/*.pt; do
         [ -e "$p" ] && args+=(--probe "$p")
     done
-    x $UV python "$REPO/scripts/eval_probe_per_token.py" "${args[@]}" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" "${args[@]}" \
         --activations-dir "$ACT/heldout360_l15" --lens-dir "$ACT/heldout360_lens" \
         --trajectories-dir "$TRAJ" --signal-json "$SIGNAL_JSON" \
         --layer 15 --out "$PROBES/heldout360_all_probes.csv"
@@ -410,7 +434,7 @@ run_probe_vs_rollout() {
 
     # Commitment at token resolution. The probabilities are the readout that shows a sentence
     # opening on the PREVIOUS belief; the mlp arm is near one-hot, so read the lr arm.
-    x $UV python "$REPO/scripts/eval_probe_per_token.py" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" \
         --probe "$PROBES/next_action_mass_l15/next_action_probe_jlens_topall_lr.pt" \
         --probe "$PROBES/next_action_mass_l15/next_action_probe_jlens_topall_mlp.pt" \
         --probe "$PROBES/next_action_mass_l15/next_action_probe_random_topall_lr.pt" \
@@ -427,13 +451,13 @@ run_probe_vs_rollout() {
 # statements and never an accuracy number. The header offset when placing a token in its
 # sentence is eos[0] + 1 per trajectory, not a constant.
 run_sentence_loudness() {
-    x $UVC python "$REPO/scripts/build_sentence_loudness.py" \
+    x $UVC python "$REPO/telos_interp/loudness_analysis/build_sentence_loudness.py" \
         --lens-root "$ACT/jlens_mass_l15" --probs-root "$RT/trajectories_train_single_step_probs" \
         --eval-names "$MASS_EVAL_NAMES" --direction-tokens-path "$SIGNAL_JSON" \
         --out "$RT/loudness/per_token.csv"
-    x $UVC python "$REPO/scripts/plot_sentence_loudness.py" \
-        --per-token "$RT/loudness/per_token.csv" --out "$RT/loudness"
-    x $UVC python "$REPO/scripts/analyze_sentence_loudness.py" \
+    x $UVC python "$REPO/telos_interp/loudness_analysis/plotting/figures.py" \
+        --distribution-table "$RT/loudness/per_token.csv" --out "$RT/loudness"
+    x $UVC python "$REPO/telos_interp/loudness_analysis/analysis/loudness_distribution.py" \
         --per-token "$RT/loudness/per_token.csv" --out "$RT/loudness"
 }
 
@@ -446,7 +470,7 @@ run_sentence_loudness() {
 run_loud_rollout_arms() {
     x env TRAJECTORIES="$TRAJ" LENS_ROOT="$ACT/jlens_mass_l15" \
         OUT_ROOT="$RT/rollout_strategies" NAMES_FILE="$MASS_NAMES" \
-        bash "$REPO/scripts/inference_oss/run_inference_strategies.sh" \
+        bash "$REPO/telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh" \
         jlens_argmax_per_sentence jlens_top_k_global
     for arm in jlens_argmax_per_sentence jlens_top_k_global; do
         x $UVC python "$REPO/scripts/plot_loud_vs_sentence_end.py" --arm "$arm"
@@ -460,7 +484,7 @@ run_loud_rollout_arms() {
 # tokens the mass gather already saved.
 run_local_belief_probes() {
     local lbp="$RT/local_belief_probes"
-    x $UV python "$REPO/scripts/inference_oss/gather_local_belief_activations.py" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/rollouts/gather_local_belief_activations.py" \
         --rollout-dir "$RT/rollout_strategies/jlens_argmax_per_sentence" \
         --trajectory-paths "$TRAJ" --names-file "$MASS_NAMES" \
         --out "$ACT/argmax_per_sentence_l15"
@@ -468,10 +492,10 @@ run_local_belief_probes() {
         --activations-dir "$ACT/argmax_per_sentence_l15" --trajectories-dir "$TRAJ" \
         --probe-type next_action --layers 15 --steps all --output-indices all \
         --output-path "$PREPARED/local_belief_p1_final"
-    x $UVC python "$REPO/scripts/inference_oss/relabel_manifest_from_rollout.py" \
+    x $UVC python "$REPO/telos_interp/loudness_analysis/rollouts/relabel_manifest_from_rollout.py" \
         "$PREPARED/local_belief_p1_final" "$RT/rollout_strategies/jlens_argmax_per_sentence" \
         "$PREPARED/local_belief_p1_local" --report-csv "$lbp/p1_relabel_report.csv"
-    x $UVC python "$REPO/scripts/inference_oss/relabel_manifest_from_rollout.py" \
+    x $UVC python "$REPO/telos_interp/loudness_analysis/rollouts/relabel_manifest_from_rollout.py" \
         "$PREPARED/next_action_mass_l15_jlens" "$RT/rollout_strategies/jlens_top_k_global" \
         "$PREPARED/local_belief_p2_local" --report-csv "$lbp/p2_relabel_report.csv"
 
@@ -481,7 +505,7 @@ run_local_belief_probes() {
     lb_train local_belief_p2       "$PREPARED/local_belief_p2_local" ""
 
     for p in "$lbp"/probes/*.pt; do
-        [ -e "$p" ] && x $UVC python "$REPO/scripts/inference_oss/eval_local_belief.py" \
+        [ -e "$p" ] && x $UVC python "$REPO/telos_interp/loudness_analysis/rollouts/eval_local_belief.py" \
             "$p" "$PREPARED/${p##*/}_split_eval"
     done
 }
@@ -510,11 +534,24 @@ lb_train() {  # lb_train <tag> <prepared-local> <extra-split-flags>
 # crossover -- do NOT survive the selection-free version in stage 19. Inside a fixed top-K arm
 # loudness correlates +0.42 with chain length, so read the chain-length-quartile control.
 run_probe_loudness_eval720() {
-    x $UV python "$REPO/scripts/build_probe_loudness.py" --out "$RT/probe_loudness/per_token.csv"
-    x $UVC python "$REPO/scripts/analyze_probe_loudness.py" \
+    # build_probe_loudness.py is gone: it loaded probes and ran torch inline over the eval
+    # manifests. The same left table comes from the evaluator, and the join that follows is
+    # then CPU-only -- which is what lets a second lens ruler be produced without the GPU.
+    x $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" \
+        --probe "$RT/local_belief_probes/probes/local_belief_p1_lr.pt" --probe "$RT/local_belief_probes/probes/local_belief_p1_mlp.pt" \
+        --probe "$RT/local_belief_probes/probes/local_belief_p2_lr.pt" --probe "$RT/local_belief_probes/probes/local_belief_p2_mlp.pt" \
+        --activations-dir "$ACT/mass_eval720_view/activations" \
+        --lens-dir "$ACT/mass_eval720_view/activations" \
+        --trajectories-dir "$TRAJ" --signal-json "$SIGNAL_JSON" \
+        --layer 15 --full-probs --out "$RT/probe_loudness/probe_per_token.csv"
+    x $UVC python "$REPO/telos_interp/loudness_analysis/join_rollouts.py" \
+        --table "$RT/probe_loudness/probe_per_token.csv" \
+        --rollout-dir "$RT/rollout_strategies/eos" \
+        --out "$RT/probe_loudness/per_token.csv"
+    x $UVC python "$REPO/telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py" \
         --per-token "$RT/probe_loudness/per_token.csv" --out "$RT/probe_loudness"
-    x $UVC python "$REPO/scripts/plot_probe_loudness.py" \
-        --per-token "$RT/probe_loudness/per_token.csv" --out "$RT/probe_loudness/plots"
+    x $UVC python "$REPO/telos_interp/loudness_analysis/plotting/figures.py" \
+        --probe-table "$RT/probe_loudness/per_token.csv" --out "$RT/probe_loudness/plots"
 }
 
 # ---- stage 17: the commitment boundary, re-read ---------------------------------------------
@@ -522,7 +559,7 @@ run_probe_loudness_eval720() {
 # HEADLINE in analyze_probe_rollout.py must not be edited -- --headline-extra is the seam.
 run_belief_probes_commitment() {
     local lbp="$RT/local_belief_probes/probes"
-    x $UV python "$REPO/scripts/eval_probe_per_token.py" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" \
         --probe "$lbp/local_belief_p1_mlp.pt" --probe "$lbp/local_belief_p2_mlp.pt" \
         --activations-dir "$ACT/heldout360_l15" --lens-dir "$ACT/heldout360_lens" \
         --trajectories-dir "$TRAJ" --signal-json "$SIGNAL_JSON" \
@@ -541,7 +578,7 @@ run_belief_probes_commitment() {
 run_heldout_every_token_rollout() {
     x env NAMES_FILE="$HELDOUT_NAMES" TRAJECTORIES="$HELDOUT_TRAJ" \
         LENS_ROOT="$ACT/heldout360_lens" OUT_ROOT="$RT/rollout_strategies_heldout360" \
-        bash "$REPO/scripts/inference_oss/run_inference_strategies.sh" every_token
+        bash "$REPO/telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh" every_token
 }
 
 # ---- stage 19: loudness with the selection removed -----------------------------------------
@@ -553,14 +590,14 @@ run_probe_loudness_heldout() {
     for p in "$lbp"/*.pt "$PROBES"/next_action_mass_l15/next_action_probe_{jlens,random}_topall_{lr,mlp}.pt; do
         [ -e "$p" ] && args+=(--probe "$p")
     done
-    x $UV python "$REPO/scripts/eval_probe_per_token.py" "${args[@]}" \
+    x $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" "${args[@]}" \
         --activations-dir "$ACT/heldout360_l15" --lens-dir "$ACT/heldout360_lens" \
         --trajectories-dir "$TRAJ" --signal-json "$SIGNAL_JSON" \
         --layer 15 --full-probs --out "$out/heldout360_10probes.csv"
-    x $UVC python "$REPO/scripts/build_probe_loudness_heldout.py" \
+    x $UVC python "$REPO/telos_interp/loudness_analysis/join_rollouts.py" \
         --probe-csv "$out/heldout360_10probes.csv" --out "$out/per_token.csv"
-    x $UVC python "$REPO/scripts/analyze_probe_loudness.py" --per-token "$out/per_token.csv" --out "$out"
-    x $UVC python "$REPO/scripts/plot_probe_loudness.py" --per-token "$out/per_token.csv" --out "$out/plots"
+    x $UVC python "$REPO/telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py" --per-token "$out/per_token.csv" --out "$out"
+    x $UVC python "$REPO/telos_interp/loudness_analysis/plotting/figures.py" --probe-table "$out/per_token.csv" --out "$out/plots"
 }
 
 # ---- stage 20: the logit-lens mass tree ----------------------------------------------------
@@ -571,11 +608,11 @@ run_logitlens_mass_gather() {
     x env LENS=logitlens SELECT_METHODS=logitlens NAMES_FILE="$MASS_NAMES" \
         TRAJECTORIES="$TRAJ" JLENS_DIR="$JLENS_DIR" SIGNAL_JSON="$SIGNAL_JSON" \
         ACTIVATIONS_DIR="$ACT/logitlens_mass_l15" \
-        bash "$REPO/scripts/jlens_mass_l15.sh"
+        bash "$REPO/wrappers/jlens_mass_l15.sh"
 }
 
 # ---- stages 21-23: the belief baselines and the report --------------------------------------
-run_belief_baseline_rollout_arms() { x bash "$REPO/scripts/rollout_belief_baseline_arms.sh"; }
+run_belief_baseline_rollout_arms() { x bash "$REPO/wrappers/rollout_belief_baseline_arms.sh"; }
 run_belief_baseline_probes()       { x bash "$REPO/scripts/train_belief_baseline_probes.sh"; }
 run_sixteen_probe_loudness_report(){ x bash "$REPO/scripts/build_sixteen_probe_loudness_report.sh"; }
 
@@ -588,9 +625,9 @@ run_sixteen_probe_loudness_report(){ x bash "$REPO/scripts/build_sixteen_probe_l
 # trajectories_train_single_step_probs: that one predates truncation_strategies.py, and on the ten
 # trajectories where both exist its interior cutoffs disagree on the action 17.9% of the time.
 # See the header of rollout_more_belief_arms.sh.
-run_more_belief_rollout_arms() { x bash "$REPO/scripts/rollout_more_belief_arms.sh"; }
+run_more_belief_rollout_arms() { x bash "$REPO/wrappers/rollout_more_belief_arms.sh"; }
 run_more_belief_probes()       { x bash "$REPO/scripts/train_more_belief_arms.sh"; }
-run_more_belief_heldout_eval() { x bash "$REPO/scripts/eval_more_belief_arms.sh"; }
+run_more_belief_heldout_eval() { x bash "$REPO/scripts/eval_belief_arms_heldout.sh" 24probes; }
 
 # ---- stage 23c: the p1 arms rebuilt so they hold the same sentences ---------------------------
 # Two bugs found while asking why four arms that select one token per sentence had four
@@ -618,7 +655,7 @@ run_equal_n_belief_probes() {
     x bash "$REPO/scripts/train_equal_n_belief_arms.sh" p1
     x bash "$REPO/scripts/train_equal_n_belief_arms.sh" p1-top20
 }
-run_equal_n_belief_heldout_eval() { x bash "$REPO/scripts/eval_equal_n_belief_arms.sh"; }
+run_equal_n_belief_heldout_eval() { x bash "$REPO/scripts/eval_belief_arms_heldout.sh" equal_n; }
 
 # ---- stage 24 (opt-in): the grid-label round ------------------------------------------------
 # NEVER RAN, and produced no result. Two unresolved problems before spending GPU here: the grid
@@ -629,13 +666,13 @@ run_equal_n_belief_heldout_eval() { x bash "$REPO/scripts/eval_equal_n_belief_ar
 run_grid_probing_round() {
     x env TRAJECTORIES="$TRAJ" JLENS_DIR="$JLENS_DIR" SIGNAL_JSON="$GRID_SIGNAL_JSON" \
         ACT="$ACT/grid_reasoning_tokens" \
-        bash "$REPO/scripts/gather_grid_arms.sh"
+        bash "$REPO/grid_cell_analysis/gather_grid_arms.sh"
     x env ARMS="jlens logitlens random" LAYERS=15 ACT="$ACT/grid_reasoning_tokens" \
         TRAJ="$TRAJ" OUT="$PREPARED/grid_l15" \
-        bash "$REPO/scripts/prepare_grid_arms.sh"
+        bash "$REPO/grid_cell_analysis/prepare_grid_arms.sh"
     x env ARMS="jlens logitlens random" SEEDS="42 43 44" TAG=l15 \
         EVAL_NAMES="$COUNT_EVAL_NAMES" PREPARED="$PREPARED/grid_l15" PROBES="$PROBES/grid" \
-        bash "$REPO/scripts/train_grid_arms.sh"
+        bash "$REPO/grid_cell_analysis/train_grid_arms.sh"
 }
 
 # ---- stage 25 (opt-in): written but never run -----------------------------------------------
