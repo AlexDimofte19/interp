@@ -10,8 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 dependencies = [
-    "transformers>=4.42.0",
-    "torch>=2.0.1",
+    "transformers>=5.17.0",
+    # Held below 2.10: transformers 5.x needs only torch>=2.5, and an unpinned re-resolution
+    # takes 2.13, moving the whole CUDA 12 -> 13 wheel stack under the gpt-oss GPU line.
+    "torch>=2.0.1,<2.10",
     "toml>=0.10.2",
     "scikit-learn>=1.7.2",
     "tyro>=1.0.5",
@@ -25,10 +27,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-vllm = [
-  "vllm>=0.10.2",
-  "triton>=3.5.0",
-]
+# The `vllm` extra was removed when transformers moved to 5.x: every vllm that supports
+# torch<2.10 caps transformers<4.56, so it cannot coexist with the pins above. Nothing in the
+# repo imported it -- activation extraction goes through gather_activations, not vLLM.
 # Needed only when loading models on a GPU host; `kernels` is pinned because
 # transformers' kernel-hub loading breaks on newer releases.
 gpu = [

@@ -58,6 +58,17 @@ top-20 sets overlap only about half, so a folder holding both rulers is a folder
 that cannot be compared with each other. `provenance.RunConfig.guard` refuses the second
 run into the same `--out` rather than overwriting half of them.
 
+## The Qwen lens
+
+| Wrapper | Drives | Pins |
+|---|---|---|
+| `jlens_fit_qwen.sh` | `jlens/jlens_fit_qwen.py` | the Qwen3.6-35B-A3B fit: 144 replayed trajectories, the nine full-attention source layers `3 7 ... 35` against target 39, and a mid-chain window (`WINDOW_FRAC 0.5`, `WINDOW_SIZE 1024`) |
+
+The only wrapper here whose script is not under `scripts/`: `jlens/` holds both fits, and the
+gpt-oss one is stage 2 of `reproduce_all.sh` rather than a wrapper. `SMOKE=1` runs two prompts
+into a separate `--out-dir` and is what fixes `DIM_BATCH` from a measured peak -- run it first
+on any new host. It has no published result yet.
+
 ## Older rounds
 
 `script.sh`, `general_probe_train.sh`, `reasoning_theatre.ps1` and `run_commands.ps1` are the

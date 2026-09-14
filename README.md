@@ -33,8 +33,8 @@ uv sync
 # Or install with pip
 pip install -e .
 
-# For vLLM-based activation extraction (requires GPU)
-pip install -e ".[vllm]"
+# For loading models on a GPU host (accelerate, and the pinned kernels)
+pip install -e ".[gpu]"
 ```
 
 ## Data and Trained Probes
