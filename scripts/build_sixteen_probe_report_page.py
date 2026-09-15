@@ -141,7 +141,7 @@ PROBES: dict[str, dict] = {
     ),
     "base_lr": P(
         label="baseline — jlens top-20, FINAL label, lr",
-        file="probes/next_action_mass_l15/next_action_probe_jlens_topall_lr.pt",
+        file="probes/next_action_l15/p2/next_action_probe_jlens_topall_lr.pt",
         tree="jlens_mass_l15",
         sel="jlens global top-20 — <b>the same tokens as P2</b>",
         n="71,913 samples",
@@ -152,7 +152,7 @@ PROBES: dict[str, dict] = {
     ),
     "base_mlp": P(
         label="baseline — jlens top-20, FINAL label, mlp",
-        file="probes/next_action_mass_l15/next_action_probe_jlens_topall_mlp.pt",
+        file="probes/next_action_l15/p2/next_action_probe_jlens_topall_mlp.pt",
         tree="jlens_mass_l15",
         sel="jlens global top-20 — the same tokens as P2",
         n="71,913 samples",
@@ -163,7 +163,7 @@ PROBES: dict[str, dict] = {
     ),
     "rand_lr": P(
         label="random control — FINAL label, lr",
-        file="probes/next_action_mass_l15/next_action_probe_random_topall_lr.pt",
+        file="probes/next_action_l15/p2/next_action_probe_random_topall_lr.pt",
         tree="jlens_mass_l15",
         sel="<b>random</b>: 20 tokens/traj, seeded uniform draw (seed 42), no loudness used",
         n="71,913 samples",
@@ -174,7 +174,7 @@ PROBES: dict[str, dict] = {
     ),
     "rand_mlp": P(
         label="random control — FINAL label, mlp",
-        file="probes/next_action_mass_l15/next_action_probe_random_topall_mlp.pt",
+        file="probes/next_action_l15/p2/next_action_probe_random_topall_mlp.pt",
         tree="jlens_mass_l15",
         sel="<b>random</b>: 20 tokens/traj, seeded uniform draw (seed 42)",
         n="71,913 samples",

@@ -33,7 +33,7 @@ set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 OUT=${OUT:-/workspace/reasoning_theatre/probe_loudness_heldout360_16probes}
 LB=${LB:-/workspace/reasoning_theatre/local_belief_probes/probes}
-MASS=${MASS:-/workspace/probes/next_action_mass_l15}
+MASS=${MASS:-/workspace/probes/next_action_l15/p2}
 NEW=${NEW:-/workspace/probes/local_belief_baselines}
 mkdir -p "$OUT/logs"
 cd "$REPO"

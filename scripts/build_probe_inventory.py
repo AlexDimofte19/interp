@@ -8,6 +8,7 @@ only hand-authored part; every number comes from a probe checkpoint's own `confi
 
 import csv
 import json
+import os
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -21,10 +22,20 @@ OUT.mkdir(exist_ok=True)
 # Everything below is derived from what is on disk. An earlier version read three JSON files
 # from a session scratch directory, which meant the committed script could not be re-run once
 # that directory was cleaned up -- an inventory you cannot regenerate is not an inventory.
-PROBE_DIRS = (
-    Path("/workspace/probes"),
-    Path("/workspace/reasoning_theatre/local_belief_probes/probes"),
-)
+PROBE_ROOT = Path("/workspace/probes")
+
+# Local-belief probes are read from ONE place. The entry-45/49 originals that used to be scattered
+# across probes/local_belief, probes/local_belief_baselines and
+# reasoning_theatre/local_belief_probes/probes have been deleted; every surviving belief probe
+# lives under this root in a p1 / p1-top20 / p2 cadence folder. This is ENFORCED below rather than
+# left to the fact that the other directories happen to be gone -- a belief-labelled probe found
+# anywhere else is skipped and named on stderr, so a stray copy cannot quietly rejoin the sheet.
+BELIEF_ROOT = PROBE_ROOT / "local_belief_action_l15"
+
+# Directory names that are never walked. A `prepared/` subtree is an activations tree -- tens of
+# thousands of per-token (D,) tensors that are not probes, and minutes of MooseFS readdir before a
+# single probe is reached.
+SKIP_DIRS = {"prepared"}
 # newest first: a probe scored in several rounds takes its most recent number
 HELDOUT_BELIEF_JSONS = (
     Path("/workspace/reasoning_theatre/probe_loudness_heldout360_equal_n/heldout_balanced_accuracy.json"),
@@ -37,13 +48,23 @@ def scan_probes() -> list[dict]:
     """Every probe checkpoint on disk, with the facts the sheet needs read from the file itself.
 
     `config` and `results` are written by `train_next_action_probe`, so nothing here is
-    hand-maintained: adding a probe to one of PROBE_DIRS adds a row.
+    hand-maintained: adding a probe under PROBE_ROOT adds a row.
+
+    The walk is pruned rather than a plain rglob, because both things it prunes produce a WRONG
+    inventory rather than an error: a `prepared/` subtree would have every one of its activation
+    tensors torch.load-ed as if it were a probe, and a symlinked directory would be walked twice
+    under its two names -- which is exactly what probes/local_belief_equalN is.
     """
     import torch
 
     out = []
-    for root in PROBE_DIRS:
-        for path in sorted(root.rglob("*.pt")):
+    for dirpath, dirnames, filenames in os.walk(PROBE_ROOT, followlinks=False):
+        here = Path(dirpath)
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not (here / d).is_symlink())
+        for name in sorted(filenames):
+            if not name.endswith(".pt") or "probe" not in name:
+                continue
+            path = here / name
             ck = torch.load(path, map_location="cpu", weights_only=False)
             cfg, res = ck.get("config", {}), ck.get("results", {})
             out.append(
@@ -386,23 +407,36 @@ EVALSET = {
     "mass-era 3600": "eval-720 (mass-era, next_action_mass_l15_eval_names.txt)",
     "count-era 3600": "eval-720 (count-era, splits/eval_trajectories_720.txt)",
     "round-1 legacy": "internal 20% split (no held-out name list)",
+    "uncatalogued": "(not known - the training dataset has no DS entry)",
 }
 
-# short id -> (heldout key in held26, heldout key in held16)
-H26 = {
-    "probes/next_action/next_action_probe_jlens_topall_lr.pt": "next_action.jlens_topall_lr",
-    "probes/next_action/next_action_probe_jlens_topall_mlp.pt": "next_action.jlens_topall_mlp",
-    "probes/next_action/next_action_probe_logitlens_topall_lr.pt": "next_action.logitlens_topall_lr",
-    "probes/next_action/next_action_probe_logitlens_topall_mlp.pt": "next_action.logitlens_topall_mlp",
-    "probes/next_action/next_action_probe_random_topall_lr.pt": "next_action.random_topall_lr",
-    "probes/next_action/next_action_probe_random_topall_mlp.pt": "next_action.random_topall_mlp",
-    "probes/next_action_l15/next_action_probe_jlens_topall_lr.pt": "next_action_l15.jlens_topall_lr",
-    "probes/next_action_l15/next_action_probe_jlens_topall_mlp.pt": "next_action_l15.jlens_topall_mlp",
-    "probes/next_action_mass_l15/next_action_probe_jlens_topall_lr.pt": "next_action_mass_l15.jlens_topall_lr",
-    "probes/next_action_mass_l15/next_action_probe_jlens_topall_mlp.pt": "next_action_mass_l15.jlens_topall_mlp",
-    "probes/next_action_mass_l15/next_action_probe_random_topall_lr.pt": "next_action_mass_l15.random_topall_lr",
-    "probes/next_action_mass_l15/next_action_probe_random_topall_mlp.pt": "next_action_mass_l15.random_topall_mlp",
-}
+# ---- the three probe roots, after the era split ------------------------------------------
+# next_action_l15 holds ONLY the MASS-loudness probes (ranked by logprob_mass_full at L15).
+# Everything ranked by the older top-20 direction COUNT lives under the DEPRECATED root: kept for
+# provenance and reproduction, not for use. Its `p2` is L15 and its `p2-argmaxlayer` is the same
+# selection read at each token's own best layer (7:23), which is a different probe, not a variant.
+BELIEF = "probes/local_belief_action_l15"
+MASS_NA = "probes/next_action_l15"
+OLD_NA = "probes/DEPRECATED_TOP20LOUDNESS_next_action_l15"
+
+# file (relative to /workspace) -> its column in HELDOUT_FINAL_CSV.
+#
+# The VALUES are column names frozen into a CSV that is already on disk, so they still spell the
+# folders these probes used to live in (next_action, next_action_l15, next_action_mass_l15,
+# next_action_seeds). Do NOT tidy them to match the new layout: the join is by column name, so
+# renaming a value drops that probe's held-out number in silence rather than failing. Only the
+# paths on the left-hand side moved.
+H26: dict[str, str] = {}
+for _arm in ("jlens", "logitlens", "random"):  # count-era, per-token argmax layer 7:23
+    for _mt in ("lr", "mlp"):
+        _p = f"{OLD_NA}/p2-argmaxlayer/next_action_probe_{_arm}_topall_{_mt}.pt"
+        H26[_p] = f"next_action.{_arm}_topall_{_mt}"
+for _mt in ("lr", "mlp"):  # count-era, pinned to L15
+    H26[f"{OLD_NA}/p2/next_action_probe_jlens_topall_{_mt}.pt"] = f"next_action_l15.jlens_topall_{_mt}"
+for _arm in ("jlens", "random"):  # mass-era
+    for _mt in ("lr", "mlp"):
+        _p = f"{MASS_NA}/p2/next_action_probe_{_arm}_topall_{_mt}.pt"
+        H26[_p] = f"next_action_mass_l15.{_arm}_topall_{_mt}"
 for s in (
     "jlens_l15_seed43",
     "jlens_l15_seed44",
@@ -413,37 +447,22 @@ for s in (
     "random_l15_seed44",
 ):
     for mt in ("lr", "mlp"):
-        H26[f"probes/next_action_seeds/next_action_probe_{s}_{mt}.pt"] = f"next_action_seeds.{s}_{mt}"
+        H26[f"{OLD_NA}/seeds/next_action_probe_{s}_{mt}.pt"] = f"next_action_seeds.{s}_{mt}"
 
-H16 = {
-    "reasoning_theatre/local_belief_probes/probes/local_belief_p1_lr.pt": "p1_lr",
-    "reasoning_theatre/local_belief_probes/probes/local_belief_p1_mlp.pt": "p1_mlp",
-    "reasoning_theatre/local_belief_probes/probes/local_belief_p1_top20_lr.pt": "p1t20_lr",
-    "reasoning_theatre/local_belief_probes/probes/local_belief_p1_top20_mlp.pt": "p1t20_mlp",
-    "reasoning_theatre/local_belief_probes/probes/local_belief_p2_lr.pt": "p2_lr",
-    "reasoning_theatre/local_belief_probes/probes/local_belief_p2_mlp.pt": "p2_mlp",
-    "probes/next_action_mass_l15/next_action_probe_jlens_topall_lr.pt": "base_lr",
-    "probes/next_action_mass_l15/next_action_probe_jlens_topall_mlp.pt": "base_mlp",
-    "probes/next_action_mass_l15/next_action_probe_random_topall_lr.pt": "rand_lr",
-    "probes/next_action_mass_l15/next_action_probe_random_topall_mlp.pt": "rand_mlp",
-    "probes/local_belief_baselines/next_action_probe_random_belief_lr.pt": "randb_lr",
-    "probes/local_belief_baselines/next_action_probe_random_belief_mlp.pt": "randb_mlp",
-    "probes/local_belief_baselines/next_action_probe_logitlens_p1_lr.pt": "ll1_lr",
-    "probes/local_belief_baselines/next_action_probe_logitlens_p1_mlp.pt": "ll1_mlp",
-    "probes/local_belief_baselines/next_action_probe_eos_belief_lr.pt": "eosb_lr",
-    "probes/local_belief_baselines/next_action_probe_eos_belief_mlp.pt": "eosb_mlp",
-    "probes/local_belief_baselines/next_action_probe_random_sentence_belief_lr.pt": "rsb_lr",
-    "probes/local_belief_baselines/next_action_probe_random_sentence_belief_mlp.pt": "rsb_mlp",
-    "probes/local_belief_baselines/next_action_probe_random_sentence_belief_top20_lr.pt": "rsb20_lr",
-    "probes/local_belief_baselines/next_action_probe_random_sentence_belief_top20_mlp.pt": "rsb20_mlp",
-    "probes/local_belief_baselines/next_action_probe_logitlens_p1_top20_lr.pt": "ll1t20_lr",
-    "probes/local_belief_baselines/next_action_probe_logitlens_p1_top20_mlp.pt": "ll1t20_mlp",
-    "probes/local_belief_baselines/next_action_probe_logitlens_p2_lr.pt": "ll2_lr",
-    "probes/local_belief_baselines/next_action_probe_logitlens_p2_mlp.pt": "ll2_mlp",
-}
-# Entry 52. These keys are the ones eval_belief_arms_heldout.sh equal_n assigns via --extra-probes;
-# they must match it exactly. (The CSV column itself is "<parent dir>.<stem minus the
-# next_action_probe_ prefix>", e.g. "p1.jlens_lr" -- the prefix IS stripped.)
+# file -> its key in the belief rounds' scoring JSONs.
+#
+# Every belief probe is under BELIEF, in the cadence folder that says how its tokens were chosen:
+#   p1        one cutoff per sentence, at that sentence's loudest token (uncapped)
+#   p1-top20  the same rule, then RANKED down to 20 per trajectory
+#   p2        the 20 globally loudest tokens of the chain
+# p1 and p1-top20 are the entry-52 equal-N rebuilds and are the only p1-family probes left; the
+# entry-45/49 originals they supersede were deleted. p2 was never rebuilt and did not need to be
+# (a fixed min(n, 20) budget relabels a collided row instead of deleting it), so it is still the
+# entry-45/49 vintage -- the two cadences are deliberately different vintages, not an oversight.
+#
+# Keys such as p1_*, ll1_*, eosb_* and rsb_* still appear in the scoring JSONs but map to no file
+# any more. That is correct: those probes are gone, so they get no row.
+H16: dict[str, str] = {}
 for _arm, _key in (
     ("jlens", "eq_p1_jlens"),
     ("logitlens", "eq_p1_ll"),
@@ -451,48 +470,44 @@ for _arm, _key in (
     ("random", "eq_p1_rand"),
 ):
     for _mt in ("lr", "mlp"):
-        H16[f"probes/local_belief_equalN/p1/next_action_probe_{_arm}_{_mt}.pt"] = f"{_key}_{_mt}"
-for _arm, _key in (
-    ("jlens_top20", "eq_t20_jlens"),
-    ("logitlens_top20", "eq_t20_ll"),
-    ("random_top20", "eq_t20_rand"),
-):
+        H16[f"{BELIEF}/p1/next_action_probe_{_arm}_{_mt}.pt"] = f"{_key}_{_mt}"
+for _arm, _key in (("jlens_top20", "eq_t20_jlens"), ("logitlens_top20", "eq_t20_ll"), ("random_top20", "eq_t20_rand")):
     for _mt in ("lr", "mlp"):
-        H16[f"probes/local_belief_equalN/p1-top20/next_action_probe_{_arm}_{_mt}.pt"] = f"{_key}_{_mt}"
+        H16[f"{BELIEF}/p1-top20/next_action_probe_{_arm}_{_mt}.pt"] = f"{_key}_{_mt}"
+for _arm, _key in (("jlens", "p2"), ("logitlens", "ll2"), ("random", "randb")):
+    for _mt in ("lr", "mlp"):
+        H16[f"{BELIEF}/p2/next_action_probe_{_arm}_{_mt}.pt"] = f"{_key}_{_mt}"
+# The two mass-era FINAL-action probes that were carried through the belief rounds as baselines.
+for _arm, _key in (("jlens", "base"), ("random", "rand")):
+    for _mt in ("lr", "mlp"):
+        H16[f"{MASS_NA}/p2/next_action_probe_{_arm}_topall_{_mt}.pt"] = f"{_key}_{_mt}"
 
 # analyses each probe appears in
 A26 = "26p, pvr, pvr-lb"
+# The three rounds carrying a surviving probe: the equal-N round (entry 52) scored the p1 and
+# p1-top20 rebuilds, and the earlier rounds scored p2 and the two mass-era baselines. The probes
+# that were only ever in the 24-probe round -- eos-belief, random-sentence, logitlens p1 -- have
+# been deleted, so no branch for them is left here.
+EQN = "eqn"
+PL = "pl-720, pl-h360, 16p"
 USED: dict[str, str] = dict.fromkeys(H26, A26)
 for k, v in H16.items():
     prior = USED.get(k, "")
-    if v in ("eosb_lr", "eosb_mlp", "rsb_lr", "rsb_mlp", "rsb20_lr", "rsb20_mlp", "ll1t20_lr", "ll1t20_mlp"):
-        USED[k] = "24p"
-        continue
-    tag = (
-        "pl-720, pl-h360, 16p"
-        if v
-        in (
-            "p1_lr",
-            "p1_mlp",
-            "p1t20_lr",
-            "p1t20_mlp",
-            "p2_lr",
-            "p2_mlp",
-            "base_lr",
-            "base_mlp",
-            "rand_lr",
-            "rand_mlp",
-        )
-        else "16p"
-    )
+    if v.startswith(("eq_p1_", "eq_t20_")):
+        tag = EQN
+    elif v in ("p2_lr", "p2_mlp", "base_lr", "base_mlp", "rand_lr", "rand_mlp"):
+        tag = PL
+    else:
+        tag = "16p"
     USED[k] = (prior + ", " if prior else "") + tag
-USED["reasoning_theatre/local_belief_probes/probes/local_belief_p1_mlp.pt"] += ", pvr-lb"
-USED["reasoning_theatre/local_belief_probes/probes/local_belief_p2_mlp.pt"] += ", pvr-lb"
+# The belief probe the commitment-boundary clone read. Its p1 counterpart was deleted with the
+# rest of the entry-45 vintage, so only p2 is named here.
+USED[f"{BELIEF}/p2/next_action_probe_jlens_mlp.pt"] += ", pvr-lb"
 
-DUPES = {
-    "probes/local_belief/next_action_probe_p1_mlp.pt": "byte-identical copy of local_belief_probes/probes/local_belief_p1_mlp.pt",
-    "probes/local_belief/next_action_probe_p2_mlp.pt": "byte-identical copy of local_belief_probes/probes/local_belief_p2_mlp.pt",
-}
+# Both byte-identical copies this used to name (probes/local_belief/next_action_probe_p{1,2}_mlp.pt)
+# were deleted during the reorganisation. The mechanism stays because it is generic and the sheet
+# still has a group for it; it is empty because there is nothing duplicated on disk any more.
+DUPES: dict[str, str] = {}
 
 COLUMNS = [
     "group",
@@ -535,33 +550,68 @@ GROUPS = {
     ("final action", "31"): "E - seed sweep (entry 31)",
     ("grid_tile", "1"): "F - legacy grid probes (round 1)",
 }
+UNCATALOGUED_GROUP = "H - training dataset not in the DS table"
+
+
+# A cadence folder does not identify a probe on its own: both the belief root and the next-action
+# root have a `p2`, and the mass and deprecated next-action roots have the SAME filenames inside
+# it. So a probe_id built from the parent directory alone would collide across roots, and the
+# sheet would show two different probes under one id. These names take the root above them too.
+CADENCE_DIRS = {"p1", "p1-top20", "p2", "p2-argmaxlayer", "eos", "seeds"}
 
 
 def short_id(path: str) -> str:
-    """Unique per file: the naming dir + the informative half of the stem.
+    """Unique per file: the naming dir(s) + the informative half of the stem.
 
-    "probes" and "downloaded" name nothing, so step up one level when we land on them.
+    "probes" and "downloaded" name nothing, so step up one level when we land on them. A cadence
+    folder names only half of what is needed, so it keeps the directory above it as well.
     """
     p = Path(path)
     stem = p.stem.replace("next_action_probe_", "").replace("cognitive_map_probe_", "cogmap_")
     d = p.parent
     if d.name in ("probes", "downloaded"):
         d = d.parent
+    if d.name in CADENCE_DIRS:
+        return f"{d.parent.name}/{d.name}/{stem}"
     return f"{d.name}/{stem}"
 
 
+def uncatalogued(rel: str) -> tuple[str, ...]:
+    """Facts for a probe whose training dataset has no DS entry.
+
+    It must NOT fall through to LEGACY the way an unknown dataset used to: that files a probe
+    trained this year against a round-1 grid dataset as a round-1 grid probe, which is a wrong row
+    rather than a missing one. The filename is the only thing left to trust, and only for the
+    label, so everything else says outright that it is not known.
+    """
+    label = "grid_tile" if ("cognitive_map" in rel or "grid" in rel) else "next action"
+    return ("(not in DS)", "uncatalogued", "(training dataset has no DS entry)", "?", "?", label, "-")
+
+
 rows = []
+skipped: list[str] = []
 for x in sorted(probes, key=lambda z: z["path"]):
     rel = x["path"].replace("/workspace/", "")
     train = x["train"] or ""
     tkey = train.replace("/workspace/prepared/", "")
-    facts = DS.get(tkey, LEGACY)
+    if tkey in DS:
+        facts = DS[tkey]
+    elif "activations_train_single_step" in train:
+        facts = LEGACY
+    else:
+        facts = uncatalogued(rel)
     tree, era, sel, lens, layer, label, entry = facts
+    # Belief probes come from BELIEF_ROOT and nowhere else. A copy left behind in an old directory
+    # would otherwise be indistinguishable from the live one in the sheet, and would carry the
+    # same held-out numbers under a second probe_id.
+    if label == "local belief" and not x["path"].startswith(str(BELIEF_ROOT) + "/"):
+        skipped.append(rel)
+        continue
     ekey = (x["eval"] or "").replace("/workspace/prepared/", "")
     h16 = held16.get(H16.get(rel, ""), {})
     h26v = held26.get(H26.get(rel, ""))
-    seeds_dir = "next_action_seeds" in rel
-    group = "E - seed sweep (entry 31)" if seeds_dir else GROUPS[(label, entry)]
+    seeds_dir = rel.endswith(".pt") and "/seeds/" in rel
+    group = "E - seed sweep (entry 31)" if seeds_dir else GROUPS.get((label, entry), UNCATALOGUED_GROUP)
     if rel in DUPES:
         group = "G - duplicate copies (same bytes)"
     note = DUPES.get(rel, "")
@@ -842,6 +892,19 @@ LEG = [
         "heldout360_*_ALL_tokens is every probe read on the SAME 87,221 tokens with no selection in "
         "between. Compare within a block, never across.",
     ],
+    [
+        "WHERE THE PROBES LIVE",
+        "Three roots, and the split between them is the loudness RULER, not the result. "
+        "probes/local_belief_action_l15/{p1,p1-top20,p2} holds every local-belief probe - it is the "
+        "only place one is read from, and a belief probe found anywhere else is skipped, not "
+        "merged. probes/next_action_l15/p2 holds the final-action probes ranked by MASS "
+        "(logprob_mass_full at L15). probes/DEPRECATED_TOP20LOUDNESS_next_action_l15 holds the "
+        "older arms ranked by the top-20 direction COUNT, kept for provenance and reproduction "
+        "only: p2 (L15), p2-argmaxlayer (the same selection read at each token's own best layer, "
+        "7:23 - a different probe, not a variant), eos, and seeds (the entry-31 sweep). A count "
+        "sees only direction words that reached the lens's top 20; a mass score is computed over "
+        "the whole vocabulary. Never difference a number across the two roots.",
+    ],
     ["eval720_population", "Which tokens the eval720 number was measured on, and how many."],
     [
         "eval720_bal_acc_OWN_tokens",
@@ -934,6 +997,11 @@ LEG = [
     ["pl-h360", "reasoning_theatre/probe_loudness_heldout360/ - selection removed (entry 48)"],
     ["16p", "reasoning_theatre/probe_loudness_heldout360_16probes/ - 16 probes, BOTH loudness rulers (entry 49)"],
     [
+        "eqn",
+        "reasoning_theatre/probe_loudness_heldout360_equal_n/ - the entry-52 equal-N rebuilds "
+        "(p1 and p1-top20) on the same 87,221 held-out tokens, alongside the earlier probes.",
+    ],
+    [
         "24p",
         "reasoning_theatre/probe_loudness_heldout360_24probes/ - all 24 probes scored in one "
         "pass (entry 51). Numbers only, no figures; the 16 earlier probes reproduce to 4 dp, "
@@ -972,3 +1040,5 @@ leg.freeze_panes = "A2"
 
 wb.save(OUT / "probe_inventory.xlsx")
 print(f"{len(rows)} probes -> {OUT / 'probe_inventory.xlsx'} and probe_inventory.csv")
+for s in skipped:
+    print(f"  SKIPPED belief probe outside {BELIEF_ROOT}: {s}")

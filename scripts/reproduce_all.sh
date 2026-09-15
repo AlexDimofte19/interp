@@ -163,12 +163,12 @@ done_cognitive_map_probes()    { nfiles "$PROBES/start_of_reasoning/downloaded" 
 done_sentence_end_rollout()    { ndirs "$RT/trajectories_train_single_step_probs" 6; }
 done_sentence_end_activation_tree() { ndirs "$ACT/activations_train_single_step_reasoning_eos" 6; }
 done_count_era_gather()        { nfiles "$ACT/jlens_reasoning_tokens" '*_logitlens_analysis.csv' 1 4; }
-done_count_era_next_action_arms() { nfiles "$PROBES/next_action_seeds" '*.pt' 18; }
+done_count_era_next_action_arms() { nfiles "$PROBES/DEPRECATED_TOP20LOUDNESS_next_action_l15/seeds" '*.pt' 18; }
 done_mass_era_gather()         { nfiles "$ACT/jlens_mass_l15" '*_direction_mass.csv' 1 4; }
 done_mass_era_split()          { [ -s "$MASS_TRAIN_NAMES" ] && [ -s "$MASS_SPLIT_EVAL_NAMES" ] \
                                      && ndirs "$ACT/mass_train2880_view/activations" 6 \
                                      && ndirs "$ACT/mass_eval720_view/activations" 6; }
-done_mass_era_next_action_probes() { nfiles "$PROBES/next_action_mass_l15" '*.pt' 8; }
+done_mass_era_next_action_probes() { nfiles "$PROBES/next_action_l15/p2" '*.pt' 8; }
 done_heldout_trees()           { ndirs "$ACT/heldout360_l15" 6 && nfiles "$ACT/heldout360_lens" '*_direction_mass.csv' 1 4; }
 done_score_probes_on_heldout() { [ -s "$PROBES/heldout360_all_probes.csv" ]; }
 done_probe_vs_rollout()        { [ -s "$RT/probe_vs_rollout/summary.json" ] && [ -s "$RT/probe_vs_rollout/per_token_probs.csv" ]; }
@@ -299,7 +299,7 @@ run_count_era_next_action_arms() {
         TRAJ="$TRAJ" OUT="$PREPARED/next_action" \
         bash "$REPO/scripts/prepare_next_action_arms.sh"
     x env ARMS="jlens logitlens random" TOKENS_PER_TRAJ=all LAYERS_PER_TOKEN=1 \
-        PREPARED="$PREPARED/next_action" PROBES="$PROBES/next_action" \
+        PREPARED="$PREPARED/next_action" PROBES="$PROBES/DEPRECATED_TOP20LOUDNESS_next_action_l15/p2-argmaxlayer" \
         bash "$REPO/scripts/train_next_action_arms.sh"
 
     # The layer-15 follow-up. Both overrides matter -- see above.
@@ -307,7 +307,7 @@ run_count_era_next_action_arms() {
         OUT="$PREPARED/next_action_l15" \
         bash "$REPO/scripts/prepare_next_action_arms.sh"
     x env ARMS="jlens" TOKENS_PER_TRAJ=all LAYERS_PER_TOKEN=1 \
-        PREPARED="$PREPARED/next_action_l15" PROBES="$PROBES/next_action_l15" \
+        PREPARED="$PREPARED/next_action_l15" PROBES="$PROBES/DEPRECATED_TOP20LOUDNESS_next_action_l15/p2" \
         bash "$REPO/scripts/train_next_action_arms.sh"
 
     # The sentence-end arm needs a view of the eos tree holding exactly the lens 3600, so the
@@ -317,13 +317,13 @@ run_count_era_next_action_arms() {
         TRAJ="$ACT/eos_lens3600_view/trajectories" OUT="$PREPARED/next_action_eos" \
         bash "$REPO/scripts/prepare_next_action_arms.sh"
     x env ARMS="eos" TOKENS_PER_TRAJ=all LAYERS_PER_TOKEN=1 EVAL_NAMES="$COUNT_EVAL_NAMES" \
-        PREPARED="$PREPARED/next_action_eos" PROBES="$PROBES/next_action_eos" \
+        PREPARED="$PREPARED/next_action_eos" PROBES="$PROBES/DEPRECATED_TOP20LOUDNESS_next_action_l15/eos" \
         bash "$REPO/scripts/train_next_action_arms.sh"
 
     # The seed sweep. Seed 42 is already trained above and is reused, not repeated.
     for s in 43 44; do
         x env ARMS="jlens logitlens random eos" TOKENS_PER_TRAJ=all LAYERS_PER_TOKEN=1 \
-            SEED="$s" PREPARED="$PREPARED/next_action" PROBES="$PROBES/next_action_seeds" \
+            SEED="$s" PREPARED="$PREPARED/next_action" PROBES="$PROBES/DEPRECATED_TOP20LOUDNESS_next_action_l15/seeds" \
             bash "$REPO/scripts/train_next_action_arms.sh"
     done
 }
@@ -373,7 +373,7 @@ run_mass_era_next_action_probes() {
     done
     x env ARMS="jlens random" TOKENS_PER_TRAJ="1 2 3 all" LAYERS_PER_TOKEN=1 SINGLE_LAYER=15 \
         EVAL_NAMES="$MASS_EVAL_NAMES" \
-        PREPARED="$PREPARED/next_action_mass_l15" PROBES="$PROBES/next_action_mass_l15" \
+        PREPARED="$PREPARED/next_action_mass_l15" PROBES="$PROBES/next_action_l15/p2" \
         bash "$REPO/scripts/train_next_action_arms.sh"
 }
 
@@ -397,12 +397,20 @@ run_heldout_trees() {
 
 # ---- stage 11: every probe on every held-out token -----------------------------------------
 # There is no eval_next_action_probe in the CLI; this is that tool. Probes are keyed
-# "<parent dir>.<stem>" because the same filename exists in three probe directories.
+# "<parent dir>.<stem>" because the same filename exists in several probe directories.
+#
+# READ THIS BEFORE RE-RUNNING. The probe folders were reorganised into era roots with cadence
+# subfolders, and the key is built from the PARENT DIRECTORY, so this stage no longer reproduces
+# the column names in the heldout360_all_probes.csv already on disk: what was
+# "next_action_mass_l15.jlens_topall_lr" would come back as "p2.jlens_topall_lr". Worse, the two
+# eras now both have a `p2`, so the jlens_topall pair collides outright -- score_probes_per_token
+# raises on that rather than silently keeping whichever was loaded last. Nothing downstream was
+# regenerated, so the existing CSV and the H26 map in scripts/build_probe_inventory.py still
+# agree; if you do re-run this, expect to update that map to the new names in the same commit.
 run_score_probes_on_heldout() {
-    local args=()
-    for p in "$PROBES"/next_action/*.pt "$PROBES"/next_action_l15/*.pt \
-             "$PROBES"/next_action_eos/*.pt "$PROBES"/next_action_seeds/*.pt \
-             "$PROBES"/next_action_mass_l15/*.pt; do
+    local args=() dep="$PROBES/DEPRECATED_TOP20LOUDNESS_next_action_l15"
+    for p in "$dep"/p2-argmaxlayer/*.pt "$dep"/p2/*.pt "$dep"/eos/*.pt "$dep"/seeds/*.pt \
+             "$PROBES"/next_action_l15/p2/*.pt; do
         [ -e "$p" ] && args+=(--probe "$p")
     done
     x $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" "${args[@]}" \
@@ -435,10 +443,10 @@ run_probe_vs_rollout() {
     # Commitment at token resolution. The probabilities are the readout that shows a sentence
     # opening on the PREVIOUS belief; the mlp arm is near one-hot, so read the lr arm.
     x $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" \
-        --probe "$PROBES/next_action_mass_l15/next_action_probe_jlens_topall_lr.pt" \
-        --probe "$PROBES/next_action_mass_l15/next_action_probe_jlens_topall_mlp.pt" \
-        --probe "$PROBES/next_action_mass_l15/next_action_probe_random_topall_lr.pt" \
-        --probe "$PROBES/next_action_mass_l15/next_action_probe_random_topall_mlp.pt" \
+        --probe "$PROBES/next_action_l15/p2/next_action_probe_jlens_topall_lr.pt" \
+        --probe "$PROBES/next_action_l15/p2/next_action_probe_jlens_topall_mlp.pt" \
+        --probe "$PROBES/next_action_l15/p2/next_action_probe_random_topall_lr.pt" \
+        --probe "$PROBES/next_action_l15/p2/next_action_probe_random_topall_mlp.pt" \
         --activations-dir "$ACT/heldout360_l15" --lens-dir "$ACT/heldout360_lens" \
         --trajectories-dir "$TRAJ" --signal-json "$SIGNAL_JSON" \
         --layer 15 --full-probs --out "$RT/probe_vs_rollout/per_token_probs.csv"
@@ -587,7 +595,7 @@ run_heldout_every_token_rollout() {
 run_probe_loudness_heldout() {
     local out="$RT/probe_loudness_heldout360" lbp="$RT/local_belief_probes/probes"
     local args=()
-    for p in "$lbp"/*.pt "$PROBES"/next_action_mass_l15/next_action_probe_{jlens,random}_topall_{lr,mlp}.pt; do
+    for p in "$lbp"/*.pt "$PROBES"/next_action_l15/p2/next_action_probe_{jlens,random}_topall_{lr,mlp}.pt; do
         [ -e "$p" ] && args+=(--probe "$p")
     done
     x $UV python "$REPO/telos_interp/loudness_analysis/score_probes_per_token.py" "${args[@]}" \
@@ -691,7 +699,7 @@ run_unrun_analyses() {
         x $UV interp-cli train_next_action_probe \
             --train-data-path "$PREPARED/next_action_eos_cap20_train" \
             --eval-data-path "$PREPARED/next_action_eos_cap20_eval" \
-            --output-path "$PROBES/next_action_eos/next_action_probe_eos_cap20_${mt}.pt" \
+            --output-path "$PROBES/DEPRECATED_TOP20LOUDNESS_next_action_l15/eos/next_action_probe_eos_cap20_${mt}.pt" \
             --model-type "$mt" --hidden-dims 1024 --learning-rate 3e-4 --weight-decay 0.001 \
             --dropout 0.0 --num-epochs 50 --batch-size 512 --class-weight balanced \
             --normalize --seed "$SEED" --device cuda --verbose
