@@ -32,11 +32,16 @@ Usage:
     --per-combo 200 \
     --activations-dir /workspace/activations/jlens_reasoning_tokens
 
---jlens_dir is the folder holding gpt-oss-20b_jacobian_lens.pt *and* the cached
-gpt-oss-20b_unembed.pt, so it is required even for --lens logitlens, which never
-reads the Jacobian. On the GPU host that is /workspace/jlens/gridenv -- note the
-direction vocabulary passed to --signal-json lives one level up, at
+--jlens_dir is the folder holding the fitted lens *and* the cached unembed, so it is
+required even for --lens logitlens, which never reads the Jacobian. Both filenames come
+from the model's row in telos_interp/jlens_utils/models.py -- gpt-oss-20b_jacobian_lens.pt
+and gpt-oss-20b_unembed.pt for gpt-oss, which on the GPU host is /workspace/jlens/gridenv.
+Note the direction vocabulary passed to --signal-json lives one level up, at
 /workspace/jlens/direction_tokens_full.json.
+
+The model to load weights from is resolved from the trajectory JSON's serving id, which
+is the same string as the HF repo for gpt-oss but NOT for Qwen (`gsarti/qwen3.6-35b`).
+--model-id overrides it; see models.py.
 
 --per-combo caps the run count per (size, complexity) cell rather than globally,
 so the sweep stays evenly spread over the grid: 200 across a 6x6 grid = 7200
@@ -105,11 +110,14 @@ from pathlib import Path
 from telos_interp.jlens_utils import (
     DEFAULT_ALWAYS_LAYERS,
     DEFAULT_METHODS,
+    DEFAULT_MODEL_ID,
     DEFAULT_SCORE,
     METHODS,
     build_record,
     get_method,
+    get_model,
     get_score,
+    known_models,
     load_direction_tokens,
     mass_header,
     merge_records,
@@ -117,6 +125,7 @@ from telos_interp.jlens_utils import (
     read_raw_record,
     read_selection_record,
     record_path,
+    resolve_model,
     score_names,
     to_disk_coords,
     top_filter,
@@ -154,6 +163,58 @@ def reasoning_token_positions(trajectory: dict, step: dict) -> list[tuple[int, i
     out = step["output_tokens"]
     idxs = [i for i, t in enumerate(out) if "analysis" in t.get("token_groups", [])] or list(range(len(out)))
     return [(rp, output_start + oi, out[oi].get("token", "")) for rp, oi in enumerate(idxs)]
+
+
+def sample_reasoning_positions(
+    positions: list[tuple[int, int, str]],
+    sample_p: float | None,
+    seed: int,
+    seed_key: str,
+) -> list[tuple[int, int, str]]:
+    """A seeded uniform draw of `round(n * sample_p)` of one step's reasoning tokens.
+
+    WHY THIS IS WORTH A FLAG. The forward pass is linear in the length of the chain and
+    cannot be shortened -- the residual at a surviving token still has to be computed --
+    but everything after it is linear in the number of *(token, layer)* pairs: the lens
+    transport, the `[b, vocab]` unembed, the mass reduction and the CSV rows. On a long
+    chain over a large vocabulary that second term dominates, so drawing a fraction of
+    the tokens buys most of it back.
+
+    WHY A DRAW AND NOT A STRIDE. Reasoning chains are periodic -- sentences, and the
+    direction words that cluster at their ends -- so an evenly spaced sample can alias
+    against that structure and bias a per-layer mean. A uniform draw cannot; the layer
+    profile `scripts/jlens_layer_profile.py` computes stays unbiased, it just gets wider
+    error bars.
+
+    `reasoning_pos` IS NOT RENUMBERED. The survivors keep their index in the FULL chain,
+    so `abs_pos`, `token_idx` and every join downstream read exactly the coordinates a
+    full run would have written. A sampled table is a subset of a full one's rows, never
+    a different coordinate system.
+
+    Seeded per (trajectory stem, step) on its own stream, so a resumed run, a reordered
+    trajectory list, and the `random` control arm's draw can none of them move it. At
+    least one token survives a non-empty step: a rounding that dropped whole short chains
+    would tilt the profile toward long ones, which is the one bias this must not add.
+
+    >>> pos = [(i, 100 + i, "t") for i in range(10)]
+    >>> got = sample_reasoning_positions(pos, 0.4, 42, "traj_1-step0")
+    >>> len(got)
+    4
+    >>> got == sorted(got)
+    True
+    >>> got == sample_reasoning_positions(pos, 0.4, 42, "traj_1-step0")
+    True
+    >>> sample_reasoning_positions(pos, None, 42, "traj_1-step0") == pos
+    True
+    >>> len(sample_reasoning_positions(pos[:2], 0.01, 42, "traj_1-step0"))
+    1
+    """
+    if sample_p is None or sample_p >= 1.0 or not positions:
+        return positions
+    k = max(1, round(len(positions) * sample_p))
+    if k >= len(positions):
+        return positions
+    return sorted(random.Random(f"{seed}-{seed_key}-sample").sample(positions, k))
 
 
 def parse_name(stem: str) -> dict:
@@ -737,7 +798,79 @@ def parse_candidate_layers(spec: str | None) -> list[int] | None:
     return [int(part) for part in spec.split(",") if part.strip()]
 
 
-def build_lens_transports(lenses: list[str], layer_indices: list[int], jlens_dir: Path, dev):
+def resolve_spec_or_exit(trajectory_model_id: str, override: str | None):
+    """The model spec for this run, or a message naming the two ids that disagreed.
+
+    Worth its own function only because the failure is confusing without the distinction
+    spelled out: the id in the trajectory is what SERVED the model, and for Qwen that is a
+    Together endpoint alias rather than anything `from_pretrained` can resolve.
+    """
+    try:
+        return resolve_model(trajectory_model_id, override)
+    except KeyError as exc:
+        raise SystemExit(
+            f"{exc}\nThe trajectories record model_id={trajectory_model_id!r}, which is the "
+            "SERVING name and need not be a HF repo. Pass --model-id, or add a row to "
+            f"telos_interp/jlens_utils/models.py. Known: {', '.join(known_models())}"
+        ) from None
+
+
+def annotate_mass_meta(mass_meta: dict, spec, trajectory_model_id: str, args) -> dict:
+    """Add this run's non-vocabulary provenance to the mass table's sidecar.
+
+    Both facts are invisible in the table itself: a sampled table is a full one with fewer
+    rows, and a table gathered through a different checkpoint than the trajectory's serving
+    name has the same columns either way.
+    """
+    if not mass_meta:
+        return mass_meta
+    if spec.model_id != trajectory_model_id:
+        # `model` stays the serving id, which is what the tree is laid out under; the HF
+        # repo the weights and the tokenizer actually came from is a different fact.
+        mass_meta["weights_model_id"] = spec.model_id
+    if args.data_sample_p is not None:
+        mass_meta["data_sample_p"] = args.data_sample_p
+        mass_meta["data_sample_seed"] = args.data_sample_seed
+    return mass_meta
+
+
+def report_sampling(args, pending: list[dict]) -> None:
+    """Print what --data_sample_p actually kept, per trajectory."""
+    if args.data_sample_p is None or not pending:
+        return
+    kept = sum(len(p["positions"]) for p in pending)
+    full = sum(p["n_reasoning"] for p in pending)
+    print(f"  sampling p={args.data_sample_p}: {kept}/{full} reasoning tokens ({kept / full:.1%})", flush=True)
+
+
+def check_first_chunk_for_nan(h, checked: list[bool]) -> None:
+    """Fail on the first chunk that reaches the lens if its input is NaN.
+
+    device_map="auto" across MULTIPLE GPUs returns NaN activations for these MoE models
+    (gpt-oss, and Qwen3.6 is also MoE). Every number after that point is NaN, the CSVs are
+    still written, and under --no-save-activations the existing .pt NaN counter never sees
+    any of it -- so the run "succeeds" and produces a tree of NaN. One device sync on the
+    first chunk is worth not discovering that hours later.
+
+    `checked` is a one-element list used as a mutable flag, so this costs one sync per run
+    rather than one per chunk.
+    """
+    import torch
+
+    if checked[0]:
+        return
+    checked[0] = True
+    if torch.isnan(h).any():
+        raise SystemExit(
+            "NaN in the lens input on the first chunk. For these MoE models "
+            "device_map='auto' across MULTIPLE GPUs produces NaNs; pin one device "
+            "(CUDA_VISIBLE_DEVICES=0) and rerun."
+        )
+
+
+def build_lens_transports(
+    lenses: list[str], layer_indices: list[int], jlens_dir: Path, dev, spec=None, target_layer=None
+):
     """Per lens: the layers it can score, and the (J_stack, J_rows) transport it applies.
 
     The two lenses differ in exactly two ways, both captured here:
@@ -767,11 +900,20 @@ def build_lens_transports(lenses: list[str], layer_indices: list[int], jlens_dir
         transport_by_lens["logitlens"] = (empty_J, empty_rows)
 
     if "jlens" in lenses:
-        lens = torch.load(jlens_dir / "gpt-oss-20b_jacobian_lens.pt", map_location="cpu")
-        jlens_layers = [i for i in layer_indices if i == TARGET_LAYER or i in lens["J"]]
+        spec = spec or get_model(DEFAULT_MODEL_ID)
+        target = TARGET_LAYER if target_layer is None else target_layer
+        lens_path = jlens_dir / spec.lens_file
+        if not lens_path.exists():
+            raise SystemExit(
+                f"no jlens matrix at {lens_path}. --jlens_dir must hold {spec.model_id}'s lens; "
+                "a folder holding another model's is the commonest cause of a run of plausible "
+                "but meaningless numbers."
+            )
+        lens = torch.load(lens_path, map_location="cpu")
+        jlens_layers = [i for i in layer_indices if i == target or i in lens["J"]]
         if not jlens_layers:
             raise SystemExit(f"none of the requested layers {layer_indices} have a jlens matrix")
-        transported = [i for i in jlens_layers if i != TARGET_LAYER]
+        transported = [i for i in jlens_layers if i != target]
         J_stack = torch.stack([lens["J"][i].float() for i in transported]).to(dev) if transported else empty_J
         # rows of the per-chunk [len(jlens_layers), b, d] stack that J applies to
         J_rows = torch.tensor([jlens_layers.index(i) for i in transported], dtype=torch.long, device=dev)
@@ -802,8 +944,23 @@ def validate_selection_args(
         raise SystemExit("--extend needs --signal-json: there is no selection to extend without one")
     if args.dry_run and not args.extend:
         raise SystemExit("--dry-run currently only applies to --extend")
+    sample_p = getattr(args, "data_sample_p", None)
+    if sample_p is not None and not 0.0 < sample_p <= 1.0:
+        raise SystemExit(f"--data_sample_p must be a fraction in (0, 1], got {sample_p}")
     if not selective:
         return
+
+    if sample_p is not None and sample_p < 1.0:
+        # The control arm's whole claim is that it is a uniform draw over the reasoning
+        # chain. Under a sample it is a uniform draw over a uniform draw -- still uniform,
+        # but over a smaller pool, so it cannot be compared token-for-token with a control
+        # drawn on a full run, and once the tree is pruned the difference is unrecoverable.
+        print(
+            f"  NOTE: --data_sample_p {sample_p} narrows the pool BEFORE selection, so every "
+            "arm -- including the unscored control -- ranks and draws within the sample. A "
+            "control drawn here is not the same control a full-chain run would have reserved.",
+            flush=True,
+        )
 
     if get_score(args.direction_score).source == "mass" and not (
         args.direction_mass and (args.direction_mass_json or args.signal_json)
@@ -912,12 +1069,25 @@ def plan_trajectory(
     return TrajectoryPlan(new_methods, active, existing)
 
 
-def build_pending(trajectory: dict, step_idxs: list[int], n_prefix: int, n_suffix: int) -> list[dict]:
+def build_pending(
+    trajectory: dict,
+    step_idxs: list[int],
+    n_prefix: int,
+    n_suffix: int,
+    *,
+    sample_p: float | None = None,
+    sample_seed: int = 42,
+    seed_key: str = "",
+) -> list[dict]:
     """Everything each step needs, resolved before any of them runs.
 
     Resolved up front so steps can be grouped by the length of the sequence they will need,
     and so pass 2 can re-forward from the same records without re-reading the trajectory.
     Steps with no reasoning tokens are dropped rather than carried as empty work.
+
+    `sample_p` applies `sample_reasoning_positions` to each step. It is applied HERE, in
+    the one place both passes read, so pass 2 gathers exactly the tokens pass 1 scored --
+    a selection can never point at a `.pt` the sample dropped.
     """
     prefix_ids = [t["token_id"] for t in trajectory["prompt"]["prompt_prefix_tokens"]]
     suffix_ids = [t["token_id"] for t in trajectory["prompt"]["prompt_suffix_tokens"]]
@@ -927,6 +1097,8 @@ def build_pending(trajectory: dict, step_idxs: list[int], n_prefix: int, n_suffi
         positions = reasoning_token_positions(trajectory, step)
         if not positions:
             continue
+        n_reasoning = len(positions)
+        positions = sample_reasoning_positions(positions, sample_p, sample_seed, f"{seed_key}-step{si}")
         abs_positions = [p[1] for p in positions]
         # full prompt = prefix + grid + suffix + output; truncate at the last needed pos
         all_ids = (
@@ -941,6 +1113,7 @@ def build_pending(trajectory: dict, step_idxs: list[int], n_prefix: int, n_suffi
                 "step_id": step["step_id"],
                 "agent_action": step.get("agent_action", ""),
                 "positions": positions,
+                "n_reasoning": n_reasoning,
                 "abs_positions": abs_positions,
                 "output_start": n_prefix + len(step["grid_state_tokens"]) + n_suffix,
                 "ids": all_ids[: max(abs_positions) + 1],
@@ -1246,11 +1419,12 @@ def main() -> None:
         "--jlens_dir",
         type=Path,
         required=True,
-        help="Folder holding gpt-oss-20b_jacobian_lens.pt and the cached "
-        "gpt-oss-20b_unembed.pt (/workspace/jlens/gridenv on the GPU host). "
-        "Required even for --lens logitlens, which reads the unembed cache but "
-        "never the Jacobian -- point it at the wrong folder and the first run "
-        "re-downloads a 4.2 GB shard to rebuild that cache.",
+        help="Folder holding the fitted Jacobian lens and the cached unembed, both named "
+        "by the model's row in telos_interp/jlens_utils/models.py "
+        "(gpt-oss-20b_jacobian_lens.pt + gpt-oss-20b_unembed.pt in "
+        "/workspace/jlens/gridenv on the GPU host). Required even for --lens logitlens, "
+        "which reads the unembed cache but never the Jacobian -- point it at the wrong "
+        "folder and the first run re-downloads a multi-GB shard to rebuild that cache.",
     )
     ap.add_argument(
         "--activations-dir",
@@ -1319,6 +1493,29 @@ def main() -> None:
     )
     ap.add_argument("--layers", default="all", help="Comma/range spec of layer indices, or 'all' (default).")
     ap.add_argument("--steps", default="all", help="Comma/range spec of step indices, or 'all' (default).")
+    ap.add_argument(
+        "--data_sample_p",
+        type=float,
+        default=None,
+        help="Score only a uniform random sample of each step's reasoning tokens, as a "
+        "FRACTION in (0, 1] -- 0.5 for half, 0.12 for an eighth. Default: every token. "
+        "The forward pass is unaffected (a surviving token's residual still has to be "
+        "computed), but the lens transport, the unembed, the mass reduction and the CSV "
+        "rows all scale with the number of (token, layer) pairs, which is the dominant "
+        "term on long chains over a large vocabulary. reasoning_pos is NOT renumbered: "
+        "the rows are a subset of what a full run writes, in the same coordinates. The "
+        "draw is seeded per (trajectory, step) by --data-sample-seed, and is recorded in "
+        "each direction-mass table's .meta.json -- a sampled table and a full one are "
+        "otherwise indistinguishable.",
+    )
+    ap.add_argument(
+        "--data-sample-seed",
+        type=int,
+        default=42,
+        help="Seed for --data_sample_p, combined with the trajectory stem and step index "
+        "so each step's sample is stable regardless of processing order or resumption. "
+        "Its own stream, separate from --select-seed's control draw.",
+    )
     ap.add_argument(
         "--forward-batch-size",
         type=int,
@@ -1539,6 +1736,18 @@ def main() -> None:
         help="Time N per-token .pt writes in both container formats under "
         "--activations-dir, print the rates, and exit.",
     )
+    ap.add_argument(
+        "--model-id",
+        default=None,
+        help="HF repo id of the checkpoint to load weights from, e.g. "
+        "'Qwen/Qwen3.6-35B-A3B'. Default: resolved from the trajectory JSON's "
+        "model_params.model_id. Those two are the SAME string for gpt-oss but not for "
+        "Qwen, whose trajectories record the Together endpoint alias 'gsarti/qwen3.6-35b' "
+        "-- which is not a HF repo. Known aliases resolve without this flag; give it for a "
+        "model telos_interp/jlens_utils/models.py has not seen. It picks the lens "
+        "filename, the unembed cache, the unembed's weight keys and the target layer, so "
+        "it is also the one place a --jlens_dir pointing at the wrong model is caught.",
+    )
     ap.add_argument("--device-map", default="auto")
     ap.add_argument("--torch-dtype", default="auto")
     ap.add_argument(
@@ -1561,21 +1770,28 @@ def main() -> None:
     with open(paths[0]) as f:
         model_id = json.load(f)["model_params"]["model_id"]
 
-    print(f"loading model: {model_id}", flush=True)
-    resolved = _resolve_torch_dtype(args.torch_dtype, model_id)
+    spec = resolve_spec_or_exit(model_id, args.model_id)
+
+    # The tree path keeps deriving from the TRAJECTORY's model id, never from --model-id:
+    # every activation tree on disk is laid out under the serving name, and rewriting that
+    # would strand every manifest's activations_root.
+    sanitized_model = sanitize_model_id(model_id)
+
+    print(f"loading model: {spec.model_id} (trajectories say {model_id})", flush=True)
+    resolved = _resolve_torch_dtype(args.torch_dtype, spec.model_id)
     model = AutoModelForCausalLM.from_pretrained(
-        model_id, device_map=args.device_map, dtype=resolved if resolved is not None else "auto"
+        spec.model_id, device_map=args.device_map, dtype=resolved if resolved is not None else "auto"
     )
     model.eval()
-    sanitized_model = sanitize_model_id(model_id)
-    num_layers = model.config.num_hidden_layers
+    num_layers = spec.num_hidden_layers(model.config)
+    target_layer = spec.resolve_target_layer(num_layers)
     layer_indices = parse_index_specification(args.layers, num_layers)
-    print(f"{num_layers} layers; extracting {layer_indices}", flush=True)
+    print(f"{num_layers} layers (jlens target {target_layer}); extracting {layer_indices}", flush=True)
 
     lenses = parse_lenses(args.lens)
     print(f"loading unembed assets ({', '.join(lenses)})...", flush=True)
-    assets = ensure_unembed_assets(args.jlens_dir)
-    ids, tok = action_token_ids()
+    assets = ensure_unembed_assets(args.jlens_dir, spec)
+    ids, tok = action_token_ids(spec)
     id_cols = [ids[a] for a in ACTIONS]
 
     dev = torch.device(args.device)
@@ -1583,7 +1799,9 @@ def main() -> None:
     norm_w = assets["norm_weight"].float().to(dev)
     eps = assets["rms_eps"]
 
-    layers_by_lens, transport_by_lens = build_lens_transports(lenses, layer_indices, args.jlens_dir, dev)
+    layers_by_lens, transport_by_lens = build_lens_transports(
+        lenses, layer_indices, args.jlens_dir, dev, spec, target_layer
+    )
 
     # tok.decode() is a round-trip into the Rust tokenizer, and the row loop asks for TOP_K
     # of them per row - millions per trajectory on a long chain. The top-k sets repeat
@@ -1597,7 +1815,10 @@ def main() -> None:
         return text
 
     direction_ids, mass_meta = build_direction_mass_columns(args, tok, dev, model_id)
+    mass_meta = annotate_mass_meta(mass_meta, spec, model_id, args)
 
+    # One-element list so check_first_chunk_for_nan can flip it without a `nonlocal`.
+    nan_checked = [False]
     prof = Profiler(args.profile, args.profile and dev.type == "cuda")
     # Selective mode defers every write to a second pass, so pass 1 runs as if
     # --no-save-activations had been given.
@@ -1676,7 +1897,16 @@ def main() -> None:
             )
 
             with prof("build"):
-                pending = build_pending(trajectory, step_idxs, n_prefix, n_suffix)
+                pending = build_pending(
+                    trajectory,
+                    step_idxs,
+                    n_prefix,
+                    n_suffix,
+                    sample_p=args.data_sample_p,
+                    sample_seed=args.data_sample_seed,
+                    seed_key=stem,
+                )
+            report_sampling(args, pending)
 
             groups = group_consecutive(
                 [len(p["ids"]) for p in pending],
@@ -1771,6 +2001,7 @@ def main() -> None:
                                         [blocks[layer][rows][i : i + bs] for layer in lens_layer_list]
                                     ).float()
                                     h = apply_lens_transport(h, J_stack, J_rows, norm_w, eps)
+                                check_first_chunk_for_nan(h, nan_checked)
                                 for li, layer in enumerate(lens_layer_list):
                                     with prof("lens"):
                                         ranks, logprobs, topk, toplp, mass = lens_predictions(
