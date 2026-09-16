@@ -115,9 +115,18 @@ def main() -> int:
     signal = signals.resolve(args.signal_name, args.signal_json)
     lens_dir = args.lens_dir or args.activations_dir
 
+    # `probe_key` is "<parent dir>.<stem>", so two probes with the same filename under two
+    # directories of the same NAME collide -- and a plain dict assignment would drop one of them
+    # in silence, leaving a CSV that is short a column and names no reason why. Cadence folders
+    # make that reachable: probes/next_action_l15/p2 and
+    # probes/DEPRECATED_TOP20LOUDNESS_next_action_l15/p2 both key as "p2.jlens_topall_lr".
+    # Pass those arms through --extra-probes style explicit keys, or score them in separate runs.
     probes = {}
     for path in args.probe:
-        probes[ptype.probe_key(path)] = ptype.load_probe(path)
+        key = ptype.probe_key(path)
+        if key in probes:
+            raise SystemExit(f"duplicate probe key {key!r}: two --probe paths share a parent-dir name ({path})")
+        probes[key] = ptype.load_probe(path)
     print(f"{len(probes)} {args.probe_type} probe(s): {', '.join(probes)}", flush=True)
 
     signal_tokens = signal.load(args.signal_json, args.direction_classes)

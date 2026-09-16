@@ -136,7 +136,12 @@ several direction words; it exists because it is the literal reading, not becaus
 "higher is better", so every ranker sorts by `-score` without knowing which ran. A row with no hit floors at
 `NO_MATCH_LOGPROB` (-40), never 0 — 0 is `log(p=1)`, the best score there is. A per-layer cell is a real
 log-probability (≤ 0); a token's cross-layer *total* adds probabilities across layers and can exceed 0 — it
-orders tokens, it is not `log P(anything)`.
+orders tokens, it is not `log P(anything)`. **That floor is an estimator artifact, and it dominates a
+binned analysis.** Scoring the top-20 columns with the grid vocabulary floors ~70% of reasoning tokens at
+layer 15 — no grid word reached the top 20 — so a quantile binner hands them all to one bin and silently
+turns ten deciles into four. The mass table has no such spike: it sums over the whole vocabulary, so every
+token has some. Split the floor out as its own bin before quantiling a top-k score, and prefer
+`logprob_mass_full` when a table exists for that vocabulary.
 
 **Two artifacts, and `source` picks between them.** `logprob_mass` scores the analysis CSV's `top_i_logprob`
 columns, so it only sees direction words that reached the top 20. `logprob_mass_full` reads the
@@ -388,6 +393,30 @@ header as a cross-reference, not in a filename.
 
 ## Conventions and gotchas
 
+- **Analysis and figures go through the pipeline. Never write a standalone analysis or plot
+  script.** Before writing any of it, `ls telos_interp/loudness_analysis/` — **not just
+  `plotting/`**. The per-token table already exists: `score_probes_per_token.py` scores probes
+  on every reasoning token and writes the probe verdicts *and* the loudness columns in one
+  pass (`--probe-type next_action|grid_tile`). A **second** signal's loudness is added by
+  `join_signal_loudness.py`, a CPU-only join on `(name, step, abs_pos)` that exists precisely
+  so nobody re-runs 87k activations to change four columns; the numbers come from
+  `summarise_probe_accuracy.py`, the figures from `plotting/figures.py::FIGURES`. This is not
+  style policing: `columns.axis_label()` owns the one loudness axis label, `FIGURES` is the one
+  figure registry, and `provenance.py` writes a `run_config.json` per result folder and refuses
+  a second run with a different lens into it. A script drawn outside those drifts in axis range,
+  palette and location, and published figures then cannot sit beside each other. If a new label
+  type does not fit, add a **registry entry** (`probes.py::PROBE_TYPES`, `figures.py::FIGURES`
+  and its `PROBES` rowset) and parameterise `_style.ACTIONS` / `CHANCE` off the probe type —
+  two or three files, never a new script tree. This has gone wrong once already: a
+  loudness-vs-probe-accuracy round was rebuilt from scratch outside the repo because the search
+  stopped at `plotting/` and never looked one level up.
+- **Landmine: `plotting/_style.bal_acc` is hardcoded to the four actions.**
+  `ACTIONS = [LEFT, UP, RIGHT, DOWN]` is a module constant, so `bal_acc`, `acc_by`, `curve`,
+  `fig_by_bin` and `fig_grid` return **`nan`** on a binary 0/1 label rather than failing —
+  and `fig_by_bin` also draws a 0.25 chance line and splits its panels by
+  `label_local`/`label_final`. All of that belongs to the next-action line. For any other label
+  use `loudness_analysis.stats.bal_acc*`, which take `classes` as a parameter. Do not read a
+  silent `nan` as "no signal".
 - **Loudness is never unqualified, and its column says so.** The canonical name is
   `{lens}_{signal}_logmass_L{layer}` — `jlens_direction_logmass_L15` — because at layer 15
   the two lenses' top-20 sets overlap only about half, so a number without a lens and a
@@ -404,7 +433,14 @@ header as a cross-reference, not in a filename.
 - **The two balanced accuracies are not the same number.** `stats.bal_acc` averages over
   rows; `stats.bal_acc_from_counts` pools per-class counts. A grid row summarises a whole
   step's cells, so averaging per-token accuracies weights a token with 2 cells the same as
-  one with 25. Both are kept, named apart; `run_config.json` records which ran.
+  one with 25. Both are kept, named apart; `run_config.json` records which ran. They can
+  disagree in **sign**, not just in value: on a one-vs-rest cell probe whose positive class is
+  ~0.5% of cells, 87% of tokens carry no positive cell at all, so the per-token average
+  collapses to specificity alone and falls as the probe grows willing to fire, while the pooled
+  number rises with the recall that actually improved. Pool for a rare class. And note
+  `bal_acc_from_counts` reads **unprefixed** `n_true_{c}`: it assumes every probe in the frame
+  shares one ground truth, which is false for two binary probes with different positive
+  classes — alias the right pair in per call.
 - **Every result folder gets a `run_config.json`.** `loudness_analysis/provenance.py` writes
   the ruler, the vocabulary and a hash of its *contents* (the path cannot decide
   comparability — the same vocabulary is `data/jlens/…` in the repo and `/workspace/jlens/…`
