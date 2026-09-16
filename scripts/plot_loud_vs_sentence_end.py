@@ -146,9 +146,7 @@ def collect(names: list[str], vocab: set[str], lens: MassTableLoudness, arm: str
                         "prev_end_action": grid[k - 1]["model_action"],
                         "ground_truth": step["ground_truth"],
                         "coincides_with_end": int(ev["eos_token_pos"] == grid[k]["eos_token_pos"]),
-                        "is_direction_token": (
-                            int(tok.replace("Ġ", " ") in vocab) if tok is not None else None
-                        ),
+                        "is_direction_token": (int(tok.replace("Ġ", " ") in vocab) if tok is not None else None),
                         "pos_in_sentence": ev.get("pos_in_sentence"),
                         "sentence_len": ev.get("sentence_len"),
                         "dir_prob": ev.get("dir_prob"),
@@ -182,19 +180,37 @@ ARM_TITLE = {
 def panel(ax, groups, *, title, show_legend, ylabel):
     """One facet: three subsets side by side, two bars each."""
     width, gap, xs = 0.34, 0.012, range(len(groups))
-    for off, key, colour, label in ((-(width + gap) / 2, "this", C_THIS, "End of THIS sentence"),
-                                    (+(width + gap) / 2, "prev", C_PREV, "End of PREVIOUS sentence")):
+    for off, key, colour, label in (
+        (-(width + gap) / 2, "this", C_THIS, "End of THIS sentence"),
+        (+(width + gap) / 2, "prev", C_PREV, "End of PREVIOUS sentence"),
+    ):
         vals = [g[1][key][0] for g in groups]
         lo = [g[1][key][0] - g[1][key][1] for g in groups]
         hi = [g[1][key][2] - g[1][key][0] for g in groups]
         bars = ax.bar([x + off for x in xs], vals, width, color=colour, label=label, zorder=3, linewidth=0)
-        ax.errorbar([x + off for x in xs], vals, yerr=[lo, hi], fmt="none", ecolor=INK_MUTED,
-                    elinewidth=1, capsize=2.5, zorder=4)
+        ax.errorbar(
+            [x + off for x in xs],
+            vals,
+            yerr=[lo, hi],
+            fmt="none",
+            ecolor=INK_MUTED,
+            elinewidth=1,
+            capsize=2.5,
+            zorder=4,
+        )
         for b, v, h in zip(bars, vals, hi):  # clear the error bar, not just the bar
             # a surface-coloured pad so a label near 0.25 is not struck through by the chance rule
-            ax.text(b.get_x() + b.get_width() / 2, v + h + 0.02, f"{v:.3f}", ha="center", va="bottom",
-                    fontsize=9, color=INK, zorder=5,
-                    bbox=dict(facecolor="#fcfcfb", edgecolor="none", pad=0.9))
+            ax.text(
+                b.get_x() + b.get_width() / 2,
+                v + h + 0.02,
+                f"{v:.3f}",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                color=INK,
+                zorder=5,
+                bbox=dict(facecolor="#fcfcfb", edgecolor="none", pad=0.9),
+            )
     ax.axhline(0.25, color=INK_MUTED, lw=1, ls=(0, (4, 3)), zorder=2)
     ax.set_xticks(list(xs))
     ax.set_xticklabels([f"{g[0]}\nn = {g[1]['n']:,}" for g in groups], fontsize=8.5, color=INK)
@@ -248,26 +264,44 @@ def main() -> None:
     for pool_name, pool in (("all cutoffs", rows), ("where this end != prev end", differ)):
         for label, st in subsets(pool):
             flat = label.replace("\n", " ")
-            print(f"{pool_name + ' | ' + flat:52s} {st['n']:7,d}  {st['this'][0]:10.3f}  "
-                  f"{st['prev'][0]:10.3f}  {st['acc']:6.3f}")
+            print(
+                f"{pool_name + ' | ' + flat:52s} {st['n']:7,d}  {st['this'][0]:10.3f}  "
+                f"{st['prev'][0]:10.3f}  {st['acc']:6.3f}"
+            )
 
     fig, axes = plt.subplots(1, 2, figsize=(11.4, 4.9), dpi=200, sharey=True)
     fig.patch.set_facecolor("#fcfcfb")
     for ax in axes:
         ax.set_facecolor("#fcfcfb")
-    panel(axes[0], subsets(rows), title="All cutoffs — uninformative by construction",
-          show_legend=False, ylabel=True)
-    panel(axes[1], subsets(differ), title="Only where the two comparators DIFFER — the real test",
-          show_legend=True, ylabel=False)
+    panel(axes[0], subsets(rows), title="All cutoffs — uninformative by construction", show_legend=False, ylabel=True)
+    panel(
+        axes[1],
+        subsets(differ),
+        title="Only where the two comparators DIFFER — the real test",
+        show_legend=True,
+        ylabel=False,
+    )
     axes[0].text(-0.44, 0.272, "chance (4 actions)", fontsize=8, color=INK_MUTED, ha="left")
-    fig.suptitle(f"Action at {ARM_TITLE[args.arm]} vs. its sentence ends   ({args.arm})",
-                 fontsize=12.5, color=INK, x=0.008, ha="left", y=0.985)
-    fig.text(0.008, 0.017,
-             "Left: the two comparators are the same string in ~89% of cases, so both bars are the "
-             "same number by construction. Right: the subset where they disagree.\n"
-             "Bars are 95% Wilson intervals. Columns need not sum to 1 — the cutoff can emit a third "
-             "action matching neither.",
-             fontsize=7.6, color=INK_MUTED, ha="left", va="bottom")
+    fig.suptitle(
+        f"Action at {ARM_TITLE[args.arm]} vs. its sentence ends   ({args.arm})",
+        fontsize=12.5,
+        color=INK,
+        x=0.008,
+        ha="left",
+        y=0.985,
+    )
+    fig.text(
+        0.008,
+        0.017,
+        "Left: the two comparators are the same string in ~89% of cases, so both bars are the "
+        "same number by construction. Right: the subset where they disagree.\n"
+        "Bars are 95% Wilson intervals. Columns need not sum to 1 — the cutoff can emit a third "
+        "action matching neither.",
+        fontsize=7.6,
+        color=INK_MUTED,
+        ha="left",
+        va="bottom",
+    )
     fig.tight_layout(rect=(0, 0.075, 1, 0.955))
     out = args.output_dir / f"{stem}.png"
     fig.savefig(out, facecolor=fig.get_facecolor())

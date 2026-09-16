@@ -73,3 +73,16 @@ on any new host. It has no published result yet.
 
 `script.sh`, `general_probe_train.sh`, `reasoning_theatre.ps1` and `run_commands.ps1` are the
 round-1 `interp-cli` invocations, kept for the same reason as everything else here.
+
+## The boundary round
+
+| Wrapper | Drives | Pins |
+|---|---|---|
+| `boundary_cognitive_maps.sh` | `scripts/boundary_cognitive_maps.py` + `interp-cli train_cognitive_map_probe` | the four boundary probes: layer 15, `{lr, mlp}` x `{pre_reasoning, post_reasoning}`, trained on the 2,880 and selected on the 720, with the 360 reserved |
+
+The one wrapper here that drives a whole pipeline rather than a single script, because the
+experiment's eight stages have to agree about paths: the tree the gather writes is the tree
+the manifests point into, and the manifests' partitions are the evaluation's partitions.
+Every stage tests for its own output first, so it is resumable and a second run is a no-op
+check. `STAGES=` selects, `FORCE=1` redoes, `DRY_RUN=1` prints. `LIMIT` is for smoke runs
+only -- it truncates every membership list, which makes the numbers meaningless.

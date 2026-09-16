@@ -13,12 +13,10 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
-
 from telos_interp.loudness_analysis import columns as cols
 from telos_interp.loudness_analysis import probes as probe_types
 from telos_interp.loudness_analysis import provenance, signals, stats
 from telos_interp.loudness_analysis.analysis import probe_accuracy_by_loudness as pabl
-
 
 # --------------------------------------------------------------------------------------------
 # columns: the naming convention, and every legacy spelling still readable

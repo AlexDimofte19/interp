@@ -7,8 +7,31 @@ this file names one of them as "the working branch", read that as history rather
 somewhere to go looking.
 
 **Newest first, if you only read one thing:** the file is append-only and chronological, so
-the last section is the current state. As of 2026-09-10 that is *The loudness line is a module
-now* (log entry 56). **It is a refactor, not a finding: every script that produces, joins,
+the last section is the current state. As of 2026-09-15 that is *The cross-selection matrix*
+(log entry 58) — every local-belief ACTION probe read on every OTHER arm's selection of the
+eval-720. It fills the middle between the only two populations anything has been scored on so
+far (its own selection, and all 87,221 heldout-360 tokens with no selection at all), which is
+what separates "this probe is better" from "this probe is specialised to the tokens it was
+trained on" — the distinction entry 49(c)'s order inversion left open. It also collected every
+action probe under `probes/local_belief_action_l15/{p1,p1-top20,p2}/` (p2 had never been
+collected; its six probes were spread over three directories and two rounds) and **left a live
+landmine**: renaming off `local_belief_equalN` broke five references under `scripts/`, now
+masked by a compatibility symlink that is NOT a fix. Read entry 58(A) before deleting it.
+
+One section older, *Grid loudness DOES predict the grid* (log entry 57) — the other half of entry 55's control, and the first measurement run
+through the new module. Same probes, same 87,221 held-out tokens, same layer, ruler swapped to
+`data/jlens/grid_tokens_full.json`: the sign reverses, **+7.9** points under the logit lens
+against entry 55's **−2.4** with the direction vocabulary, so the pair is a double dissociation
+rather than one number. Two things to carry forward: the **logitlens** arm is the monotone one
+and the jlens arm is U-shaped (its Spearman is ~0 while its endpoint gap is positive — quote
+the curve, not the gap), and the whole effect lives in the two RARE classes, agent and goal
+recall roughly tripling while wall and open move ~5 points. Swapping a ruler no longer costs a
+GPU re-score: `loudness_analysis/join_signal_loudness.py` widens an existing per-token table
+from a mass tree in minutes, and `plotting/figures.py --grid-table` draws every ruler the table
+carries on one axis.
+
+The refactor underneath it is one section earlier: *The loudness line is a module now* (log
+entry 56). **It is a refactor, not a finding: every script that produces, joins,
 analyses or draws loudness moved to
 [`telos_interp/loudness_analysis/`](telos_interp/loudness_analysis/README.md), and eight were
 deleted.** Start at that README for anything in this line; `RENAMES.md`'s 2026-09-10 section is
@@ -18,7 +41,7 @@ columns are now `{lens}_{signal}_logmass_L{layer}` (every legacy spelling still 
 number and both are in use; and every result folder now carries a `run_config.json` that also
 *guards* against mixing two lens rulers in one directory.
 
-The last measurement is one section earlier: *Direction loudness does NOT predict the grid*
+Entry 57's other half is two sections earlier: *Direction loudness does NOT predict the grid*
 (log entry 55), the specificity control on entry 37's headline finding, run and passed —
 direction loudness buys +15.6 points of *action* decodability and −2.4 points of *grid*
 decodability, so the score is action-specific rather than generic saliency. **It also records
@@ -29,6 +52,8 @@ trajectories with the count-era tree). Read those before touching the grid arms.
 One day older, and the close of the probe-loudness line: *The per-sentence arms did not
 hold the same sentences* (log entry 52, 2026-09-09) -- **done**, fourteen probes in
 `probes/local_belief_equalN/{p1,p1-top20}/` and all 38 read on the heldout 360.
+(That root was renamed to `probes/local_belief_action_l15/` in entry 58; a symlink still
+answers to the old name.)
 
 It corrects entry 51, which held the sentence grid fixed and varied only which token inside
 each span is taken (loudest / last / random). Two silent bugs meant the arms did not hold the
@@ -704,6 +729,11 @@ Join key: `(name, step, token_id == eos_token_pos)` — all three index `step["o
 
 ### Pipeline (all under `/workspace/reasoning_theatre/local_belief_probes/`)
 
+> **Entry 58:** the `probes/` subdirectory here is GONE. Its four p1/p1-top20 probes were
+> superseded by entry 52 and deleted; its p2 pair now lives in
+> `probes/local_belief_action_l15/p2/next_action_probe_jlens_{lr,mlp}.pt`. The logs,
+> scripts and the two relabel report CSVs in this directory are untouched.
+
 ```bash
 # 1. probe-1 gather: layer-15 residual at every per-sentence-loudest token (GPU, ~45 min)
 uv run --project /workspace/repo/interp python telos_interp/loudness_analysis/rollouts/gather_local_belief_activations.py \
@@ -765,7 +795,9 @@ tracking belief without them. The ±k proximity window of 42(e) is still uncontr
   They belong at `telos_interp/loudness_analysis/rollouts/` (gather, relabel, eval) when someone commits.
 - `SESSION_LOG.txt` → append to `ICLR log.txt` via `ICLR_LOG_ENTRY_DRAFT.txt` (entry 44).
 - This file → append to `claude_session_readme.md`.
-- Probes: `.../local_belief_probes/probes/`. Datasets: `/workspace/prepared/local_belief_p*`.
+- Probes: **moved/deleted in entry 58** — see the note above; the surviving p2 pair is in
+  `probes/local_belief_action_l15/p2/`. Datasets: `/workspace/prepared/local_belief_p*`
+  (unchanged; `local_belief_p2_split_eval` is the jlens-p2 slice of the cross-selection matrix).
 
 ---
 

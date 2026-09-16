@@ -12,6 +12,13 @@ from inside matplotlib:
   probe         a joined probe table (join_rollouts.py output)
   distribution  a per-token loudness table with sentence coordinates
   rollout       a per-token table carrying the rollout's answer and its probability
+  grid          a counts-mode grid_tile table, where one row summarises a step's CELLS
+
+The fourth is not a variant of the first. A `probe` row is one prediction and its figures
+average per-row accuracies; a `grid` row is a whole step's cells and its figures pool the
+per-class counts (`stats.bal_acc_from_counts`). The two balanced accuracies are different
+numbers, so the tables they are drawn from are different kinds rather than one kind with a
+flag -- see the section heading above `draw_grid`.
 """
 
 from __future__ import annotations
@@ -758,6 +765,332 @@ def fig_position_control(df: pd.DataFrame, lenses: list[str], layer: int, out: P
 
 
 # ---------------------------------------------------------------------------------------------
+# Grid figures: a counts-mode table, where one row summarises a whole step's cells.
+# ---------------------------------------------------------------------------------------------
+#
+# EVERY OTHER FIGURE ABOVE READS A ROW AS ONE PREDICTION. A `grid_tile` row is not one: a
+# token is asked about every cell of its grid, so the row carries per-class COUNTS
+# (`n_true_{c}`, `{probe}_correct_{c}`) instead of a verdict, and there is no `{probe}_pred`
+# for `acc_by` to read. That is the whole reason these are separate drawers rather than a
+# `--probe-type` flag on the ones above -- balanced accuracy here POOLS the counts
+# (`stats.bal_acc_from_counts`) where the action figures AVERAGE per-row accuracies, and the
+# two are not the same number: averaging would weight a token with 2 cells like one with 25.
+#
+# ONE TABLE, SEVERAL RULERS. The point of these figures is the comparison ACROSS
+# vocabularies -- does GRID loudness predict where the grid decodes any better than
+# DIRECTION loudness does? -- so a ruler is discovered from the columns present rather than
+# fixed by a flag, and every ruler in the table is drawn on the same axes.
+
+
+def grid_rulers(df: pd.DataFrame, layer: int) -> list[tuple[str, str, str]]:
+    """Every `(lens, signal, column)` loudness ruler the table actually carries, in a fixed
+    order: signal-major so a figure's legend groups the vocabularies, lens-minor so the two
+    lenses sit adjacent within one.
+
+    Legacy spellings resolve, so a table written before the naming convention still draws.
+    """
+    found = []
+    for signal in ("direction", "grid"):
+        for lens in ("jlens", "logitlens"):
+            try:
+                found.append((lens, signal, axis_column(df.columns, lens, signal, layer)))
+            except KeyError:
+                continue
+    return found
+
+
+def axis_column(fieldnames, lens: str, signal: str, layer: int) -> str:
+    """`columns.resolve`, imported through one name so this module has a single call site."""
+    from telos_interp.loudness_analysis import columns as _columns
+
+    return _columns.resolve(fieldnames, lens, signal, layer)
+
+
+def grid_probes(df: pd.DataFrame) -> list[str]:
+    """Probe keys in a counts-mode table, from the `{probe}_n_correct` columns."""
+    return sorted({c.rsplit("_n_correct", 1)[0] for c in df.columns if c.endswith("_n_correct")})
+
+
+def _drop_common_prefix(names: list[str]) -> dict[str, str]:
+    """`{full key: the part that distinguishes it}`, for axis labels only.
+
+    A probe key is `"<parent dir>.<stem>"` and two arms out of one directory share nearly all
+    of it, so a tick label repeats ~25 characters that tell the reader nothing and collides
+    with its neighbour. The shared head is dropped and only the shared head -- a single probe
+    shares nothing with itself and keeps its full key, and a group whose keys differ from the
+    first character is untouched.
+
+    >>> _drop_common_prefix(["a.random_l15_lr", "a.random_l15_mlp"])
+    {'a.random_l15_lr': 'lr', 'a.random_l15_mlp': 'mlp'}
+    >>> _drop_common_prefix(["only.one"])
+    {'only.one': 'only.one'}
+    >>> _drop_common_prefix(["jlens_mlp", "random_mlp"])
+    {'jlens_mlp': 'jlens_mlp', 'random_mlp': 'random_mlp'}
+    """
+    if len(names) < 2:
+        return {n: n for n in names}
+    head = 0
+    while head < min(len(n) for n in names) and len({n[head] for n in names}) == 1:
+        head += 1
+    # Cut back to a separator so the remainder starts at a word, not mid-token.
+    cut = max((names[0].rfind(sep, 0, head) + 1 for sep in "._-"), default=0)
+    return {n: (n[cut:] or n) for n in names}
+
+
+def grid_decile_curve(df: pd.DataFrame, probe: str, score: str, classes, n_bins: int) -> pd.DataFrame:
+    """Count-pooled balanced accuracy, plain accuracy and per-class recall per loudness bin.
+
+    Bins are quantile bins of `score`; `stats.qbin` drops duplicate edges rather than
+    raising, so a ruler with heavy ties yields fewer than `n_bins` bins instead of nothing.
+    """
+    from telos_interp.loudness_analysis import stats as _stats
+
+    d = df[df[score].notna()].copy()
+    d["_bin"] = _stats.qbin(d[score], n_bins, labels=False)
+    rows = []
+    for b, g in d.groupby("_bin", observed=True):
+        ba, recalls = _stats.bal_acc_from_counts(g, probe, classes)
+        row = {
+            "bin": int(b),
+            "n_tokens": int(len(g)),
+            "n_traj": int(g["name"].nunique()),
+            "mean_logmass": float(g[score].mean()),
+            "balanced_acc": ba,
+            "plain_acc": _stats.plain_accuracy(g, probe),
+        }
+        row.update({f"recall_{c}": recalls.get(c, np.nan) for c in classes})
+        rows.append(row)
+    return pd.DataFrame(rows).sort_values("bin").reset_index(drop=True)
+
+
+def fig_grid_accuracy_by_loudness(df: pd.DataFrame, args, out: Path) -> None:
+    """One panel per probe: count-pooled balanced accuracy against loudness decile, with
+    every ruler in the table on the same axes.
+
+    A ruler that is doing nothing is a flat line, and the reference is the OTHER ruler on the
+    same panel rather than an absolute -- which is the comparison the specificity question
+    turns on, and the one a single-ruler figure cannot show.
+    """
+    probes, rulers = grid_probes(df), grid_rulers(df, args.layer)
+    fig, axes = plt.subplots(1, len(probes), figsize=(6.0 * len(probes), 4.6), sharey=True, squeeze=False)
+    for ax, probe in zip(axes[0], probes, strict=True):
+        for lens, signal, col in rulers:
+            t = grid_decile_curve(df, probe, col, args.classes, args.deciles)
+            ax.plot(
+                t["bin"],
+                t["balanced_acc"],
+                marker="o",
+                ms=4,
+                lw=1.7,
+                color=LENS_COLOR.get(lens, MAIN),
+                ls="-" if signal == "grid" else "--",
+                label=f"{LENS_LABEL.get(lens, lens)} / {signal}",
+            )
+        style_axis(ax, reference=args.chance, label=f"chance ({len(args.classes)} classes)")
+        ax.set_xticks(range(args.deciles))
+        ax.set_xlabel(f"loudness decile  ({args.deciles - 1} = loudest)", fontsize=9.5, color=INK_MUTED)
+        ax.set_title(probe, fontsize=10.5, color=INK, loc="left")
+    axes[0][0].set_ylabel("balanced accuracy  (per-class counts pooled)", fontsize=10, color=INK)
+    axes[0][-1].legend(fontsize=8.5, loc="upper left", frameon=True, framealpha=0.92, edgecolor=GRID)
+    fig.suptitle(
+        "Does a LOUDER token decode the grid better?\n"
+        f"{len(df):,} held-out tokens  ·  {df['name'].nunique()} trajectories  ·  "
+        "solid = grid vocabulary, dashed = direction vocabulary",
+        fontsize=12.5,
+        color=INK,
+        y=1.04,
+    )
+    finish(fig, out / "grid_accuracy_by_loudness.png")
+
+
+def fig_grid_per_class_by_loudness(df: pd.DataFrame, args, out: Path) -> None:
+    """Per-class recall against loudness decile, one panel per class, one line per ruler.
+
+    The aggregate hides that the classes are not alike: `#` and `_` carry almost every cell,
+    while `A` and `G` are one cell each per grid, so a balanced accuracy that moves could be
+    two rare classes moving or two common ones. This is where that is visible.
+    """
+    from telos_interp.grid_utils import CELL_ID_TO_SYMBOL
+
+    probe = args.grid_probe or (grid_probes(df) or [None])[-1]
+    rulers = grid_rulers(df, args.layer)
+    classes = list(args.classes)
+    # One curve per RULER, not per (ruler, class): a curve already carries every class's
+    # recall, and recomputing it inside the panel loop would rebin 87k rows once per panel.
+    curves = {col: grid_decile_curve(df, probe, col, classes, args.deciles) for _, _, col in rulers}
+    fig, axes = plt.subplots(1, len(classes), figsize=(3.3 * len(classes), 4.2), sharey=True, squeeze=False)
+    for ax, cls in zip(axes[0], classes, strict=True):
+        for lens, signal, col in rulers:
+            t = curves[col]
+            ax.plot(
+                t["bin"],
+                t[f"recall_{cls}"],
+                marker="o",
+                ms=3.5,
+                lw=1.5,
+                color=LENS_COLOR.get(lens, MAIN),
+                ls="-" if signal == "grid" else "--",
+                label=f"{LENS_LABEL.get(lens, lens)} / {signal}",
+            )
+        n_true = int(df[f"n_true_{cls}"].sum()) if f"n_true_{cls}" in df.columns else 0
+        style_axis(ax)
+        ax.set_xticks(range(args.deciles))
+        ax.set_title(f"{CELL_ID_TO_SYMBOL.get(cls, cls)}   (n={n_true:,} cells)", fontsize=10, color=INK, loc="left")
+        ax.set_xlabel("loudness decile", fontsize=9, color=INK_MUTED)
+    axes[0][0].set_ylabel("recall", fontsize=10, color=INK)
+    axes[0][-1].legend(fontsize=8, loc="best", frameon=True, framealpha=0.92, edgecolor=GRID)
+    fig.suptitle(
+        f"Which cell classes move with loudness?   ({probe})", fontsize=12.5, color=INK, y=1.05, x=0.01, ha="left"
+    )
+    finish(fig, out / "grid_per_class_by_loudness.png")
+
+
+def fig_grid_ruler_gaps(df: pd.DataFrame, args, out: Path) -> None:
+    """The loudest decile minus the quietest, per probe and per ruler, with a
+    trajectory-clustered CI.
+
+    The decile curves compressed to the one number the specificity question asks for. Bars
+    are read as an EFFECT SIZE against `--reference-gap` -- the matched action-probe gap --
+    and never as a significance test: at 87k tokens a 2pp gap has a CI that excludes zero
+    and still means nothing.
+    """
+    probes, rulers = grid_probes(df), grid_rulers(df, args.layer)
+    # A probe key is "<parent dir>.<stem>", so a pair of arms from one directory share a long
+    # prefix that carries no information HERE (the title already says which round this is) and
+    # collides with its neighbour's label. Drop what every probe has in common, never the
+    # whole key: with one probe there is nothing shared and the key survives intact.
+    short = _drop_common_prefix(probes)
+    labels, values, los, his, colors = [], [], [], [], []
+    for probe in probes:
+        for lens, signal, col in rulers:
+            gap = grid_gap_bootstrap(df, probe, col, args.classes, args.deciles, args.boot)
+            labels.append(f"{short[probe]}\n{LENS_LABEL.get(lens, lens)}\n{signal}")
+            values.append(gap["gap"])
+            los.append(gap["gap"] - gap["lo"])
+            his.append(gap["hi"] - gap["gap"])
+            colors.append(LENS_COLOR.get(lens, MAIN))
+    fig, ax = plt.subplots(figsize=(max(7.0, 1.15 * len(labels)), 5.0))
+    x = np.arange(len(labels))
+    ax.bar(x, values, yerr=[los, his], color=colors, alpha=0.85, capsize=3, width=0.66)
+    if args.reference_gap:
+        ax.axhline(
+            args.reference_gap,
+            ls="--",
+            lw=1.3,
+            color=INK_MUTED,
+            label=f"action-probe reference {args.reference_gap:+.3f}",
+        )
+        ax.legend(fontsize=9, frameon=True, framealpha=0.92, edgecolor=GRID)
+    ax.axhline(0, lw=1.0, color=INK)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=8, linespacing=1.5)
+    ax.set_ylabel("loudest decile - quietest decile\n(balanced accuracy)", fontsize=10, color=INK)
+    ax.grid(axis="y", alpha=0.25)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    fig.suptitle(
+        "How much does loudness buy, and under which vocabulary?\n"
+        "95% CI from resampling trajectories; bin edges recomputed inside each resample",
+        fontsize=12.5,
+        color=INK,
+        y=1.04,
+    )
+    finish(fig, out / "grid_ruler_gaps.png")
+
+
+def grid_gap_bootstrap(df: pd.DataFrame, probe: str, score: str, classes, n_bins: int, n_boot: int) -> dict:
+    """(top bin BA - bottom bin BA) with a trajectory-clustered 95% CI.
+
+    The bin edges are recomputed inside each resample: they are themselves a function of the
+    sample, and holding them fixed would understate the spread. Same construction as
+    `analysis/probe_accuracy_by_loudness.py::gap_bootstrap`, so a figure and its table agree.
+    """
+    d = df[df[score].notna()]
+    base = grid_decile_curve(d, probe, score, classes, n_bins)
+    if len(base) < 2:
+        return {"gap": float("nan"), "lo": float("nan"), "hi": float("nan"), "n_boot": 0}
+    names = d["name"].unique()
+    rng = np.random.default_rng(0)
+    by_name = dict(d.groupby("name").__iter__())
+    draws = []
+    for _ in range(n_boot):
+        pick = rng.choice(len(names), size=len(names), replace=True)
+        t = grid_decile_curve(
+            pd.concat([by_name[names[i]] for i in pick], ignore_index=True), probe, score, classes, n_bins
+        )
+        if len(t) >= 2:
+            draws.append(t["balanced_acc"].iloc[-1] - t["balanced_acc"].iloc[0])
+    gap = float(base["balanced_acc"].iloc[-1] - base["balanced_acc"].iloc[0])
+    if not draws:
+        return {"gap": gap, "lo": float("nan"), "hi": float("nan"), "n_boot": 0}
+    return {
+        "gap": gap,
+        "lo": float(np.percentile(draws, 2.5)),
+        "hi": float(np.percentile(draws, 97.5)),
+        "n_boot": len(draws),
+    }
+
+
+def draw_grid(df: pd.DataFrame, args) -> None:
+    """Every grid figure, plus the decile table behind each one.
+
+    The tables are written beside the PNGs on purpose: a reader who wants the number rather
+    than the shape should not have to re-derive it from a figure, and a figure that disagrees
+    with the table beside it is a bug that is otherwise invisible.
+    """
+    from telos_interp.loudness_analysis import probes as _probes
+
+    ptype = _probes.get_probe_type("grid_tile")
+    # analysis_classes already drops the padding class (a cell outside the grid, which is
+    # trivially predictable from (row, col) and would dilute every bin equally). Narrowing
+    # further to the classes this table HAS cells for changes no balanced accuracy --
+    # `bal_acc_from_counts` drops an unsupported class rather than scoring it zero -- but it
+    # is what keeps the chance line and the per-class panels honest: over the held-out grids
+    # only A / # / G / _ ever occur, so chance is 1/4, not 1/7.
+    args.classes = [
+        c for c in ptype.analysis_classes if float(df.get(f"n_true_{c}", pd.Series(dtype=float)).sum()) > 0
+    ]
+    if not args.classes:
+        raise SystemExit("no n_true_{class} column carries a single cell; this is not a grid_tile table")
+    args.chance = 1.0 / len(args.classes)
+
+    rulers = grid_rulers(df, args.layer)
+    if not rulers:
+        raise SystemExit(
+            f"no loudness column at layer {args.layer} for any known lens/signal pair. "
+            f"Table has {sorted(df.columns)[:12]}... -- join one on with "
+            "loudness_analysis/join_signal_loudness.py."
+        )
+    probes = grid_probes(df)
+    if not probes:
+        raise SystemExit(
+            "no probe columns: a grid table needs {probe}_n_correct and {probe}_correct_{class}, "
+            "as score_probes_per_token.py --probe-type grid_tile writes."
+        )
+    print(
+        f"grid: {len(probes)} probe(s), {len(rulers)} ruler(s) "
+        f"({', '.join(f'{lens}/{sig}' for lens, sig, _ in rulers)}), classes {args.classes}",
+        flush=True,
+    )
+
+    tables = args.out / "tables"
+    tables.mkdir(parents=True, exist_ok=True)
+    for probe in probes:
+        for lens, signal, col in rulers:
+            t = grid_decile_curve(df, probe, col, args.classes, args.deciles)
+            t.insert(0, "ruler", f"{lens}_{signal}")
+            t.to_csv(tables / f"{probe}_by_{lens}_{signal}_decile.csv", index=False)
+
+    fig_grid_accuracy_by_loudness(df, args, args.out)
+    print("grid_accuracy_by_loudness.png", flush=True)
+    fig_grid_per_class_by_loudness(df, args, args.out)
+    print("grid_per_class_by_loudness.png", flush=True)
+    fig_grid_ruler_gaps(df, args, args.out)
+    print("grid_ruler_gaps.png", flush=True)
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
 # The registry
 # ---------------------------------------------------------------------------------------------
 
@@ -848,6 +1181,24 @@ FIGURES: dict[str, Figure] = {
             fig_position_control,
             "The loudness curve re-run within terciles of chain position.",
         ),
+        Figure(
+            "grid_accuracy_by_loudness",
+            "grid",
+            fig_grid_accuracy_by_loudness,
+            "Grid-cell balanced accuracy per loudness decile, every ruler on one axis.",
+        ),
+        Figure(
+            "grid_per_class_by_loudness",
+            "grid",
+            fig_grid_per_class_by_loudness,
+            "The same, split into the per-class recalls the aggregate hides.",
+        ),
+        Figure(
+            "grid_ruler_gaps",
+            "grid",
+            fig_grid_ruler_gaps,
+            "Loudest minus quietest decile per probe and ruler, with a clustered CI.",
+        ),
     ]
 }
 
@@ -858,7 +1209,7 @@ def figure_names() -> list[str]:
     >>> "loudness_distribution" in figure_names()
     True
     >>> sorted({f.table for f in FIGURES.values()})
-    ['distribution', 'probe', 'rollout']
+    ['distribution', 'grid', 'probe', 'rollout']
     """
     return list(FIGURES)
 
@@ -1048,6 +1399,7 @@ DRAWERS = {
     "probe": draw_probe,
     "distribution": draw_distribution,
     "rollout": draw_rollout,
+    "grid": draw_grid,
 }
 
 
@@ -1055,6 +1407,7 @@ TABLE_FLAGS = {
     "probe": "--probe-table",
     "distribution": "--distribution-table",
     "rollout": "--rollout-table",
+    "grid": "--grid-table",
 }
 
 
@@ -1078,6 +1431,13 @@ def main(argv: list[str] | None = None) -> int:
         "--distribution-table", type=Path, default=None, help="Per-token loudness with sentence coordinates."
     )
     ap.add_argument("--rollout-table", type=Path, default=None, help="Per-token table with the rollout answer.")
+    ap.add_argument(
+        "--grid-table",
+        type=Path,
+        default=None,
+        help="score_probes_per_token.py --probe-type grid_tile output, optionally widened "
+        "with join_signal_loudness.py so several vocabularies are drawn side by side.",
+    )
     ap.add_argument("--out", type=Path, required=True, help="Directory to write the PNGs into.")
     ap.add_argument("--lens", default="jlens", help="Ruler the axis labels name (default: %(default)s).")
     ap.add_argument("--signal-name", default="direction", help="Vocabulary the axis labels name.")
@@ -1107,12 +1467,30 @@ def main(argv: list[str] | None = None) -> int:
         help="Which value column(s) the distribution figures draw (default: both scales).",
     )
     ap.add_argument("--lenses", default="jlens,logitlens", help="Lenses the rollout figures compare.")
+    ap.add_argument(
+        "--deciles", type=int, default=10, help="Loudness bins the grid figures cut (default: %(default)s)."
+    )
+    ap.add_argument("--boot", type=int, default=300, help="Bootstrap resamples behind the grid gap CIs.")
+    ap.add_argument(
+        "--grid-probe",
+        default=None,
+        help="Probe key the per-class grid figure draws (default: the last in the table, "
+        "which is the mlp where an lr/mlp pair was scored together).",
+    )
+    ap.add_argument(
+        "--reference-gap",
+        type=float,
+        default=0.1559,
+        help="Effect size the grid gap bars are read against: the matched ACTION-probe gap "
+        "from next_action_mass_l15.random_topall_mlp. A grid gap means something only as a "
+        "fraction of this, never as a significance test.",
+    )
     args = ap.parse_args(argv)
 
     # Two of the three scripts named the output directory differently; the drawers still use
     # their own name, so both point at the same place.
     args.out_dir = args.out
-    args.per_token = args.probe_table or args.distribution_table or args.rollout_table
+    args.per_token = args.probe_table or args.distribution_table or args.rollout_table or args.grid_table
     # draw_rollout splits --lenses itself, so it stays a string here; draw_distribution
     # ITERATES --values, so that one is split. The two drawers genuinely differ.
     if isinstance(args.values, str):
@@ -1128,6 +1506,7 @@ def main(argv: list[str] | None = None) -> int:
         "probe": args.probe_table,
         "distribution": args.distribution_table,
         "rollout": args.rollout_table,
+        "grid": args.grid_table,
     }
 
     if args.figure == "all":

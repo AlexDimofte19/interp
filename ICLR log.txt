@@ -4060,3 +4060,279 @@ the same footing. Same-round gaps are.
 	section for the full rename table, and tests/data/score_probes_per_token/*.csv --
 	the golden output of the two deleted evaluators, which is the only surviving record
 	of what they emitted.
+
+
+57. THE OTHER HALF OF THE SPECIFICITY CONTROL: GRID LOUDNESS *DOES* PREDICT
+    GRID-CELL DECODABILITY (2026-09-11)
+
+	Entry 55 measured the grid probe against the DIRECTION vocabulary and found no
+	relationship (-2.4 points, opposite in sign to the action probe's +15.6). That is
+	only half an argument: "direction loudness does not predict the grid" is
+	consistent both with "loudness is signal-specific" and with "the grid simply is
+	not predictable from loudness at all". This entry runs the missing half -- the
+	SAME probes, the SAME 87,221 held-out tokens, the SAME layer, with the ruler
+	swapped to data/jlens/grid_tokens_full.json -- and the sign reverses.
+
+	Loudness throughout is log( sum of p over the words in the vocabulary JSON ),
+	i.e. the full-vocabulary mass table, NOT the top-20 count. That distinction was
+	forced rather than chosen: see (d).
+
+	(a) THE RESULT. grid_mass_l15.random_l15_mlp, balanced accuracy over the four
+	real cell classes, count-pooled, by decile of L15 loudness:
+
+	  ruler                 quietest -> loudest          gap      vs action ref
+	  logitlens / grid      .329 .339 .345 ... .383 .408  +0.0795   51%
+	  jlens     / grid      .359 .351 .351 ... .376 .402  +0.0433   28%
+	  jlens     / direction .383 .371 .358 ... .352 .360  -0.0236  -15%   (entry 55)
+	  logitlens / direction .370 .374 .366 ... .348 .344  -0.0263  -17%
+
+	All four CIs are trajectory-clustered, 300 resamples, bin edges recomputed inside
+	each resample. The reference is the matched action gap, +0.1559. So the same
+	probe on the same tokens goes from anti-correlated to correlated purely by which
+	vocabulary the mass is taken over: a DOUBLE DISSOCIATION, which is what entry 55
+	could not claim on its own.
+
+	(b) READ THE CURVE, NOT THE GAP. The logitlens/grid arm is monotone across all
+	ten deciles (Spearman +.087). The jlens/grid arm is NOT -- it is U-shaped, dipping
+	to .347 at decile 5 before rising, so its Spearman is -.002 even though its
+	endpoint gap is +.043. verdict() reads endpoints only and calls both "RISES with
+	loudness". Quote the logitlens arm as the result and the jlens arm as a weaker,
+	non-monotone version of it; do not quote the jlens Spearman as a null.
+
+	That the LOGIT lens is the stronger ruler here is the reverse of the action line,
+	where the jlens leads. Not explained. It is at least consistent with the grid
+	vocabulary being about what the model is literally about to TYPE (coordinates)
+	rather than about a decision being transported forward.
+
+	(c) WHERE THE EFFECT LIVES: the two RARE classes. Per-class recall, loudest
+	decile vs quietest, logitlens/grid:
+
+	  A (agent, 1 cell/grid)   .080 -> .193      # (wall,  5.05M cells)  .601 -> .654
+	  G (goal,  1 cell/grid)   .046 -> .151      _ (open,  4.74M cells)  .588 -> .634
+
+	Agent and goal recall roughly TRIPLE; wall and open move ~5 points. So "the grid
+	is more decodable at loud tokens" is really "the AGENT and GOAL POSITIONS are",
+	which is what one would expect if grid loudness is the model being about to
+	verbalise a coordinate. The aggregate balanced accuracy hides this completely --
+	it is four numbers averaged, and two of them carry 98% of the cells.
+
+	(d) WHY A GPU PASS WAS UNAVOIDABLE. The top-20 route is free -- the analysis CSVs
+	carry top_i_logprob, so any vocabulary can be re-scored off disk -- and it does
+	not work here. At L15 the grid vocabulary reaches the top 20 for only 31.5% of
+	tokens against direction's 81.4%, so a top-k grid score floors 68% of rows at
+	NO_MATCH_LOGPROB and six of ten deciles become one tie. The full-vocabulary mass
+	table has to be baked at gather time, and it was: a CSV-only pass
+	(--no-save-activations) over the same 360 trajectories, ~45 min, both lenses.
+
+	(e) THE VOCABULARY IS STILL THE PRE-RULE 1258 (data/jlens/README.md). Two entries
+	do not round-trip and are dropped, leaving 1256 ids. The junk-token worry turned
+	out to be smaller than feared -- AGENT's " a"/"an"/"A" reach the top 20 on 0.02
+	tokens each and the mass spread is comparable to direction's (sd 0.92-1.27 vs
+	1.10-1.28) -- but the numbers above are measured against 1258, not the 927 of
+	entry 19. Regenerating the vocabulary would change them by an unknown amount.
+
+	(f) NEW TOOLING, and the reason it exists.
+	  telos_interp/loudness_analysis/join_signal_loudness.py -- adds a SECOND
+	    signal's loudness to a per-token table that already exists, keyed on
+	    (name, step, abs_pos), CPU only. score_probes_per_token.py writes the probe
+	    verdicts and the loudness in one pass, so swapping the ruler would otherwise
+	    re-read 87k activations and re-run every probe (~2h) to change four columns
+	    per lens. Every probe column comes through byte-for-byte, which is what makes
+	    the four rulers above comparable. It REFUSES a mass tree whose .meta.json
+	    names a different signal -- every table on disk is called
+	    "{stem}_{lens}_direction_mass.csv" whatever vocabulary made it, so the
+	    filename cannot say, and reading the wrong tree would relabel one question as
+	    another silently.
+	  plotting/figures.py gains a fourth table kind, "grid" (--grid-table), with
+	    three figures. It is not a variant of "probe": a probe row is one prediction
+	    and its figures AVERAGE per-row accuracies, a grid row is a whole step's cells
+	    and its figures POOL per-class counts. The rulers are discovered from the
+	    columns present rather than taken from a flag, so one table carrying several
+	    vocabularies draws them on one axis -- which is what makes (a) a single
+	    figure instead of four.
+	  A token the mass tree has no row for gets an EMPTY cell, never a floor: absent
+	    is not quiet, and flooring would load the quietest decile with unmeasured
+	    tokens in exactly the direction the analysis is looking.
+
+	CAVEATS. Layer 15 only. One probe pair (the random-selection arm) -- there is no
+	jlens-selected or logitlens-selected grid probe, so this says nothing about
+	selection, only about ranking. The grid label is static within a step while the
+	action label is what the model is deciding, so the two lines' absolute numbers
+	still are not comparable; only the within-ruler gaps are. And per (b) the jlens
+	arm is not monotone.
+
+	NOT IN reproduce_all.sh, DELIBERATELY. Neither half of the grid specificity line
+	is -- entry 55's own stage was never added either, and its invocation is not
+	recorded in scripts/, so writing a stage for this half alone would claim the line
+	is covered when its input is not. The three commands are here instead, and they
+	are the whole of it:
+
+	  # 1. the grid-vocabulary mass tables (GPU, ~45m, writes no .pt)
+	  python telos_interp/loudness_analysis/build_loudness_tables.py \
+	    --trajectory-paths /workspace/trajectories/heldout360 \
+	    --names-file /workspace/trajectories/heldout360_names.txt \
+	    --jlens_dir /workspace/jlens/gridenv \
+	    --activations-dir /workspace/activations/heldout360_lens_grid \
+	    --signal-json /workspace/jlens/grid_tokens_full.json --signal-name grid \
+	    --lens both --layers 7:23 --steps all \
+	    --direction-score logprob_mass_full --no-save-activations
+
+	  # 2. widen entry 55's per-token table with the second ruler (CPU, ~2m)
+	  python telos_interp/loudness_analysis/join_signal_loudness.py \
+	    --table /workspace/probes/grid_mass_l15/heldout360_grid_per_token.csv \
+	    --lens-root /workspace/activations/heldout360_lens_grid \
+	    --signal-name grid --signal-json /workspace/jlens/grid_tokens_full.json \
+	    --out .../grid_ruler/heldout360_grid_per_token_both_signals.csv
+
+	  # 3. four decile analyses + the figures (CPU, ~10m)
+	  for lens in jlens logitlens; do for sig in grid direction; do
+	    python telos_interp/loudness_analysis/analysis/probe_accuracy_by_loudness.py \
+	      --per-token <that CSV> --probe-type grid_tile --lens $lens \
+	      --signal-name $sig --layer 15 --out .../${lens}_${sig}_L15
+	  done; done
+	  python telos_interp/loudness_analysis/plotting/figures.py \
+	    --grid-table <that CSV> --out .../figures --signal-name grid
+
+	NOT COVERED: the four round-1 cognitive_map probes in probes/{start,end}_of_reasoning
+	have input_dim 8642 (three concatenated activations + row + col) against these
+	probes' 2882, so they cannot read a single reasoning-token residual at all. They
+	are a different feature contract, not a missing run.
+
+	ARTIFACTS:
+	  /workspace/activations/heldout360_lens_grid/  (360 trajectories, both lenses,
+	    L7-L23 analysis CSVs + grid-vocabulary mass tables + .meta.json sidecars)
+	  /workspace/probes/grid_mass_l15/grid_ruler/
+	    heldout360_grid_per_token_both_signals.csv  (87,221 rows, 4 rulers)
+	    {jlens,logitlens}_{grid,direction}_L15/     (summary.json + decile tables)
+	    figures/  (3 PNGs + 8 decile tables)
+	  Log: /workspace/logs/heldout360_grid_mass_gather.log,
+	       /workspace/logs/grid_ruler_analysis.log
+
+
+58. THE CROSS-SELECTION MATRIX: EVERY BELIEF PROBE ON EVERY OTHER ARM'S TOKENS,
+    AND THE BELIEF PROBES REORGANISED (2026-09-15)
+
+	Two things, one of them a finding-in-waiting and one of them bookkeeping that
+	left a landmine. Bookkeeping first, because the landmine is live.
+
+	*** (A) THE REORGANISATION ***
+
+	Every local-belief ACTION probe now lives under one root, one directory per
+	cadence, named for what the probe reads rather than for the round that made it:
+
+	  probes/local_belief_action_l15/p1/         8 probes: {jlens,logitlens,eos,random} x {lr,mlp}
+	  probes/local_belief_action_l15/p1-top20/   6 probes: the thinned row, untouched this round
+	  probes/local_belief_action_l15/p2/         6 probes: {jlens,logitlens,random} x {lr,mlp}
+
+	p2 HAD NEVER BEEN COLLECTED. Its six probes were scattered across three
+	directories and two rounds -- entry 45's jlens pair (lr under
+	reasoning_theatre/local_belief_probes/probes/, mlp duplicated into
+	probes/local_belief/), and entry 49's logitlens_p2 and random_belief pairs under
+	probes/local_belief_baselines/. They were identified as p2 by three agreeing
+	checks, not by their names: each checkpoint's config.train_data_path points at a
+	*_p2_split_train (or entry49_random_belief_split_train), the training scripts'
+	headers say "the global top-20", and every recorded best_balanced_accuracy
+	reproduces entry 49(a)/(b) to 3 dp -- jlens .8023/.8624, logitlens .7297/.7963,
+	random .6595/.7234.
+
+	THE p1/p2 VINTAGES DIFFER ON PURPOSE. p1/ holds entry 52's equal-N rebuilds;
+	p2/ holds the entry-45/49 originals, because the p2 family never needed the
+	rebuild. The final-sentence collision DELETES a row under a per-sentence rule
+	and merely RELABELS one under a fixed min(n,20) budget, which is entry 52(a)'s
+	control: p2's collision counts differ across arms exactly as predicted (jlens
+	406, logitlens 435, random 897) while its total stays 71,913 for all three.
+
+	DELETED, after verifying each had a live replacement: entry 45's four
+	p1/p1-top20 probes (superseded by p1/*jlens* and p1-top20/*jlens_top20*) and one
+	byte-identical duplicate of the p2 jlens mlp (md5 732af9f9...). The now-empty
+	reasoning_theatre/local_belief_probes/probes/ was removed; its logs, scripts and
+	the two relabel report CSVs stay. scripts/compare_equal_n_arms.py was deleted
+	with them -- its entire job was pairing each old arm against its equal-N
+	rebuild, and its "before" column was exactly those four probes, so it could no
+	longer produce its table. Its two INVENTORY.md references went with it.
+
+	*** LANDMINE, LIVE AS OF THIS ENTRY: THE RENAME BROKE FIVE REFERENCES. ***
+	probes/local_belief_equalN was renamed to probes/local_belief_action_l15, and
+	five places in the repo still name the old path:
+
+	  scripts/train_equal_n_belief_arms.sh:60    PROBES default (would re-train into the old name)
+	  scripts/eval_belief_arms_heldout.sh:51     EQUAL_N default (the equal_n round would find 0 probes)
+	  scripts/reproduce_all.sh:190               done_equal_n_belief_probes() -- its >=14 test would fail
+	  scripts/build_probe_inventory.py:454,461   the H16 key map
+
+	A COMPATIBILITY SYMLINK probes/local_belief_equalN -> local_belief_action_l15
+	currently masks all five. It was created mid-run for a different reason (see B)
+	and IT IS NOT A FIX: deleting it without updating those five lines silently
+	breaks the equal-N reproduction and inventory paths. Either update the five or
+	keep the symlink deliberately and say so here. ICLR log.txt:3601 also names the
+	old path and must NOT be edited -- the log is append-only and that line is entry
+	52's history, true when written.
+
+	*** (B) THE CROSS-SELECTION MATRIX ***
+
+	THE GAP. Every belief probe on disk has been scored on exactly two populations,
+	and they are the two extremes. (1) ITS OWN selection's slice of the eval-720 --
+	the number in each checkpoint's results block, the diagonal. (2) ALL 87,221
+	heldout-360 tokens with no selection between the axis and the label
+	(eval_belief_arms_heldout.sh). Entry 49(c) is the reason this matters: THE
+	ORDERING INVERTS BETWEEN THEM. On its own loud tokens the jlens arm wins and the
+	random control is worst; on all 87,221 the random control wins and the jlens arm
+	is worst. Both numbers are real, and neither separates "this probe is better"
+	from "this probe is specialised to the tokens it was trained on".
+
+	THE IDEA. Fill the middle. Read EVERY arm's probe on EVERY OTHER arm's
+	selection, holding the test population fixed down a column and varying only the
+	training selection. A column then answers "on THIS population, which training
+	selection produced the best probe"; a row answers "how far does THIS probe
+	travel off its own token distribution". The diagonal is the existing number and
+	serves as the regression check.
+
+	WHY IT IS CHEAP AND WHY IT IS CLEAN. No GPU, no gather, no new probe: each cell
+	is one existing checkpoint read on one existing *_split_eval manifest, via
+	telos_interp/loudness_analysis/rollouts/eval_local_belief.py, which already takes
+	(probe, eval dir). And the slices are matched by construction -- entry 52
+	intersected the four p1 arms row for row on (name, step, sentence_idx), so all
+	four hold 14,472 eval rows over the same sentences, and the three p2 arms hold
+	14,391 each over the same pinned 720 trajectories. So a within-cadence cell
+	difference is the selection and nothing else, on both axes.
+
+	THE DESIGN, 50 cells. p1-top20 is deliberately out of scope this round.
+
+	  slice (the eval-720 selection)            eval dir                          probes read on it
+	  jlens p1                                  equal_n_jlens_split_eval          all 8 p1
+	  random p1                                 equal_n_random_split_eval         all 8 p1
+	  eos p1                                    equal_n_eos_split_eval            all 8 p1
+	  logitlens p1                              equal_n_logitlens_split_eval      all 8 p1
+	  jlens p2                                  local_belief_p2_split_eval        all 6 p2
+	  random p2                                 entry49_random_belief_split_eval  all 6 p2
+	  logitlens p2                              entry49_logitlens_p2_split_eval   all 6 p2
+
+	TWO THINGS TO KNOW BEFORE READING THE OUTPUT.
+
+	  eval_local_belief.py REPORTS PLAIN ACCURACY, NOT BALANCED. The diagonal will
+	  therefore not equal the published balanced figures; on these roughly balanced
+	  4-class arms it lands within ~0.3 pp (eos p1 mlp on its own slice: .6622 plain
+	  against .6651 balanced), which is itself the join's sanity check. Nothing in
+	  the repo computes balanced accuracy from a (probe, slice-manifest) pair --
+	  summarise_probe_accuracy.py consumes a per-token CSV off an activation TREE.
+
+	  ITS DIRECTION-WORD SPLIT IS VACUOUS ON 5 OF THE 7 SLICES. The verbalization
+	  control keys on each sample's `token` field, which only the two mass-era p2
+	  manifests carry (local_belief_p2, entry49_logitlens_p2). On the other five
+	  every row falls into "NOT a direction word". That is a property of how those
+	  manifests were prepared, not of the probes; the three accuracy numbers above
+	  that line are valid everywhere.
+
+	COST: ~10 min per cell, and it does not cache -- 14,391 individual .pt reads
+	over MooseFS is ~29 s of CPU and the rest I/O wait, and a second read of the
+	same slice costs full price (measured: 10m28s then 10m02s on the same slice).
+	Run it parallel; at -P 10 the 50 cells are ~50 min against ~8.7 h serial.
+
+	STATUS AT TIME OF WRITING: in flight, 20/50 complete (jlens p1 8/8, jlens p2
+	6/6, random p1 6/8). Results are NOT in this entry and must be appended when the
+	run lands -- do not quote the diagonal from the checkpoints as if it came from
+	here, the two are different accuracy definitions.
+
+	ARTIFACTS:
+	  /workspace/probes/local_belief_action_l15/{p1,p1-top20,p2}/   20 probes
+	  /workspace/reasoning_theatre/cross_selection_eval/<slice>/<probe>.txt   50 cells

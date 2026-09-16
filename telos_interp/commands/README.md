@@ -12,17 +12,20 @@ The typical workflow follows these steps:
                      prepare_activations_for_probing
                                                     ↓
                                          [Prepared dataset .pt]
-                                        ╱                       ╲
-          train_cognitive_map_probe                   train_distance_probe
-                      ↓                                         ↓
-           [Trained probe .pt]                       [Trained probe .pt]
-                      ↓                                         ↓
-         eval_cognitive_map_probe                   eval_distance_probe
-                      ↓
-        apply_cognitive_map_probe
-                      ↓
-           [Updated Trajectory JSONs
-            with probe predictions]
+                                        ╱           |           ╲
+          train_cognitive_map_probe     |            train_distance_probe
+                      ↓                 |                       ↓
+           [Trained probe .pt]          |            [Trained probe .pt]
+                      ↓                 |                       ↓
+         eval_cognitive_map_probe       |            eval_distance_probe
+                      ↓                 |
+        apply_cognitive_map_probe       |
+                      ↓                 ↓
+           [Updated Trajectory JSONs    train_binary_cognitive_map_probe   (one per grid symbol)
+            with probe predictions]                 ↓
+                                          [Trained probe .pt]
+                                                    ↓
+                                         eval_binary_cognitive_map_probe
 ```
 
 ## Commands
@@ -109,6 +112,36 @@ See [`train_cognitive_map_probe/README.md`](train_cognitive_map_probe/README.md)
 
 ---
 
+### train_binary_cognitive_map_probe
+
+Train a one-vs-rest cell-identity probe: one probe per grid symbol.
+
+```bash
+interp-cli train_binary_cognitive_map_probe \
+    --train-data-path /path/to/prepared_split_train \
+    --eval-data-path  /path/to/prepared_split_eval \
+    --positive-class wall \
+    --model-type mlp \
+    --class-weight balanced --normalize
+```
+
+**Key options:**
+| Option | Description |
+|--------|-------------|
+| `--train-data-path` | v3 prepared dataset directory (probe_type=grid_tile) |
+| `--positive-class` | Grid symbol or alias: `_`/empty, `#`/wall, `A`/agent, `G`/goal, ... |
+| `--eval-data-path` | Separate v3 dataset; required for a token-major manifest |
+| `--model-type` | "lr" or "mlp" |
+| `--class-weight` | Defaults to `balanced` here, unlike the multiclass trainer |
+
+Reports balanced accuracy, positive-class precision/recall/F1 and AUROC. The saved probe
+carries `positive_class` and a full cell-id -> {0,1} `label_to_idx`.
+
+See [`train_binary_cognitive_map_probe/README.md`](train_binary_cognitive_map_probe/README.md)
+for full documentation.
+
+---
+
 ### train_distance_probe
 
 Train a distance regression probe on prepared activations.
@@ -157,6 +190,34 @@ interp-cli eval_cognitive_map_probe \
 | `--pad-to-size` | Pad grid to this size for consistent evaluation |
 
 See [`eval_cognitive_map_probe/README.md`](eval_cognitive_map_probe/README.md) for full documentation.
+
+---
+
+### eval_binary_cognitive_map_probe
+
+Score a saved binary probe against a prepared dataset, one row per (token, cell).
+
+```bash
+interp-cli eval_binary_cognitive_map_probe \
+    --probe-path /path/to/grid_binary_probe_wall_mlp.pt \
+    --data-path  /path/to/prepared_heldout \
+    --output-path results.json
+```
+
+**Key options:**
+| Option | Description |
+|--------|-------------|
+| `--probe-path` | `.pt` from `train_binary_cognitive_map_probe` |
+| `--data-path` | v3 prepared dataset directory (probe_type=grid_tile) |
+| `--threshold` | Positive-class probability cut, default 0.5 |
+| `--cache-activations` | Shares the trainer's `_packed_activations.pt` |
+
+Unlike `eval_cognitive_map_probe`, which concatenates token indices into one activation per
+(trajectory, step), this scores every token on its own — the conditions a token-major probe
+was trained under. Writes `global`, `by_size`, `by_complexity` and `by_size_complexity` blocks.
+
+See [`eval_binary_cognitive_map_probe/README.md`](eval_binary_cognitive_map_probe/README.md)
+for full documentation.
 
 ---
 

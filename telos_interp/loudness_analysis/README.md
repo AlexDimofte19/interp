@@ -12,9 +12,13 @@ Three axes vary independently, and every stage takes all three:
 | **signal** | which vocabulary the mass is taken over — `direction`, `grid`, anything | [`signals.py`](signals.py) |
 | **probe** | what a probe decodes — `next_action`, `grid_tile` | [`probes.py`](probes.py) |
 
-None implies another. The grid analysis is deliberately pointed at the *direction* vocabulary:
-the question is whether direction loudness predicts where the **grid** is decodable, and the
-answer only means something if the ruler is unchanged.
+None implies another, and the grid line is the case that proves it. It was first pointed at
+the *direction* vocabulary on purpose — asking whether direction loudness predicts where the
+**grid** is decodable, which it does not (−2.4 points against +15.6 for the action) — and the
+answer only meant something because the ruler was unchanged. Pointing the *same* probes at
+the *grid* vocabulary reverses the sign (+7.9 points under the logit lens), so the pair is a
+double dissociation rather than one number: probe type and signal have to vary independently
+for that to be sayable at all.
 
 ## The pipeline
 
@@ -30,6 +34,9 @@ probes ─────► score_probes_per_token.py ──► per-token table, A
 
               ──► join_rollouts.py ──► + the model's belief, sentence and commitment coords
                    --table … --rollout-dir …
+
+              ──► join_signal_loudness.py ──► + a SECOND vocabulary's loudness, no GPU
+                   --lens-root <tree baked against the other signal> --signal-name
 
               ──► analysis/ ──► tables + summary.json + run_config.json
               ──► plotting/ ──► figures
@@ -48,6 +55,19 @@ and mass beside every probe's prediction, both lenses in one pass. That is why t
 lens ruler; a rollout arm is 6–14 GPU-hours. Merging them would put the GPU in the path of
 every re-join.
 
+**Changing the SIGNAL is a join too, not a re-score.** `score_probes_per_token.py` writes the
+probe verdicts and the loudness columns in one pass, which is right the first time and wrong
+every time after: asking the same probes "does *grid* loudness predict you rather than
+*direction* loudness?" would re-read 87k activations and re-run every probe to change four
+columns per lens. `join_signal_loudness.py` is that join on its own — point it at a mass tree
+gathered against the other vocabulary and it widens the table in minutes, leaving every probe
+column byte-for-byte. The probe columns being untouched is what makes the two rulers
+comparable: the only thing that differs between them is the ruler.
+
+Because one table can then carry several rulers at once, the `grid` figures discover every
+`(lens, signal)` pair present in the columns and draw them on the same axes, rather than
+taking a ruler from a flag.
+
 ## Files
 
 | File | Does |
@@ -64,9 +84,10 @@ every re-join.
 | `join_rollouts.py` | The join, from a per-token **table**. CPU. |
 | `join_rollout_answers.py` | The join, from a **mass tree**, against the rollout's answer probability, under both lenses. CPU. |
 | `build_sentence_loudness.py` | The join, from a **mass tree**, placing each token in its sentence. CPU. |
+| `join_signal_loudness.py` | The join, from a **mass tree**, adding a SECOND signal's loudness to a table that already has one. CPU. |
 | `summarise_probe_accuracy.py` | One row per probe: balanced accuracy vs belief and vs final. Not a loudness analysis — a scoreboard. |
 | [`analysis/`](analysis) | Two analysers; neither touches a lens, both bin a column. |
-| [`plotting/`](plotting) | 16 figures behind one registry, plus the loudness × chain-position heatmap. |
+| [`plotting/`](plotting) | 19 figures behind one registry, plus the loudness × chain-position heatmap. |
 
 ## Conventions that are not negotiable
 

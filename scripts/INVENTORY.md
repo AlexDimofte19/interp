@@ -11,8 +11,8 @@ Read [CLAUDE.md](../CLAUDE.md) first for the pipeline shape and the on-disk cont
 | Directory | Holds | n |
 |---|---|---|
 | [`telos_interp/loudness_analysis/`](../telos_interp/loudness_analysis/README.md) | **the lens → probe → loudness pipeline**, and the rollout line. An importable package, not a script folder. | 29 |
-| `scripts/` | **the machinery** — everything that does work and is not part of that pipeline | 40 |
-| [`wrappers/`](../wrappers/README.md) | **the record** — recorded invocations that pin one run's parameters onto a script here. Do not refactor them; changing a default rewrites history. | 14 |
+| `scripts/` | **the machinery** — everything that does work and is not part of that pipeline | 41 |
+| [`wrappers/`](../wrappers/README.md) | **the record** — recorded invocations that pin one run's parameters onto a script here. Do not refactor them; changing a default rewrites history. | 15 |
 | [`grid_cell_analysis/`](../grid_cell_analysis/README.md) | the grid-cell ("cognitive map") line: the published round-1 probes, and the round-2 grid-label arms that **never produced a result** | 18 |
 | `configs/**/*.conf` | recorded `interp-cli` invocations, same role as `wrappers/` | — |
 
@@ -114,7 +114,6 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | `telos_interp/loudness_analysis/score_probes_per_token.py` (437L) | The `grid_tile` twin — the specificity control. | same + `--max-cells`, `--pad-to-size` | `--out` per-token CSV |
 | `eval_belief_arms_heldout.sh` (146L) | Reads every belief probe of a round on all 87,221 held-out tokens. `24probes` = the entry-49/50 round; `equal_n` = those plus the 14 that supersede them. *(merged from `eval_more_belief_arms.sh` + `eval_equal_n_belief_arms.sh`, which were 83% identical)* | `PROBES/{local_belief*,local_belief_equalN,next_action_mass_l15}`, `ACT/heldout360_lens` | `RT/probe_loudness_heldout360_{24probes,equal_n}` |
 | `score_probes_heldout.py` (111L) | Balanced accuracy per probe against both label definitions. | a per-token CSV | table + optional JSON |
-| `compare_equal_n_arms.py` (116L) | Old arms vs. their equal-N rebuilds, from `results.best_balanced_accuracy` in each checkpoint. **Unreferenced.** | `PROBES/**/*.pt` | stdout + optional JSON |
 | `telos_interp/loudness_analysis/rollouts/eval_local_belief.py` (106L) | A belief probe against both the local belief and the final action. | a probe + an eval prepared dir | stdout |
 
 ## F. Joins — the per-token tables everything downstream reads
@@ -190,6 +189,7 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | `reproduce_all.sh` (746L) | Rebuilds every result in dependency order, one stage per experiment. `LIST=1`, `DRY_RUN=1`, `ONLY`/`SKIP`/`FROM`/`FORCE`, `GRID_ROUND=1`, `UNRUN=1`. **The canonical record of every path and flag.** | all of `/workspace` | all of `/workspace` |
 | `push_to_huggingface.sh` (358L) | Packs and pushes splits, trajectories, prepared datasets, trees, CSVs, probes, results to one HF dataset repo. | `/workspace` | `HF_ORG/jlens_decodability_property` |
 | `pull_artifacts_to_laptop.sh` (303L) | Runs **on the laptop**; rsyncs back everything but the `.pt` trees. Tiers move the total between ~4 GB and ~57 GB. | `HOST:/workspace` | `$DEST` + `README_PATHS.md` |
+| `boundary_cognitive_maps.py` (2107L) | **The boundary round, end to end**: locate the six channel-boundary tokens (`<|end|><|start|>assistant`, once before the reasoning chain and once after it), gather their layer-15 residuals, write the token-major `grid_tile` manifests, score the J-lens grid mass at the same positions, evaluate each probe on its own boundary, and pair post against pre. Eight subcommands: `extract prepare loudness evaluate compare plots manifest`. Recorded invocation: `wrappers/boundary_cognitive_maps.sh`. | `SPLITS`, `TRAJ` via the mass views, `HELDOUT`, `JLENS/gridenv`, `data/jlens/grid_tokens_full.json` | `PROBES/2880_trajectory_trained_cogn_maps`, `/workspace/loudness_evaluation/2880_trajectory-trained_cogn_maps` |
 
 ---
 
@@ -240,7 +240,7 @@ matters less than the duplication. It currently does not.
 
 ### Unreferenced by any script, doc, config or test
 
-`compare_equal_n_arms.py`, `gather_reasoning_steps_statistics.py`, `jlens_slice_page.py`, the two
+`gather_reasoning_steps_statistics.py`, `jlens_slice_page.py`, the two
 `grid_cell_analysis/plots/*_from_csv.py`, and `wrappers/run_next_action_arms.sh`.
 
 "Unreferenced" is not "dead" — it means nothing else will run them, so their provenance has to be

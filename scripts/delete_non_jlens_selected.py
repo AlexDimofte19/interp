@@ -43,7 +43,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from telos_interp.loudness_analysis.build_loudness_tables import parse_name  # noqa: E402
 from telos_interp.jlens_utils import (  # noqa: E402
     DEFAULT_ALWAYS_LAYERS,
     DEFAULT_METHODS,
@@ -62,6 +61,7 @@ from telos_interp.jlens_utils import (  # noqa: E402
     top_filter,
     write_selection_record,
 )
+from telos_interp.loudness_analysis.build_loudness_tables import parse_name  # noqa: E402
 
 # Every lens CSV suffix, so a trajectory analysed with either lens is discoverable.
 CSV_SUFFIXES = tuple(m.csv_suffix for m in METHODS.values() if m.csv_suffix)

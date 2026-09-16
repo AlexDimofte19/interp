@@ -5,6 +5,7 @@ import logging
 import tyro
 
 from telos_interp.commands.apply_cognitive_map_probe import apply_cognitive_map_probe
+from telos_interp.commands.eval_binary_cognitive_map_probe import eval_binary_cognitive_map_probe
 from telos_interp.commands.eval_cognitive_map_probe import eval_cognitive_map_probe
 from telos_interp.commands.eval_cognitive_map_probe_per_distance import (
     eval_cognitive_map_probe_per_distance,
@@ -12,6 +13,7 @@ from telos_interp.commands.eval_cognitive_map_probe_per_distance import (
 from telos_interp.commands.eval_distance_probe import eval_distance_probe
 from telos_interp.commands.gather_activations import gather_activations
 from telos_interp.commands.prepare_activations_for_probing import prepare_activations_for_probing
+from telos_interp.commands.train_binary_cognitive_map_probe import train_binary_cognitive_map_probe
 from telos_interp.commands.train_cognitive_map_probe import train_cognitive_map_probe
 from telos_interp.commands.train_distance_probe import train_distance_probe
 from telos_interp.commands.train_next_action_probe import train_next_action_probe
@@ -26,9 +28,11 @@ def main():
     - train_distance_probe: Train and apply distance regression probes
     - prepare_activations_for_probing: Extract and concatenate activations for cognitive map probing
     - train_cognitive_map_probe: Train cognitive map probing classifiers (LR or MLP)
+    - train_binary_cognitive_map_probe: Train one-vs-rest cell-identity probes (one symbol each)
     - train_next_action_probe: Train next-action classifiers on EOS-token activations
     - apply_cognitive_map_probe: Apply trained probes to trajectories and store predictions
     - eval_cognitive_map_probe: Evaluate probes on test trajectories with detailed metrics
+    - eval_binary_cognitive_map_probe: Score a binary probe per (token, cell) on a prepared dataset
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     tyro.extras.subcommand_cli_from_dict(
@@ -38,9 +42,11 @@ def main():
             "eval_distance_probe": eval_distance_probe,
             "prepare_activations_for_probing": prepare_activations_for_probing,
             "train_cognitive_map_probe": train_cognitive_map_probe,
+            "train_binary_cognitive_map_probe": train_binary_cognitive_map_probe,
             "train_next_action_probe": train_next_action_probe,
             "apply_cognitive_map_probe": apply_cognitive_map_probe,
             "eval_cognitive_map_probe": eval_cognitive_map_probe,
+            "eval_binary_cognitive_map_probe": eval_binary_cognitive_map_probe,
             "eval_cognitive_map_probe_per_distance": eval_cognitive_map_probe_per_distance,
         }
     )

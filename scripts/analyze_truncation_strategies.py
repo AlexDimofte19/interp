@@ -229,9 +229,7 @@ def tables(df: pd.DataFrame, out: Path) -> dict:
                 include_groups=False,
             )
         )
-        .join(
-            df[df.cutoff_kind == KIND_NO_REASONING].groupby("arm").correct.mean().rename("no_reasoning_accuracy")
-        )
+        .join(df[df.cutoff_kind == KIND_NO_REASONING].groupby("arm").correct.mean().rename("no_reasoning_accuracy"))
         .join(
             df[df.cutoff_kind == KIND_END_OF_REASONING]
             .groupby("arm")
@@ -267,14 +265,12 @@ def tables(df: pd.DataFrame, out: Path) -> dict:
     by_pos.to_csv(out / "by_chain_position.csv")
 
     excl = mid[mid.dir_within_1 == 0]
-    by_pos_excl = excl.groupby(["arm", pd.cut(excl.chain_fraction, [i / 10 for i in range(11)], include_lowest=True)], observed=True).agg(
-        n=("correct", "size"), accuracy=("correct", "mean")
-    )
+    by_pos_excl = excl.groupby(
+        ["arm", pd.cut(excl.chain_fraction, [i / 10 for i in range(11)], include_lowest=True)], observed=True
+    ).agg(n=("correct", "size"), accuracy=("correct", "mean"))
     by_pos_excl.to_csv(out / "by_chain_position_excl_pm1.csv")
 
-    df.groupby(["arm", "size"]).agg(n=("correct", "size"), accuracy=("correct", "mean")).to_csv(
-        out / "by_size.csv"
-    )
+    df.groupby(["arm", "size"]).agg(n=("correct", "size"), accuracy=("correct", "mean")).to_csv(out / "by_size.csv")
     df.groupby(["arm", "complexity"]).agg(n=("correct", "size"), accuracy=("correct", "mean")).to_csv(
         out / "by_complexity.csv"
     )
@@ -306,7 +302,9 @@ def tables(df: pd.DataFrame, out: Path) -> dict:
         recs.append(row)
     rec = {"n_endpoint_pairs": len(action)}
     for a in arms:
-        rec[f"{a}_accuracy"] = df[(df.cutoff_kind.isin([KIND_NO_REASONING, KIND_END_OF_REASONING])) & (df.arm == a)].correct.mean()
+        rec[f"{a}_accuracy"] = df[
+            (df.cutoff_kind.isin([KIND_NO_REASONING, KIND_END_OF_REASONING])) & (df.arm == a)
+        ].correct.mean()
     for r in recs:
         for a in arms[1:]:
             rec[f"{r['cutoff_kind']}_{arms[0]}_vs_{a}_same_action"] = r[f"{arms[0]}_vs_{a}_same_action"]
