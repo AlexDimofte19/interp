@@ -509,14 +509,39 @@ def group_consecutive(sizes: list[int], max_items: int, max_tokens: int) -> list
     return groups
 
 
-def resolve_trajectory_paths(args, expand_paths: Callable[[list[str]], list[str]]) -> list[str]:
+def _is_trajectory_file(path: str, is_trajectory: Callable[[object], bool]) -> bool:
+    """Whether `path` parses as a trajectory. Unreadable or non-JSON files are not."""
+    try:
+        with open(path) as f:
+            return is_trajectory(json.load(f))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
+def resolve_trajectory_paths(
+    args,
+    expand_paths: Callable[[list[str]], list[str]],
+    is_trajectory: Callable[[object], bool],
+) -> list[str]:
     """Which trajectories this invocation will process, and why.
 
-    Expands --trajectory-paths, applies the size/complexity filters, then whichever cap
-    was asked for. `expand_paths` is passed in because it lives in a module that imports
+    Expands --trajectory-paths, drops whatever is not a trajectory, applies the
+    size/complexity filters, then whichever cap was asked for. `expand_paths` and
+    `is_trajectory` are passed in because they live in a module that imports
     transformers at import time, which main() defers.
     """
     paths = expand_paths(args.trajectory_paths)
+    # A directory argument is globbed recursively for *.json, which also sweeps up batch
+    # summaries and Jupyter's .ipynb_checkpoints copies. A summary has no "model_params", so
+    # reading the model id off paths[0] used to die with a bare KeyError on whichever
+    # non-trajectory happened to sort first. A checkpoint copy is worse: it IS a valid
+    # trajectory, so it passes is_trajectory and silently double-counts its original in
+    # every per-layer mean. Screen both here, before any count is printed, so every number
+    # below counts unique trajectories only.
+    before = len(paths)
+    paths = [p for p in paths if ".ipynb_checkpoints" not in Path(p).parts and _is_trajectory_file(p, is_trajectory)]
+    if len(paths) != before:
+        print(f"{before - len(paths)} non-trajectory JSON(s) skipped", flush=True)
     if args.names_file:
         # Pin the trajectory set by NAME. --per-combo/--seed do not reproduce an earlier
         # draw (ICLR entry 36's correction: two runs with the same flags overlapped by
@@ -1409,7 +1434,7 @@ def main() -> None:
         parse_index_specification,
         sanitize_model_id,
     )
-    from telos_interp.loudness_analysis.rollouts.run_inference import expand_paths
+    from telos_interp.loudness_analysis.rollouts.run_inference import expand_paths, is_trajectory
 
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -1763,7 +1788,7 @@ def main() -> None:
         return
     if args.per_combo is not None and args.max_trajectories is not None:
         ap.error("--per-combo and --max-trajectories are mutually exclusive")
-    paths = resolve_trajectory_paths(args, expand_paths)
+    paths = resolve_trajectory_paths(args, expand_paths, is_trajectory)
     if not has_work(paths, args):
         return
 

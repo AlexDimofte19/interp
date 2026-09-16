@@ -36,8 +36,8 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)   # so uv finds pypr
 MODEL=Qwen/Qwen3.6-35B-A3B
 DATASET=/workspace/trajectories/qwen3.6-35b/replayed_single_step/mass_train_576
 JLENS_DIR=/workspace/jlens/qwen3_6_35b
-SIGNAL_JSON=/workspace/jlens/qwen_direction_tokens.json   # NOT YET UPLOADED -- point this at your local vocabulary
-OUT=/workspace/activations/qwen_loudness_profile_p20
+SIGNAL_JSON=/workspace/repo/interp/data/jlens/qwen/direction_tokens_full_qwen3-6-35b-a3b.json  # NOT YET UPLOADED -- point this at your local vocabulary
+OUT=/workspace/activations/qwen/qwen_loudness_profile_p20
 
 SAMPLE_PERCENT=0.2
 SAMPLE_SEED=42
