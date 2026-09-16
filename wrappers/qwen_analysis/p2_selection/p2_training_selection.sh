@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Qwen P2, step 3: the selecting gather -- three arms, one forward pass, activations saved.
+# Qwen P2, step 3: the selecting gather on the TRAIN set -- three arms, one forward pass,
+# activations saved. p2_eval_selection.sh is the identical run on mass_eval_144.
 #
 # Same shape as ../loudest_layer/sample_loudness_profile.sh, with three differences: it
 # passes --signal-json (which is what switches the script into selective mode), it names a
