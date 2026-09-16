@@ -1,5 +1,6 @@
 """Utility functions for gathering activations."""
 
+import inspect
 import os
 import threading
 from collections import deque
@@ -305,7 +306,7 @@ def extract_activations_single_pass(
 
     try:
         with torch.no_grad():
-            model(input_ids, use_cache=False)
+            model(input_ids, use_cache=False, **_logits_kwargs(model))
     finally:
         for handle in handles:
             handle.remove()
@@ -317,6 +318,29 @@ def extract_activations_single_pass(
             results[layer_idx][token_idx] = layer_output[0, token_idx, :].detach().cpu().clone()
 
     return results
+
+
+def _logits_kwargs(model) -> dict[str, int]:
+    """``logits_to_keep=1`` where the model's forward accepts it, else nothing.
+
+    Both extraction paths below read hidden states off forward hooks and discard the
+    model's return value, so the lm_head is dead weight. Its default is the trap:
+    ``logits_to_keep=0`` becomes ``slice(-0, None)`` -- which is ``slice(0, None)``,
+    i.e. logits for EVERY position. On a 19.5k-token chain over Qwen3.6's ~255k vocab
+    that is a 9.3 GiB bf16 allocation, and it is what ran an 80 GiB card out of memory
+    once the weights already held 66 GiB. One position costs ~0.5 MB instead. The hooks
+    fire on the decoder blocks inside ``self.model(...)``, before the head, so nothing
+    that is captured changes.
+
+    Guarded by the signature rather than try/except: a TypeError raised from inside a
+    forward pass would otherwise be retried as a second full pass, and the test doubles
+    take no such argument.
+    """
+    try:
+        params = inspect.signature(type(model).forward).parameters
+    except (TypeError, ValueError):
+        return {}
+    return {"logits_to_keep": 1} if "logits_to_keep" in params else {}
 
 
 def extract_activations_batched(
@@ -388,7 +412,7 @@ def extract_activations_batched(
 
     try:
         with torch.no_grad():
-            model(input_ids, attention_mask=attention_mask, use_cache=False)
+            model(input_ids, attention_mask=attention_mask, use_cache=False, **_logits_kwargs(model))
     finally:
         for handle in handles:
             handle.remove()
