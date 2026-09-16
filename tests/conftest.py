@@ -162,7 +162,9 @@ def env(tmp_path, monkeypatch):
         classmethod(lambda cls, *a, **k: _StubModel()),
     )
     sampled = importlib.import_module("scripts.jlens_action_ranks")
-    monkeypatch.setattr(sampled, "action_token_ids", lambda: (ACTION_IDS, _StubTokenizer()))
+    # Both take a ModelSpec now; the stubs ignore it, but they must accept it or every
+    # test fails with a TypeError that says nothing about what is being tested.
+    monkeypatch.setattr(sampled, "action_token_ids", lambda _spec=None: (ACTION_IDS, _StubTokenizer()))
     # built once: every run in a test must see the same unembed, or two runs of the same
     # trajectory would differ for reasons that have nothing to do with the code under test
     assets = {
@@ -170,7 +172,7 @@ def env(tmp_path, monkeypatch):
         "norm_weight": torch.randn(DIM),
         "rms_eps": 1e-5,
     }
-    monkeypatch.setattr(sampled, "ensure_unembed_assets", lambda _dir: assets)
+    monkeypatch.setattr(sampled, "ensure_unembed_assets", lambda _dir, _spec=None: assets)
     return {"traj_path": traj_path, "jlens_dir": jlens_dir, "stem": stem, "tmp": tmp_path}
 
 
@@ -184,6 +186,12 @@ def _run(env, out_name, *extra):
         str(env["jlens_dir"]),
         "--activations-dir",
         str(out),
+        # The stub trajectory records model_id "stub/model", which models.py has never
+        # heard of. Naming gpt-oss here is what the stub is standing in for anyway (24
+        # layers, target 23), and it leaves the trajectory's own id alone -- the tree is
+        # still laid out under stub__model, which is what these tests assert on.
+        "--model-id",
+        "openai/gpt-oss-20b",
         "--layers",
         "19:23",
         "--steps",

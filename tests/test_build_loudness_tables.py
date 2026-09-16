@@ -768,3 +768,101 @@ def test_an_empty_selection_is_an_error_not_an_empty_success(env, tmp_path):
     names.write_text("nothing_matches_this\n")
     with pytest.raises(ValueError, match="no trajectories left to process"):
         _run(env, "empty", "--names-file", str(names))
+
+
+# --- --data_sample_p ------------------------------------------------------------------
+#
+# The stub trajectory's steps hold 4, 2 and 5 reasoning tokens, so one fraction exercises
+# three different roundings -- including an exact .5, which Python rounds to even.
+
+
+def _step_pos(path):
+    """{(step, reasoning_pos)} of a CSV: the coordinates every join downstream uses."""
+    return {(r["step"], int(r["reasoning_pos"])) for r in _read_csv(path)}
+
+
+def test_data_sample_p_keeps_a_subset_in_the_original_coordinates(env):
+    """A sampled run writes a strict SUBSET of the full run's rows, unrenumbered.
+
+    This is the whole contract. Were `reasoning_pos` renumbered 0..k-1 over the survivors,
+    the CSV would still look well-formed and every abs_pos / token_idx join downstream
+    would land on the wrong token in silence.
+    """
+    full = _step_pos(_run(env, "full") / f"{env['stem']}_jlens_analysis.csv")
+    sampled = _step_pos(_run(env, "sampled", "--data_sample_p", "0.5") / f"{env['stem']}_jlens_analysis.csv")
+
+    assert sampled < full
+    per_step: dict[str, int] = {}
+    for step, _pos in sampled:
+        per_step[step] = per_step.get(step, 0) + 1
+    # round(4*.5)=2, round(2*.5)=1, round(5*.5)=2 -> 5 of the 11 reasoning tokens
+    assert sorted(per_step.values()) == [1, 2, 2]
+
+
+def test_data_sample_p_is_seeded_per_step_and_reproducible(env):
+    """Same p and seed -> the same tokens; a different seed -> a different draw."""
+    a = _step_pos(_run(env, "a", "--data_sample_p", "0.5") / f"{env['stem']}_jlens_analysis.csv")
+    b = _step_pos(_run(env, "b", "--data_sample_p", "0.5") / f"{env['stem']}_jlens_analysis.csv")
+    assert a == b
+
+    c = _step_pos(
+        _run(env, "c", "--data_sample_p", "0.5", "--data-sample-seed", "7") / f"{env['stem']}_jlens_analysis.csv"
+    )
+    assert c != a
+
+
+def test_data_sample_p_1_is_the_unsampled_run(env):
+    """p=1 is a no-op, not a reshuffle: the same table, value for value."""
+    full = _run(env, "whole")
+    one = _run(env, "one", "--data_sample_p", "1.0")
+    assert_csvs_agree(full / f"{env['stem']}_jlens_analysis.csv", one / f"{env['stem']}_jlens_analysis.csv")
+
+
+def test_data_sample_p_is_recorded_in_the_mass_table_sidecar(env, signal_json):
+    """A sampled table and a full one are the same columns with fewer rows.
+
+    Nothing in the CSV says which it is, so the sidecar has to -- the same reason the
+    vocabulary lives there. A reader pooling a sampled tree with a full one would weight
+    the two differently and never be told.
+    """
+    out = _run(
+        env,
+        "meta",
+        "--no-save-activations",
+        "--direction-mass-json",
+        str(signal_json),
+        "--data_sample_p",
+        "0.4",
+    )
+    meta = json.loads((out / f"{env['stem']}_jlens_direction_mass.csv.meta.json").read_text())
+    assert meta["data_sample_p"] == 0.4
+    assert meta["data_sample_seed"] == 42
+
+
+def test_an_unsampled_run_says_nothing_about_sampling(env, signal_json):
+    """Absence of the key means a full run, so it must not be written as a null."""
+    out = _run(env, "nometa", "--no-save-activations", "--direction-mass-json", str(signal_json))
+    meta = json.loads((out / f"{env['stem']}_jlens_direction_mass.csv.meta.json").read_text())
+    assert "data_sample_p" not in meta
+
+
+@pytest.mark.parametrize("bad", ["0", "-0.5", "1.5"])
+def test_data_sample_p_rejects_fractions_outside_the_unit_interval(env, bad):
+    """0 would select nothing, and >1 is a token COUNT mistaken for a fraction."""
+    with pytest.raises(SystemExit, match="fraction in"):
+        _run(env, f"bad{bad}", "--data_sample_p", bad)
+
+
+def test_the_selection_can_only_pick_tokens_the_sample_kept(env, signal_json):
+    """Sampling happens in build_pending, which both passes read.
+
+    So a pick can never name a token pass 2 has no activation for. Worth pinning rather
+    than assuming: the two passes resolve their positions separately, and a sample applied
+    in only one of them would write a record pointing at absent .pt files.
+    """
+    out = _run(env, "sel", "--data_sample_p", "0.5", *_select_args(signal_json))
+    scored = {int(r["abs_pos"]) for r in _read_csv(out / f"{env['stem']}_jlens_analysis.csv")}
+    record = json.loads((out / f"{env['stem']}_jlens_selection.json").read_text())
+    picks = [p for arm in record["arms"].values() for p in arm["picks"]]
+    assert picks
+    assert {p["abs_pos"] for p in picks} <= scored

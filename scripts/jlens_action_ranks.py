@@ -39,9 +39,10 @@ from functools import cache
 from pathlib import Path
 
 import torch
+from telos_interp.jlens_utils import DEFAULT_MODEL_ID, ModelSpec, get_model, validate_against_index
 
 ACTIONS = ["RIGHT", "LEFT", "UP", "DOWN"]
-MODEL_ID = "openai/gpt-oss-20b"
+MODEL_ID = DEFAULT_MODEL_ID  # this script's own default; the helpers below take a spec
 TARGET_LAYER = 23  # jlens target: final decoder block, lens is identity here
 
 PATH_RE = re.compile(
@@ -50,26 +51,43 @@ PATH_RE = re.compile(
 )
 
 
-def ensure_unembed_assets(jlens_dir: Path) -> dict:
-    """Extract lm_head.weight + final norm from the HF checkpoint (once)."""
-    cache = jlens_dir / "gpt-oss-20b_unembed.pt"
+def ensure_unembed_assets(jlens_dir: Path, spec: ModelSpec | None = None) -> dict:
+    """Extract lm_head.weight + the final norm from the HF checkpoint (once).
+
+    Everything model-specific -- the repo to download from, the cache filename, the two
+    tensor keys and where `rms_norm_eps` sits in `config.json` -- comes from `spec`
+    (`telos_interp/jlens_utils/models.py`). `None` keeps this script's own gpt-oss default,
+    so the cache it has always written keeps its name and is still read.
+
+    The keys are validated against the index before the shard is fetched: on a wrapped
+    model the near misses are the right rank and a plausible shape, so a wrong key is
+    silently wrong logits rather than an error, and finding that out *after* a multi-GB
+    download is the expensive order to find it out in.
+    """
+    spec = spec or get_model(MODEL_ID)
+    cache = jlens_dir / spec.unembed_file
     if cache.exists():
         return torch.load(cache, map_location="cpu", weights_only=True)
 
     from huggingface_hub import hf_hub_download
     from safetensors import safe_open
 
-    cfg = json.load(open(hf_hub_download(MODEL_ID, "config.json")))
-    index = json.load(open(hf_hub_download(MODEL_ID, "model.safetensors.index.json")))
-    shard = index["weight_map"]["lm_head.weight"]
-    assert index["weight_map"]["model.norm.weight"] == shard
-    print(f"downloading {shard} (~4.2 GB, one-time; extracted tensors are cached)...")
-    shard_path = hf_hub_download(MODEL_ID, shard)
+    cfg = json.load(open(hf_hub_download(spec.model_id, "config.json")))
+    index = json.load(open(hf_hub_download(spec.model_id, "model.safetensors.index.json")))
+    validate_against_index(spec, index["weight_map"])
+    shard = index["weight_map"][spec.lm_head_key]
+    assert index["weight_map"][spec.norm_key] == shard, (
+        f"{spec.lm_head_key} is in {shard} but {spec.norm_key} is in "
+        f"{index['weight_map'][spec.norm_key]}; this path fetches one shard"
+    )
+    print(f"downloading {shard} (one-time; extracted tensors are cached)...")
+    shard_path = hf_hub_download(spec.model_id, shard)
     with safe_open(shard_path, framework="pt") as f:
         assets = {
-            "lm_head": f.get_tensor("lm_head.weight"),
-            "norm_weight": f.get_tensor("model.norm.weight"),
-            "rms_eps": cfg["rms_norm_eps"],
+            "lm_head": f.get_tensor(spec.lm_head_key),
+            "norm_weight": f.get_tensor(spec.norm_key),
+            # A VLM wrapper puts this under text_config; a bare lookup raises KeyError.
+            "rms_eps": spec.text_config(cfg)["rms_norm_eps"],
         }
     torch.save(assets, cache)
     print(f"cached {cache} — you may delete the shard from the HF cache to reclaim disk")
@@ -94,10 +112,18 @@ def agent_action_for(f: Path, traj_root: Path) -> str:
     return trajectory_actions(traj_file).get(step_id, "")
 
 
-def action_token_ids() -> tuple[dict, object]:
+def action_token_ids(spec: ModelSpec | None = None) -> tuple[dict, object]:
+    """The four action token ids and the tokenizer that produced them.
+
+    Takes a spec because the tokenizer has to be the one that wrote the trajectory's
+    token ids: the CSV's decoded `top_i` strings and the direction vocabulary's id
+    resolution both go through it, and a mismatched tokenizer names different strings
+    for the same ids without erroring anywhere.
+    """
     from transformers import AutoTokenizer
 
-    tok = AutoTokenizer.from_pretrained(MODEL_ID)
+    spec = spec or get_model(MODEL_ID)
+    tok = AutoTokenizer.from_pretrained(spec.model_id)
     ids = {}
     for a in ACTIONS:
         enc = tok.encode(a, add_special_tokens=False)

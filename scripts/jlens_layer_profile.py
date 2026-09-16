@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Which single layer is most direction-loaded, averaged over a whole activation tree.
 
+This is the **join**: `build_loudness_tables.py` leaves one direction-mass table (or one
+analysis CSV) per trajectory, and nothing yet relates them. This walks the tree, folds
+every table into one per-layer mean, and names the argmax.
+
 Per-token layer selection gives each token its own best layer, and a probe trained on the
 result pools rows from layers that are not in a shared basis — one weight vector cannot
 read layer 7 and layer 22 the same way. Fixing **one** layer for the dataset removes that,
@@ -18,19 +22,36 @@ The analysis CSVs have no such hole: every reasoning token is scored at every la
 lens covers, selected or not. They also survive pruning — `delete_non_jlens_selected.py`
 removes `.pt` files, never CSVs — so this runs on the pruned tree as it stands.
 
-    python scripts/jlens_layer_profile.py /workspace/activations \
-        --signal-json /workspace/jlens/direction_tokens_full.json \
+    python scripts/jlens_layer_profile.py /workspace/activations \\
+        --signal-json /workspace/jlens/direction_tokens_full.json \\
         --direction-score logprob_mass --lens jlens --out layer_profile.json
 
-prints the per-layer table, names the argmax layer, and writes the numbers as JSON. Feed
-the layer to `split_next_action_manifest.py --single-layer L` (or to a
+prints the per-layer table, names the argmax layer, says whether that argmax is
+distinguishable from the layer below it, and writes the numbers as JSON (and, with
+`--out-csv`, as one tidy row per layer for plotting). Feed the layer to
+`split_next_action_manifest.py --single-layer L` (or to a
 `prepare_activations_for_probing --layers L`).
 
+Read the `z` before pinning the layer
+-------------------------------------
+The mean says which layer won; `z` says whether winning meant anything. It is the gap to
+the runner-up over the standard error of that gap, **paired within each trajectory and
+pooled over trajectories** — not over tokens, because the tokens of one chain share a
+prompt, a grid and a train of thought and are nowhere near independent. Under about 2, the
+argmax is a coin flip between two adjacent layers and the choice should be made on some
+other ground. That matters most on a sampled gather (`--data_sample_p`), whose means are
+unbiased but noisier; this script prints the sample fraction it finds in the sidecars so
+the number is never mistaken for a full-dataset one.
+
 A logprob score needs CSVs carrying the `top_i_logprob` columns; `--direction-score count`
-works on every CSV ever written.
+works on every CSV ever written. `--signal-json` is required for those, and optional for
+`logprob_mass_full`, whose vocabulary was fixed at gather time and is named in each table's
+`.meta.json` sidecar — passing one there cannot change the numbers, so this refuses to let
+it look as though it could.
 """
 
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
@@ -42,6 +63,8 @@ from telos_interp.jlens_utils import (  # noqa: E402
     LayerProfile,
     artifact_layers,
     format_profile,
+    format_separation,
+    get_score,
     load_direction_tokens,
     read_direction_scores,
     read_mass_meta,
@@ -49,6 +72,11 @@ from telos_interp.jlens_utils import (  # noqa: E402
     score_names,
     scored_methods,
 )
+
+# Sidecar fields that must agree across the tree for the join to mean anything. The
+# fingerprint is a hash of the vocabulary's *contents*, so it catches a file edited in
+# place between two halves of a gather, which the path never would.
+PINNED_META = ("signal_name", "signal_fingerprint", "direction_classes", "data_sample_p")
 
 
 def trajectory_folders(activations_dir: Path) -> list[Path]:
@@ -63,9 +91,32 @@ def trajectory_folders(activations_dir: Path) -> list[Path]:
     return sorted(folders)
 
 
+def check_meta_agrees(metas: list[dict]) -> dict:
+    """One sidecar's worth of facts, or raise naming the field the tree disagrees on.
+
+    Averaging two vocabularies' mass tables together produces a number with no referent,
+    and this repo deliberately points two vocabularies at the same trees. Same for a
+    partially re-gathered tree where half the trajectories were sampled and half were not:
+    the mean is still unbiased, but the layer profile's error bars are not, and nothing
+    downstream would ever notice.
+    """
+    if not metas:
+        return {}
+    first = metas[0]
+    for field in PINNED_META:
+        values = {json.dumps(meta.get(field), sort_keys=True) for meta in metas}
+        if len(values) > 1:
+            raise SystemExit(
+                f"the direction-mass tables under this tree disagree on {field!r}: "
+                f"{', '.join(sorted(values))}. They cannot be averaged together — "
+                "re-gather the odd ones out, or profile the two sets separately."
+            )
+    return first
+
+
 def profile_tree(
     activations_dir: Path,
-    signal_json: Path,
+    signal_json: Path | None,
     *,
     lens: str = "jlens",
     direction_score: str = DEFAULT_SCORE,
@@ -74,16 +125,22 @@ def profile_tree(
     max_trajectories: int | None = None,
     layers: list[int] | None = None,
     verbose: bool = False,
-) -> LayerProfile:
+) -> tuple[LayerProfile, list[dict]]:
     """Accumulate the per-layer mean direction score over every trajectory in the tree.
 
     `layers` pins the layer set so a trajectory whose CSV covers fewer layers still counts
     at all of them (missing ones at the score's `empty`). Left out, it is taken from the
     first CSV read — the lens covers the same layers for every trajectory of a run, and
     letting each CSV define its own would make the denominators disagree.
+
+    Returns the profile and every sidecar found, so the caller can check they agree. One
+    trajectory is one `add()`, which is what makes the profile's error bars clustered by
+    trajectory rather than by token.
     """
-    direction_tokens = load_direction_tokens(signal_json, direction_classes)
+    source = get_score(direction_score).source
+    direction_tokens = load_direction_tokens(signal_json, direction_classes) if signal_json else set()
     profile = LayerProfile(score_mode=direction_score)
+    metas: list[dict] = []
     folders = trajectory_folders(activations_dir)
     if max_trajectories is not None:
         folders = folders[:max_trajectories]
@@ -96,9 +153,49 @@ def profile_tree(
             layers = artifact_layers(path, direction_score)
         scores = read_direction_scores(path, direction_tokens, top_k=top_k, score_mode=direction_score)
         profile.add(scores, layers)
+        if source == "mass":
+            metas.append(read_mass_meta(path))
         if verbose:
             print(f"  {folder.name}: {len(scores)} tokens", flush=True)
-    return profile
+    return profile, metas
+
+
+def describe_provenance(meta: dict) -> list[str]:
+    """What the sidecars say about numbers the table itself cannot show."""
+    if not meta:
+        return []
+    lines = [
+        f"  mass vocabulary: {meta.get('signal_json')} "
+        f"({meta.get('num_direction_tokens')} tokens, classes={meta.get('direction_classes')}, "
+        f"fingerprint={meta.get('signal_fingerprint')})"
+    ]
+    if meta.get("weights_model_id"):
+        lines.append(f"  weights loaded from: {meta['weights_model_id']}")
+    if meta.get("data_sample_p") is not None:
+        lines.append(
+            f"  SAMPLED GATHER: p={meta['data_sample_p']} (seed {meta.get('data_sample_seed')}) — "
+            "the means are unbiased, the error bars are wider than a full pass would give"
+        )
+    return lines
+
+
+def write_csv(path: Path, profile: LayerProfile) -> None:
+    """One tidy row per layer: what a plot or a spreadsheet wants out of the join."""
+    summary = profile.to_dict()
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["layer", "mean", "se", "rows", "score_mode", "is_best"])
+        for row in summary["layers"]:
+            writer.writerow(
+                [
+                    row["layer"],
+                    f"{row['mean']:.6f}",
+                    "" if row["se"] is None else f"{row['se']:.6f}",
+                    row["rows"],
+                    summary["score_mode"],
+                    int(row["layer"] == summary["best_layer"]),
+                ]
+            )
 
 
 def main() -> None:
@@ -107,9 +204,11 @@ def main() -> None:
     parser.add_argument(
         "--signal-json",
         type=Path,
-        required=True,
+        default=None,
         help="JSON mapping UP/DOWN/LEFT/RIGHT to token strings "
-        "(/workspace/jlens/direction_tokens_full.json on the GPU host)",
+        "(/workspace/jlens/direction_tokens_full.json on the GPU host). Required for the "
+        "top-k scores; refused for logprob_mass_full, whose vocabulary is the one in the "
+        "table's sidecar and cannot be changed after the gather",
     )
     parser.add_argument(
         "--lens", choices=scored_methods(), default="jlens", help="which lens' CSV to profile (default jlens)"
@@ -136,11 +235,22 @@ def main() -> None:
         "--layers", default=None, help="comma-separated layer pool (default: the layers the first CSV covers)"
     )
     parser.add_argument("--out", type=Path, default=None, help="write the numbers here as JSON")
+    parser.add_argument("--out-csv", type=Path, default=None, help="write one row per layer here, for plotting")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
+    source = get_score(args.direction_score).source
+    if source == "mass" and args.signal_json is not None:
+        raise SystemExit(
+            f"--direction-score {args.direction_score} reads the direction-mass table, whose vocabulary was "
+            "fixed at gather time and is recorded in each table's .meta.json. Passing --signal-json here "
+            "would have no effect on the numbers; drop it (this run prints the vocabulary it finds)."
+        )
+    if source != "mass" and args.signal_json is None:
+        raise SystemExit(f"--direction-score {args.direction_score} scores the analysis CSV and needs --signal-json")
+
     layers = [int(x) for x in args.layers.split(",")] if args.layers else None
-    profile = profile_tree(
+    profile, metas = profile_tree(
         args.activations_dir,
         args.signal_json,
         lens=args.lens,
@@ -154,22 +264,21 @@ def main() -> None:
     if not profile.tokens:
         raise SystemExit(f"no {args.lens} analysis CSVs found under {args.activations_dir}")
 
-    print(f"{args.lens} / {args.direction_score} over {profile.tokens} (token, trajectory) rows")
+    print(
+        f"{args.lens} / {args.direction_score} over {profile.tokens} (token, trajectory) rows "
+        f"from {profile.clusters} trajectories"
+    )
     # A mass table's numbers depend on the vocabulary it was gathered against, and this repo
     # points two different ones at the same trees. Say which, rather than let the reader
-    # assume it was --signal-json.
-    meta = (
-        read_mass_meta(score_artifact_path(folders[0], args.lens, args.direction_score))
-        if (folders := trajectory_folders(args.activations_dir))
-        else {}
-    )
-    if meta:
-        print(
-            f"  mass vocabulary: {meta.get('signal_json')} "
-            f"({meta.get('num_direction_tokens')} tokens, classes={meta.get('direction_classes')})"
-        )
+    # assume it was --signal-json -- and check every table agrees before averaging them.
+    for line in describe_provenance(check_meta_agrees(metas)):
+        print(line)
     print(format_profile(profile))
     print(f"\nbest layer: {profile.best_layer()}")
+    print(f"  {format_separation(profile)}")
+    sep = profile.separation()
+    if sep is not None and sep["z"] < 2.0:
+        print("  WARNING: under z=2 the argmax is not distinguishable from the layer below it")
     print(f"  split_next_action_manifest.py ... --single-layer {profile.best_layer()}")
 
     if args.out:
@@ -179,9 +288,13 @@ def main() -> None:
             activations_dir=str(args.activations_dir),
             direction_classes=args.direction_classes,
             top_k=args.top_k,
+            mass_meta=check_meta_agrees(metas) or None,
         )
         args.out.write_text(json.dumps(summary, indent=1), encoding="utf-8")
         print(f"wrote {args.out}")
+    if args.out_csv:
+        write_csv(args.out_csv, profile)
+        print(f"wrote {args.out_csv}")
 
 
 if __name__ == "__main__":
