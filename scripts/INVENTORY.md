@@ -176,7 +176,7 @@ set but shares 33 with the count-era one (a known landmine — see `claude_sessi
 | Script | Does | Reads | Writes |
 |---|---|---|---|
 | `audit_trajectory_sets.py` (107L) | Which of the three trajectory sets produced each artifact on disk. | `PREPARED`, `PROBES`, `RT`, `ACT/heldout360_lens` | stdout |
-| `jlens_layer_profile.py` (188L) | The **unbiased** mean direction score per layer over a whole tree — where `--single-layer L` should come from. | an activations dir + `--signal-json` | stdout / `--out` |
+| `jlens_layer_profile.py` (301L) | The **unbiased** mean direction score per layer over a whole tree — the join over every trajectory's table, and where `--single-layer L` should come from. Prints a `z` for the argmax against the runner-up, clustered by trajectory. | an activations dir, plus `--signal-json` for the top-k scores only | stdout / `--out` / `--out-csv` |
 | `jlens_direction_vocab_diagnostic.py` (55L) | Which direction-vocabulary tokens actually reach the lens top-20, per class. | `ACT/heldout360_l15`, direction JSON | stdout |
 | `jlens_action_ranks.py` (229L) | Ranks the four action tokens under the lens for every saved activation. `--runs_per_combo N` samples; `--trajectories_root` widens the CSV with `agent_action`, logprobs and top/bottom tokens. Without it the narrow schema is unchanged. *(absorbed `jlens_action_ranks_sampled.py`, 73% identical)* | `--activations_root`, `--jlens_dir` | `jlens_action_ranks.csv` |
 | `gather_reasoning_steps_statistics.py` (246L) | Counts `.pt` per (size, complexity) and plots reasoning-step counts. **Unreferenced.** | an activations root | `reasoning_step_figures/` |

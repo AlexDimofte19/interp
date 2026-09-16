@@ -141,7 +141,12 @@ which is every record currently on disk.
   how a *single* layer is chosen for a dataset. It accumulates from the CSVs and not from a
   prepared manifest, because a manifest only holds the layers that were selected: a layer's
   mean there is conditional on having won, except at the force-kept layer 15 where it is
-  not. `scripts/jlens_layer_profile.py` is the CLI over it.
+  not. `scripts/jlens_layer_profile.py` is the CLI over it. Each `add()` is one **cluster**
+  — one trajectory — so `standard_errors()` and `separation()` put a trajectory-level error
+  bar on the argmax rather than a token-level one; the ~18k tokens of a chain share a
+  prompt, a grid and a train of thought, and a standard error over them is too small by
+  whatever the intra-chain correlation is. `separation()` pairs the two layers *within*
+  each trajectory before taking the spread, since adjacent layers move together.
 - **`top_filter.py`** — `top_filter()` returns a `KeptTokens`, one arm per method.
   `rank_tokens` and `rank_layers_by_direction` are the two orderings, shared with
   `jlens_token_selection.py` so a prepared dataset and a pruned tree cannot drift.

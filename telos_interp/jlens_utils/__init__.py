@@ -47,7 +47,7 @@ from .jlens_csv import (
     step_folder_index,
     write_mass_meta,
 )
-from .layer_profile import LayerProfile, format_profile
+from .layer_profile import LayerProfile, format_profile, format_separation
 from .methods import (
     DEFAULT_METHODS,
     METHODS,
@@ -140,6 +140,7 @@ __all__ = [
     "direction_mass_path",
     "eos_positions",
     "format_profile",
+    "format_separation",
     "get_method",
     "get_model",
     "get_score",
