@@ -3,7 +3,8 @@
 #
 # CSV-ONLY. No .pt is written and no selection is made -- this run exists to answer one
 # question, "which layer is the jlens loudest at, over the whole dataset", and the answer
-# comes from scripts/jlens_layer_profile.py reading the direction-mass tables this leaves
+# comes from join_loudness_profile.sh beside this file, which runs
+# scripts/jlens_layer_profile.py over the direction-mass tables this leaves
 # behind. The layer it names is what the later selecting gather pins with
 # --select-candidate-layers. Do not take it from a manifest's argmax: that mean is
 # conditional on selection, this one is not.
