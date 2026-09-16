@@ -58,6 +58,9 @@ class ModelSpec:
         config_path: where the text config sits inside `config.json`. `()` is the top
             level; Qwen3.6 is a VLM wrapper and puts `num_hidden_layers` and
             `rms_norm_eps` under `text_config`, so a bare lookup raises KeyError.
+            Descent is conditional: a live config handed back by
+            `AutoModelForCausalLM` is often already the text config, so this path
+            describes `config.json`, not necessarily `model.config`.
         target_layer: the layer the Jacobian was fitted *toward*, where the lens is the
             identity and no `J` is applied. A property of the fit, so it is pinned here
             and checked against the config rather than derived from it.
@@ -89,13 +92,52 @@ class ModelSpec:
         reads) or a live `PretrainedConfig` (an object, which is what the gather holds
         after `from_pretrained`), and returns the same kind it was given.
 
+        A live config may ALREADY be the text config even when `config.json` nests one:
+        `AutoModelForCausalLM` descends into the text stack of a multimodal checkpoint, so
+        Qwen3.6 loads as `Qwen3_5MoeForCausalLM` whose `.config` is a `Qwen3_5MoeTextConfig`
+        with no `.text_config` of its own, while the file on disk still wraps it. Descending
+        is therefore conditional. It is not a silent fallthrough: an object that is missing
+        the key AND does not look like a text config still raises, because picking the wrong
+        sub-config here is wrong logits for the whole run rather than a crash.
+
         >>> MODELS["openai/gpt-oss-20b"].text_config({"rms_norm_eps": 1e-5})
         {'rms_norm_eps': 1e-05}
         >>> MODELS["Qwen/Qwen3.6-35B-A3B"].text_config({"text_config": {"a": 1}})
         {'a': 1}
+
+        An already-unwrapped live config is returned as it is:
+
+        >>> from types import SimpleNamespace
+        >>> text = SimpleNamespace(num_hidden_layers=40)
+        >>> MODELS["Qwen/Qwen3.6-35B-A3B"].text_config(text) is text
+        True
+
+        A wrapper object is still descended:
+
+        >>> wrapper = SimpleNamespace(text_config=text)
+        >>> MODELS["Qwen/Qwen3.6-35B-A3B"].text_config(wrapper) is text
+        True
+
+        Anything else is an error rather than a guess:
+
+        >>> MODELS["Qwen/Qwen3.6-35B-A3B"].text_config(SimpleNamespace(vision_config=text))
+        Traceback (most recent call last):
+            ...
+        AttributeError: Qwen/Qwen3.6-35B-A3B: config_path ('text_config',) expects 'text_config', but SimpleNamespace has no such attribute and is not itself a text config (no 'num_hidden_layers')
         """
         for key in self.config_path:
-            config = config[key] if isinstance(config, dict) else getattr(config, key)
+            if isinstance(config, dict):
+                config = config[key]
+            elif hasattr(config, key):
+                config = getattr(config, key)
+            elif hasattr(config, "num_hidden_layers"):
+                break
+            else:
+                raise AttributeError(
+                    f"{self.model_id}: config_path {self.config_path} expects {key!r}, but "
+                    f"{type(config).__name__} has no such attribute and is not itself a text "
+                    "config (no 'num_hidden_layers')"
+                )
         return config
 
     def num_hidden_layers(self, config) -> int:
