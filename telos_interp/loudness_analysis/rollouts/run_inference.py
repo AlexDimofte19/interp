@@ -38,6 +38,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from telos_interp.commands.gather_activations.gather_activations_fn import _resolve_torch_dtype
+from telos_interp.jlens_utils.models import known_models, resolve_model
 from telos_interp.loudness_analysis.rollouts.truncation_strategies import (
     DEFAULT_LAYER,
     DEFAULT_LENS_ROOT,
@@ -672,6 +673,15 @@ def main() -> None:
         "so every strategy's first and last eval is the same prompt. Doing so makes final accuracy "
         "and the commitment indices incomparable with the eos arm.",
     )
+    parser.add_argument(
+        "--model-id",
+        default=None,
+        help="HF repo id of the checkpoint to roll out, e.g. 'Qwen/Qwen3.6-35B-A3B'. Default: resolved "
+        "from the trajectory JSON's model_params.model_id, which records what SERVED the trajectory "
+        "and need not be a HF repo -- the Qwen trees carry the Together endpoint alias "
+        "'gsarti/qwen3.6-35b'. Known aliases resolve without this flag; give it for a model "
+        "telos_interp/jlens_utils/models.py has not seen.",
+    )
     parser.add_argument("--device-map", default="auto", help="device_map for model loading.")
     parser.add_argument("--torch-dtype", default="auto", help="Torch dtype: auto, bfloat16, or float16.")
     parser.add_argument(
@@ -707,7 +717,20 @@ def main() -> None:
 
     print(f"Found {len(paths)} trajectory file(s) to process")
     print(f"Truncation strategy: {args.strategy} {strategy.config()}")
-    model_id = first_traj["model_params"]["model_id"]
+    # The trajectory's id is the SERVING name; from_pretrained needs the HF repo id, and for
+    # Qwen those differ. Resolving through the registry rather than reading the JSON straight
+    # is what lets a Together-served trajectory be rolled out at all.
+    traj_model_id = first_traj["model_params"]["model_id"]
+    try:
+        model_id = resolve_model(traj_model_id, args.model_id).model_id
+    except KeyError as exc:
+        raise SystemExit(
+            f"{exc}\nThe trajectories record model_id={traj_model_id!r}, which is the SERVING name "
+            "and need not be a HF repo. Pass --model-id, or add a row to "
+            f"telos_interp/jlens_utils/models.py. Known: {', '.join(known_models())}"
+        ) from None
+    if model_id != traj_model_id:
+        print(f"Model id: {traj_model_id} (served) -> {model_id} (weights)")
 
     print(f"Loading tokenizer: {model_id}")
     tokenizer = AutoTokenizer.from_pretrained(model_id)
