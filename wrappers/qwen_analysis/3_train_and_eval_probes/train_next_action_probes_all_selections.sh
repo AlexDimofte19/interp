@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
-# Qwen P2, step 5: train one next_action probe per arm. Training only -- no evaluation.
+# Qwen P2, step 5: train one next_action probe per arm, on the LOCAL BELIEF. Training only.
 #
-# The sibling of prepare_probe_datasets.sh -- it consumes the six manifests that script
-# wrote, so keep OUT below equal to its OUT.
+# The sibling of prepare_local_belief_probe_datasets.sh -- it consumes the six RELABELLED
+# manifests that script's third stage wrote, so keep OUT below equal to its OUT.
+#
+# THE LABEL IS THE LOCAL BELIEF, NOT THE FINAL ACTION, and the only thing that decides which
+# is the directory OUT names. /workspace/prepared/qwen_p2_* are the manifests as prepared,
+# labelled with the trajectory's final agent_action; /workspace/prepared/qwen_p2_local_* are
+# those same manifests after relabel_manifest_from_rollout.py swapped in what the model
+# answered when its reasoning was cut at that token. Both are valid v3 manifests of the same
+# shape and the trainer cannot tell them apart, so pointing OUT at the wrong one trains the
+# wrong probe and reports a perfectly healthy accuracy for it. The guard below is there
+# because that is not a failure anything downstream would surface.
 #
 # WHAT EACH ARM REPORTS, AND WHAT IT DOES NOT. Every train command scores its probe on the
 # VAL half of its OWN selection: the jlens probe on jlens-selected tokens, the control on
@@ -25,8 +34,8 @@ set -euo pipefail
 
 REPO=/workspace/repo/interp
 
-OUT=/workspace/prepared/qwen_p2        # reads ${OUT}_${arm}_{train,val}
-PROBES=/workspace/probes/qwen_p2
+OUT=/workspace/prepared/qwen_p2_local  # reads ${OUT}_${arm}_{train,val}; the RELABELLED ones
+PROBES=/workspace/probes/qwen_p2_local
 
 LAYER=27
 MODEL_TYPE=lr          # flip to mlp and re-run for the second half of the sweep
@@ -44,11 +53,21 @@ DEVICE=cuda
 mkdir -p "$PROBES"
 cd "$REPO"
 
+# A relabelled manifest keeps the original label as `final_label` on every sample; a manifest
+# straight out of prepare has no such key. That is the only on-disk difference between a
+# local-belief dataset and a final-action one, so it is what is checked.
+for d in "${OUT}_jlens_train" "${OUT}_jlens_val" \
+         "${OUT}_logitlens_train" "${OUT}_logitlens_val" \
+         "${OUT}_random_train" "${OUT}_random_val"; do
+    [ -f "$d/manifest.json" ] || { echo "!! missing manifest: $d/manifest.json -- run prepare_local_belief_probe_datasets.sh first" >&2; exit 1; }
+    grep -q '"final_label"' "$d/manifest.json" || { echo "!! $d is NOT relabelled (no final_label) -- it carries the final action, not the local belief" >&2; exit 1; }
+done
+
 # ------------------------------------------------------------------- jlens
 uv run interp-cli train_next_action_probe \
     --train-data-path "${OUT}_jlens_train" \
     --eval-data-path "${OUT}_jlens_val" \
-    --output-path "${PROBES}/qwen_p2_jlens_l${LAYER}_${MODEL_TYPE}.pt" \
+    --output-path "${PROBES}/qwen_p2_local_jlens_l${LAYER}_${MODEL_TYPE}.pt" \
     --model-type "$MODEL_TYPE" \
     --hidden-dims "$HIDDEN_DIMS" \
     --learning-rate "$LEARNING_RATE" \
@@ -65,7 +84,7 @@ uv run interp-cli train_next_action_probe \
 uv run interp-cli train_next_action_probe \
     --train-data-path "${OUT}_logitlens_train" \
     --eval-data-path "${OUT}_logitlens_val" \
-    --output-path "${PROBES}/qwen_p2_logitlens_l${LAYER}_${MODEL_TYPE}.pt" \
+    --output-path "${PROBES}/qwen_p2_local_logitlens_l${LAYER}_${MODEL_TYPE}.pt" \
     --model-type "$MODEL_TYPE" \
     --hidden-dims "$HIDDEN_DIMS" \
     --learning-rate "$LEARNING_RATE" \
@@ -82,7 +101,7 @@ uv run interp-cli train_next_action_probe \
 uv run interp-cli train_next_action_probe \
     --train-data-path "${OUT}_random_train" \
     --eval-data-path "${OUT}_random_val" \
-    --output-path "${PROBES}/qwen_p2_random_l${LAYER}_${MODEL_TYPE}.pt" \
+    --output-path "${PROBES}/qwen_p2_local_random_l${LAYER}_${MODEL_TYPE}.pt" \
     --model-type "$MODEL_TYPE" \
     --hidden-dims "$HIDDEN_DIMS" \
     --learning-rate "$LEARNING_RATE" \
