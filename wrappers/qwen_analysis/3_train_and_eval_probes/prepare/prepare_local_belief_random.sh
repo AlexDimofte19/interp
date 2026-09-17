@@ -1,22 +1,28 @@
 #!/usr/bin/env bash
-# Qwen P2, step 4b: the LOCAL-BELIEF dataset for the LOGITLENS arm -- train and val.
+# Qwen P2, step 4c: the LOCAL-BELIEF dataset for the RANDOM arm -- train and val.
 #
-# One of three arm scripts driven by prepare_local_belief_probe_datasets.sh, which is where
+# One of three arm scripts driven by ../prepare_local_belief_probe_datasets.sh, which is where
 # the rationale for the three stages lives. Run this one alone to rebuild just this arm.
 #
-# THE ARM IS THE ONLY THING THAT DIFFERS between this file and prepare_local_belief_jlens.sh:
-# same tree, same trajectories, same layer, same rollout, same relabel. ARM below names which
-# set of picks in {stem}_jlens_selection.json is read -- here, the tokens the LOGIT lens
-# scored loudest at layer 27, which at that depth overlap the jlens arm's only about half.
+# THIS ARM IS THE MATCHED CONTROL, and it is the reason the other two mean anything: the
+# loudest tokens are largely the direction words the model has already verbalized, so a lens
+# arm on its own cannot say whether the lens found something a uniform draw of the same size
+# would not have.
 #
-# LENS FOLLOWS THE ARM. dir_logmass is a covariate, not a cut point, but an arm selected by
-# one lens and annotated with the other's mass would be describing its tokens with a ruler
-# that did not choose them.
+# ITS DRAW CANNOT BE RE-MADE. The 60 picks per trajectory were drawn uniformly over the whole
+# reasoning chain at gather time, with the same N and seed as the lens arms, and recorded.
+# Re-deriving them now would draw from the selection instead of the chain. That is why the
+# prepare reads recorded_random rather than the `random` scoring mode, and why the rollout
+# replays the record instead of sampling its own cut points.
+#
+# LENS IS A LABEL HERE, NOT A CHOOSER. The control has no ruler of its own; jlens is named
+# only so dir_logmass is populated on the same scale as the jlens arm's, which is what makes
+# the two comparable as a covariate. It moves no cutoff.
 set -euo pipefail
 
 REPO=/workspace/repo/interp
 
-ARM=logitlens
+ARM=random
 
 ACT_TRAIN=/workspace/activations/qwen_p2_selection
 TRAJ_TRAIN=/workspace/trajectories/qwen3.6-35b/replayed_single_step/mass_train_576
@@ -31,7 +37,7 @@ OUT=/workspace/prepared/qwen_p2_local         # stage 3 -> ${OUT}_${ARM}_{train,
 MODEL=Qwen/Qwen3.6-35B-A3B
 LAYER=27
 PROBE_TYPE=next_action
-LENS=logitlens      # the ruler that chose this arm's tokens; see the header
+LENS=jlens          # a scale for dir_logmass only; see the header
 DEVICE_MAP=cuda:0   # NOT "auto": spreading this MoE over several GPUs produces NaNs
 BATCH_SIZE=4
 MAX_BATCH_TOKENS=49152

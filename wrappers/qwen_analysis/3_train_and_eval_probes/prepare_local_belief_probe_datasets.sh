@@ -3,9 +3,9 @@
 #
 # A master over three arm scripts, run in order:
 #
-#   prepare_local_belief_jlens.sh       the Jacobian lens' loudest 60 tokens per trajectory
-#   prepare_local_belief_logitlens.sh   the logit lens' loudest 60, ~half the same tokens
-#   prepare_local_belief_random.sh      the matched control, 60 drawn uniformly
+#   prepare/prepare_local_belief_jlens.sh       the Jacobian lens' loudest 60 tokens per trajectory
+#   prepare/prepare_local_belief_logitlens.sh   the logit lens' loudest 60, ~half the same tokens
+#   prepare/prepare_local_belief_random.sh      the matched control, 60 drawn uniformly
 #
 # Each is self-contained -- run one alone to rebuild just that arm -- and each does the same
 # three stages for train and val. The stages are below; the per-arm notes are in the files.
@@ -54,6 +54,6 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-bash "$HERE/prepare_local_belief_jlens.sh"
-bash "$HERE/prepare_local_belief_logitlens.sh"
-bash "$HERE/prepare_local_belief_random.sh"
+bash "$HERE/prepare/prepare_local_belief_jlens.sh"
+bash "$HERE/prepare/prepare_local_belief_logitlens.sh"
+bash "$HERE/prepare/prepare_local_belief_random.sh"

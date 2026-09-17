@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Qwen P2, step 4a: the LOCAL-BELIEF dataset for the JLENS arm -- train and val.
 #
-# One of three arm scripts driven by prepare_local_belief_probe_datasets.sh, which is where
+# One of three arm scripts driven by ../prepare_local_belief_probe_datasets.sh, which is where
 # the rationale for the three stages lives. Run this one alone to rebuild just this arm.
 #
 # THE ARM IS THE ONLY THING THAT DIFFERS between this file and its two siblings: same tree,

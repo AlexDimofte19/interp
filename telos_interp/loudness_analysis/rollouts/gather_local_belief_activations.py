@@ -45,6 +45,7 @@ from telos_interp.commands.gather_activations.gather_activations_utils import (
     sanitize_model_id,
     save_activations_to_files,
 )
+from telos_interp.jlens_utils.models import known_models, resolve_model
 
 LAYER = 15
 CATEGORY = "output"
@@ -139,6 +140,14 @@ def main() -> int:
         action="store_true",
         help="Also save the no_reasoning / end_of_reasoning cutoff positions (default: interior only).",
     )
+    ap.add_argument(
+        "--model-id",
+        default=None,
+        help="HF repo id of the checkpoint to load weights from, e.g. 'Qwen/Qwen3.6-35B-A3B'. Default: "
+        "resolved from the trajectory JSON's model_params.model_id, which is the SERVING name and need "
+        "not be a HF repo. It changes ONLY what is loaded -- the output tree keeps deriving its "
+        "{model} folder from the trajectory's own id, so a tree stays where its gather put it.",
+    )
     ap.add_argument("--torch-dtype", default="auto")
     ap.add_argument("--device-map", default="cuda")
     ap.add_argument("--limit", type=int, default=0, help="Process at most this many trajectories (0 = all).")
@@ -191,11 +200,25 @@ def main() -> int:
     if args.dry_run or not plan:
         return 0
 
-    print(f"Loading {model_id}")
-    resolved = _resolve_torch_dtype(args.torch_dtype, model_id)
-    _ = AutoTokenizer.from_pretrained(model_id)  # parity with gather_activations; not otherwise needed
+    # `model_id` above is the SERVING name and has already decided the output folder, which is
+    # how the tree stays byte-compatible with the gather that wrote it. Weights load from the
+    # HF repo id instead, and for Qwen the two differ.
+    try:
+        load_model_id = resolve_model(model_id, args.model_id).model_id
+    except KeyError as exc:
+        raise SystemExit(
+            f"{exc}\nThe trajectories record model_id={model_id!r}, which is the SERVING name and "
+            "need not be a HF repo. Pass --model-id, or add a row to "
+            f"telos_interp/jlens_utils/models.py. Known: {', '.join(known_models())}"
+        ) from None
+    if load_model_id != model_id:
+        print(f"Model id: {model_id} (served, and the tree's folder) -> {load_model_id} (weights)")
+
+    print(f"Loading {load_model_id}")
+    resolved = _resolve_torch_dtype(args.torch_dtype, load_model_id)
+    _ = AutoTokenizer.from_pretrained(load_model_id)  # parity with gather_activations; not otherwise needed
     model = AutoModelForCausalLM.from_pretrained(
-        model_id, device_map=args.device_map, dtype=resolved if resolved is not None else "auto"
+        load_model_id, device_map=args.device_map, dtype=resolved if resolved is not None else "auto"
     )
     model.eval()
 

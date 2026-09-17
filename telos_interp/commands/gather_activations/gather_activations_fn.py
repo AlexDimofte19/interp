@@ -8,6 +8,8 @@ import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from telos_interp.jlens_utils.models import known_models, resolve_model
+
 from .gather_activations_utils import (
     build_truncated_input,
     extract_activations_single_pass,
@@ -233,6 +235,7 @@ def extract_activations_from_trajectories(
     output_indices: str | None = None,
     device_map: str = "auto",
     torch_dtype: str = "auto",
+    model_id: str | None = None,
     debug: bool = False,
 ) -> None:
     """Main extraction function for trajectory JSON files.
@@ -261,6 +264,10 @@ def extract_activations_from_trajectories(
             at sentence-ending tokens (those ending in '.', '!', or '?').
         device_map: Device mapping for model loading
         torch_dtype: Torch dtype for model ("auto", "bfloat16", "float16")
+        model_id: HF repo id to load weights from, e.g. "Qwen/Qwen3.6-35B-A3B". Default:
+            resolved from the trajectory JSON's model_params.model_id, which is the SERVING
+            name and need not be a HF repo. It changes only what is loaded -- the {model}
+            folder in the output tree keeps deriving from the trajectory's own id.
         debug: If True, print the first truncated input text to verify format
     """
     # Expand glob patterns
@@ -281,17 +288,32 @@ def extract_activations_from_trajectories(
     with open(all_paths[0]) as f:
         first_traj = json.load(f)
 
-    model_id = first_traj["model_params"]["model_id"]
-    print(f"Loading model: {model_id}")
+    # Two ids, and they are the same string only for gpt-oss. `serving_model_id` is what
+    # generated the trajectory and is what the output tree's {model} folder is named after;
+    # `load_model_id` is the HF repo from_pretrained is given. For Qwen the former is a
+    # Together endpoint alias that is not a HF repo at all.
+    serving_model_id = first_traj["model_params"]["model_id"]
+    try:
+        load_model_id = resolve_model(serving_model_id, model_id).model_id
+    except KeyError as exc:
+        raise SystemExit(
+            f"{exc}\nThe trajectories record model_id={serving_model_id!r}, which is the SERVING "
+            "name and need not be a HF repo. Pass --model-id, or add a row to "
+            f"telos_interp/jlens_utils/models.py. Known: {', '.join(known_models())}"
+        ) from None
+    if load_model_id != serving_model_id:
+        print(f"Model id: {serving_model_id} (served, and the tree's folder) -> {load_model_id} (weights)")
+
+    print(f"Loading model: {load_model_id}")
 
     # Determine torch_dtype
-    resolved_dtype = _resolve_torch_dtype(torch_dtype, model_id)
+    resolved_dtype = _resolve_torch_dtype(torch_dtype, load_model_id)
 
     # Load the model directly with transformers — no nnsight/nnterp tracing layer.
     # Activations are captured later via PyTorch forward hooks in extract_activations_single_pass.
     dtype = resolved_dtype if resolved_dtype is not None else "auto"
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model = AutoModelForCausalLM.from_pretrained(model_id, device_map=device_map, dtype=dtype)
+    tokenizer = AutoTokenizer.from_pretrained(load_model_id)
+    model = AutoModelForCausalLM.from_pretrained(load_model_id, device_map=device_map, dtype=dtype)
     model.eval()
     model.tokenizer = tokenizer  # attach so the debug decode paths keep working
 
@@ -311,18 +333,20 @@ def extract_activations_from_trajectories(
         print("Warning: No token categories specified. Nothing to extract.")
         return
 
-    # Process each trajectory file
-    sanitized_model = sanitize_model_id(model_id)
+    # Process each trajectory file. The folder is named after the SERVING id, never the
+    # override, so --model-id cannot move a tree away from where earlier gathers put it.
+    sanitized_model = sanitize_model_id(serving_model_id)
 
     for traj_path in tqdm(all_paths, desc="Processing trajectory files"):
         with open(traj_path) as f:
             trajectory = json.load(f)
 
-        # Verify model_id matches
+        # Verify model_id matches. Compared against the SERVING id, which is what the tree is
+        # keyed by -- a run whose files disagree would write two models into one folder.
         traj_model_id = trajectory["model_params"]["model_id"]
-        if traj_model_id != model_id:
+        if traj_model_id != serving_model_id:
             raise ValueError(
-                f"Model mismatch in {traj_path}. Expected {model_id}, got {traj_model_id}. "
+                f"Model mismatch in {traj_path}. Expected {serving_model_id}, got {traj_model_id}. "
                 "All trajectory files must use the same model."
             )
 
