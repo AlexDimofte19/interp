@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Qwen P2, step 7b: every probe on every reasoning token of the held-out 72.
+# Qwen P2, loudness evaluation step 1: every probe on every reasoning token of the held-out 72.
 #
 # One row per (trajectory, step, token), carrying each probe's verdict and the loudness
 # columns. Both lenses are written -- score_probes_per_token.py loops over jlens and

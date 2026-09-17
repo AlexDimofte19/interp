@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Qwen P2, step 7c: add the local-belief label to the held-out per-token table.
+# Qwen P2, loudness evaluation step 2: add the local-belief label to the held-out per-token table.
 #
 # score_probes_heldout_per_token.sh labels each token with its step's agent_action -- the
 # FINAL action. probe_accuracy_by_loudness.py bins on `label_local`, which only the
