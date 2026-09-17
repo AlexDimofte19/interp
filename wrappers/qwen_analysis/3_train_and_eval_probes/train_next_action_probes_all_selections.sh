@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Qwen P2, step 5: train one next_action probe per arm, on the LOCAL BELIEF. Training only.
 #
-# The sibling of prepare_local_belief_probe_datasets.sh -- it consumes the six RELABELLED
-# manifests that script's third stage wrote, so keep OUT below equal to its OUT.
+# The sibling of ../dataset_creation/build_local_belief_datasets.sh -- it consumes the six RELABELLED
+# manifests that master's rollout stage wrote, so keep OUT below equal to its OUT.
 #
 # THE LABEL IS THE LOCAL BELIEF, NOT THE FINAL ACTION, and the only thing that decides which
 # is the directory OUT names. /workspace/prepared/qwen_p2_* are the manifests as prepared,
@@ -59,7 +59,7 @@ cd "$REPO"
 for d in "${OUT}_jlens_train" "${OUT}_jlens_val" \
          "${OUT}_logitlens_train" "${OUT}_logitlens_val" \
          "${OUT}_random_train" "${OUT}_random_val"; do
-    [ -f "$d/manifest.json" ] || { echo "!! missing manifest: $d/manifest.json -- run prepare_local_belief_probe_datasets.sh first" >&2; exit 1; }
+    [ -f "$d/manifest.json" ] || { echo "!! missing manifest: $d/manifest.json -- run ../dataset_creation/build_local_belief_datasets.sh first" >&2; exit 1; }
     grep -q '"final_label"' "$d/manifest.json" || { echo "!! $d is NOT relabelled (no final_label) -- it carries the final action, not the local belief" >&2; exit 1; }
 done
 
