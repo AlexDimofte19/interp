@@ -43,10 +43,17 @@ ARM=logitlens
 LENS=logitlens      # the ruler that chose this arm's tokens; see the header
 
 ACT_TRAIN=/workspace/activations/qwen_p2_selection
-TRAJ_TRAIN=/workspace/trajectories/qwen3.6-35b/replayed_single_step/mass_train_576
+# size*/*.json, NOT the bare directory. run_inference.py's expand_paths rglobs a directory
+# for *.json, and these dataset folders also hold replay_batch_summary{,1}.json plus stale
+# .ipynb_checkpoints/*-checkpoint.json copies. Handed the directory, the train set resolves
+# to 556 files rather than 549: the run dies on the first summary with
+# KeyError: 'model_params', and the checkpoint copies would be rolled out as trajectories
+# whose stem matches no selection record. This glob is the layout expand_paths documents,
+# and it reproduces the gather's 549 train / 52 val exactly.
+TRAJ_TRAIN="/workspace/trajectories/qwen3.6-35b/replayed_single_step/mass_train_576/size*/*.json"
 
 ACT_VAL=/workspace/activations/qwen_p2_selection_eval
-TRAJ_VAL=/workspace/trajectories/qwen3.6-35b/replayed_single_step/mass_eval_144
+TRAJ_VAL="/workspace/trajectories/qwen3.6-35b/replayed_single_step/mass_eval_144/size*/*.json"
 
 PREP=/workspace/prepared/qwen_p2              # read: ../2_preparations wrote these
 ROLLOUTS=/workspace/rollouts/qwen_p2          # -> ${ROLLOUTS}/${ARM}_{train,val}/
