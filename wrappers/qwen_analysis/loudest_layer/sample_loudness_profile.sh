@@ -49,6 +49,11 @@ FORWARD_BATCH_SIZE=1   # one 18k-token chain at a time; the default of 4 pads fo
 # Single GPU: device_map="auto" across several produces NaNs for this MoE, as it does for gpt-oss.
 export CUDA_VISIBLE_DEVICES=0
 
+# 66 GiB of weights on an 80 GiB card leaves ~13 GiB for a 33k-token chain, and the first
+# attempt died with 7.58 GiB reserved-but-unallocated -- fragmentation, not a real shortage.
+# Expandable segments let the allocator grow a block instead of stranding it.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 cd "$REPO"
 uv run --extra gpu python telos_interp/loudness_analysis/build_loudness_tables.py \
     --trajectory-paths "$DATASET" \

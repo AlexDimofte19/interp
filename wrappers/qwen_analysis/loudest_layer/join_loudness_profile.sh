@@ -20,8 +20,8 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)   # so uv finds pyproject.toml
 
-# The tree sample_loudness_profile.sh wrote. Its $OUT, unchanged.
-TREE=/workspace/activations/qwen_loudness_profile_p20
+# The tree sample_loudness_profile.sh wrote. Its $OUT, unchanged -- note the qwen/ level.
+TREE=/workspace/activations/qwen/qwen_loudness_profile_p20
 OUT_DIR=/workspace/loudness_evaluation/qwen_p2_layer_profile
 
 mkdir -p "$OUT_DIR"

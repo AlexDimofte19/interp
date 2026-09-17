@@ -10,7 +10,7 @@ selection. The mean per layer, the argmax, the plots: all of that belongs downst
 notebook or to `scripts/jlens_layer_profile.py`.
 
     python -m telos_interp.loudness_analysis.join_mass_tables \\
-        /workspace/activations/qwen_loudness_profile_p20 --lens jlens --out jlens_tokens.csv
+        /workspace/activations/qwen/qwen_loudness_profile_p20 --lens jlens --out jlens_tokens.csv
 
 WHY csv AND NOT pandas. Decoded tokens include the literal string "NA", empty strings,
 embedded commas and newlines. `pandas.read_csv`'s NA handling turns the first two into
