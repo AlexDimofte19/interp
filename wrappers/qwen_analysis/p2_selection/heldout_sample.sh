@@ -34,10 +34,18 @@
 # in the tree cannot be scored later without re-running the gather. 72 trajectories at one
 # layer is the cheap end of this pipeline, so there is nothing to buy by thinning it.
 #
+# MEASURED, since "the cheap end of this pipeline" is about compute, not I/O: this writes
+# 1,169,734 .pt files, and /workspace is MooseFS, which tops out near 100 files/s and does
+# NOT scale with --io-workers (1 thread 52/s, 8 -> 107, 16 -> 95, 32 -> 88, 64 -> 91). So
+# raising io-workers past its default of 16 makes it worse. The 2026-09-17 run measured
+# ~40 files/s sustained -- the BOTTOM of that range, not the top -- so budget ~8 h for the
+# write, not the ~3.5 h the 100 files/s figure suggests. Kept at 1.0 anyway: the argument
+# above is about what the analysis needs, and that has not changed.
+#
 # Set SAMPLE_PERCENT below 1.0 only if this turns out to be unaffordable after all, and
 # expect to re-run it whole if the analysis later wants the tokens back.
 #
-# STILL BLOCKED ON THE FIT and on the vocabulary upload, exactly as the other two are.
+# The fit and the vocabulary are both in place; step 1 ran against them.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)   # so uv finds pyproject.toml
@@ -45,10 +53,13 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)   # so uv finds pypr
 MODEL=Qwen/Qwen3.6-35B-A3B
 DATASET=/workspace/trajectories/qwen3.6-35b/replayed_single_step/heldout_72
 JLENS_DIR=/workspace/jlens/qwen3_6_35b
-SIGNAL_JSON=/workspace/jlens/qwen_direction_tokens.json   # NOT YET UPLOADED -- point this at your local vocabulary
+SIGNAL_JSON=/workspace/repo/interp/data/jlens/qwen/direction_tokens_full_qwen3-6-35b-a3b.json
+# ^ the SAME vocabulary the step-1 profile was gathered against. A mass table is not
+# self-describing, so pointing this elsewhere silently produces numbers step 1's layer
+# choice has no bearing on. Its fingerprint is recorded in every .meta.json written here.
 OUT=/workspace/activations/qwen_p2_heldout
 
-LAYER=39               # the probe's layer; keep equal to the two selecting runs
+LAYER=27               # the probe's layer; keep equal to the two selecting runs
 SAMPLE_PERCENT=1.0     # NO THINNING: every reasoning token gets a .pt. See the header.
 SAMPLE_SEED=42
 
@@ -59,6 +70,10 @@ FORWARD_BATCH_SIZE=1   # one 18k-token chain at a time; the default of 4 pads fo
 
 # Single GPU: device_map="auto" across several produces NaNs for this MoE, as it does for gpt-oss.
 export CUDA_VISIBLE_DEVICES=0
+
+# 66 GiB of weights on an 80 GiB card leaves ~13 GiB for a 33k-token chain. Step 1 died there
+# with 7.58 GiB reserved-but-unallocated -- fragmentation, not a real shortage.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd "$REPO"
 uv run --extra gpu python telos_interp/loudness_analysis/build_loudness_tables.py \
