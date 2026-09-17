@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""``build_probe_loudness.py`` over the HELD-OUT 360 and over EVERY reasoning token.
+"""Join a probe table, an every-token rollout and a commitment CSV into one per-token table.
 
 Entry 46 asked whether a louder token decodes better. It answered on the eval-720 split,
 and -- the limitation this script removes -- it read each probe only on the tokens that
@@ -11,23 +11,16 @@ held-out trajectories, a tree disjoint from every probe's training set
 (``scripts/audit_trajectory_sets.py``). No selection sits between the loudness axis and
 the label, so the axis spans the real distribution and no arm gets a token set tuned to it.
 
-THE THREE ROWSETS ARE KEPT, and they now hold IDENTICAL rows. They are a presentational
-device only: ``analyze_probe_loudness.py`` and ``plot_probe_loudness.py`` key off the
-rowset name to decide which probes to score, so preserving the names lets both run
-BYTE-UNCHANGED and every figure of entry 46 gets a direct counterpart. The consequence to
-state in any write-up: ``loudness_distribution.png`` shows three coincident curves.
-
-  p1_full   p1_lr, p1_mlp                   (probe 1: every sentence's loudest token)
-  p1_top20  p1t20_lr, p1t20_mlp             (probe 1 thinned to top-20 per trajectory)
-  p2        p2_lr, p2_mlp                   (probe 2: global top-20 by mass)
-            base_lr, base_mlp               entry-38 FINAL-action baseline: the label contrast
-            rand_lr, rand_mlp               matched random-selection control (entry 37(d): a floor)
+THE PROBES ARE AN ARGUMENT. ``--probes`` names them as key=column_prefix pairs and
+``--rowset`` names the set they form; nothing about which probes exist is baked into
+this file any more. Every path, the lens, the signal and the layer are required too --
+there is no default round.
 
 This is a pure join of three artifacts -- no .pt, no model, no GPU -- so it is cheap to
 re-run when any of them is rebuilt:
 
-``--probe-csv``       ``eval_probe_per_token.py``'s one-pass scoring of all ten probes at
-                      layer 15 over the held-out tree, with ``--full-probs``.
+``--probe-csv``       ``score_probes_per_token.py``'s one-pass scoring of the probes named
+                      by ``--probes``, over the held-out tree, with ``--full-probs``.
 ``--rollout-dir``     the ``every_token`` truncation arm (``truncation_strategies.py``):
                       the chain cut at EVERY token and the model asked for its action, so
                       ``label_local`` is a measured per-token belief rather than the
@@ -95,28 +88,36 @@ DEFAULT_MASS_COLUMN = "jlens_mass_L15"
 ID2A = {0: "LEFT", 1: "UP", 2: "RIGHT", 3: "DOWN"}
 ACTIONS = ("LEFT", "UP", "RIGHT", "DOWN")
 
+
 # entry-46 probe key -> the key eval_probe_per_token.py's probe_key() gives that same .pt
 # ("<parent dir>.<stem>", with next_action_probe_ stripped).
-PROBE_SOURCE = {
-    "p1_lr": "probes.local_belief_p1_lr",
-    "p1_mlp": "probes.local_belief_p1_mlp",
-    "p1t20_lr": "probes.local_belief_p1_top20_lr",
-    "p1t20_mlp": "probes.local_belief_p1_top20_mlp",
-    "p2_lr": "probes.local_belief_p2_lr",
-    "p2_mlp": "probes.local_belief_p2_mlp",
-    "base_lr": "next_action_mass_l15.jlens_topall_lr",
-    "base_mlp": "next_action_mass_l15.jlens_topall_mlp",
-    "rand_lr": "next_action_mass_l15.random_topall_lr",
-    "rand_mlp": "next_action_mass_l15.random_topall_mlp",
-}
+def parse_probes(spec: str) -> dict[str, str]:
+    """``key=column_prefix`` pairs -> ``{key: column_prefix}``, in the order given.
 
-ROWSETS: dict[str, list[str]] = {
-    "p1_full": ["p1_lr", "p1_mlp"],
-    "p1_top20": ["p1t20_lr", "p1t20_mlp"],
-    "p2": ["p2_lr", "p2_mlp", "base_lr", "base_mlp", "rand_lr", "rand_mlp"],
-}
+    The probes are an ARGUMENT, not a registry. This script used to carry ten entry-48
+    probe keys as a module constant and exit on any table missing their columns, which
+    made it unusable for any other round; ``--extra-probes`` could only add to that list,
+    never replace it.
 
-# Verbatim from build_probe_loudness.py: the header must diff clean against entry 46's.
+    ``key`` is the short name the output columns use; ``column_prefix`` is how the probe
+    appears in the scorer's table, i.e. the part before ``_pred``.
+
+    >>> parse_probes("p2_lr=probes.local_belief_p2_lr")
+    {'p2_lr': 'probes.local_belief_p2_lr'}
+    """
+    out: dict[str, str] = {}
+    for pair in (t.strip() for t in spec.split(",") if t.strip()):
+        key, sep, src = pair.partition("=")
+        if not sep or not key or not src:
+            raise SystemExit(f"--probes entry {pair!r} is not key=column_prefix")
+        if key in out:
+            raise SystemExit(f"--probes key {key!r} is repeated; keys must be unique")
+        out[key] = src
+    if not out:
+        raise SystemExit("--probes is empty")
+    return out
+
+
 BASE_FIELDS = [
     "rowset",
     "name",
@@ -192,7 +193,7 @@ def read_commitment(path: Path, mass_column: str = DEFAULT_MASS_COLUMN) -> dict[
 
 
 def read_probe_csv(
-    path: Path, mass_column: str = DEFAULT_MASS_COLUMN
+    path: Path, probe_source: dict[str, str], mass_column: str = DEFAULT_MASS_COLUMN
 ) -> tuple[dict[str, dict[int, dict[int, dict]]], list[str]]:
     """``{name: {step: {token_idx: {probe_key: (pred, {action: p})}}}}`` plus the mass column."""
     out: dict[str, dict[int, dict[int, dict]]] = defaultdict(lambda: defaultdict(dict))
@@ -201,14 +202,14 @@ def read_probe_csv(
         have = set(reader.fieldnames or [])
         missing = [
             f"{src}_{suffix}"
-            for src in PROBE_SOURCE.values()
+            for src in probe_source.values()
             for suffix in ["pred", *[f"p_{a}" for a in ACTIONS]]
             if f"{src}_{suffix}" not in have
         ]
         if missing:
             raise SystemExit(
                 f"{path} is missing {len(missing)} column(s), e.g. {missing[:3]}. "
-                "Was eval_probe_per_token.py run with every --probe and --full-probs?"
+                "Was score_probes_per_token.py run with every --probe and --full-probs?"
             )
         for r in reader:
             cell = {
@@ -216,7 +217,7 @@ def read_probe_csv(
                     ID2A[int(r[f"{src}_pred"])],
                     {a: float(r[f"{src}_p_{a}"]) for a in ACTIONS},
                 )
-                for key, src in PROBE_SOURCE.items()
+                for key, src in probe_source.items()
             }
             cell["_mass"] = float(r[mass_column])
             cell["_label_final"] = r["label_name"]
@@ -328,22 +329,6 @@ def ranks(values: dict[int, float]) -> dict[int, int]:
     return {t: i + 1 for i, t in enumerate(order)}
 
 
-def register_extra_probes(spec: str, rowset: str) -> None:
-    """Add ``key=probe_key`` pairs to PROBE_SOURCE and to ``rowset``. Empty spec is a no-op."""
-    for pair in (t.strip() for t in spec.split(",") if t.strip()):
-        key, sep, src = pair.partition("=")
-        if not sep or not key or not src:
-            raise SystemExit(f"--extra-probes entry {pair!r} is not key=probe_key")
-        if key in PROBE_SOURCE:
-            raise SystemExit(f"--extra-probes key {key!r} already exists; keys must be unique")
-        if rowset not in ROWSETS:
-            raise SystemExit(f"unknown --extra-probes-rowset {rowset!r}")
-        PROBE_SOURCE[key] = src
-        ROWSETS[rowset].append(key)
-    if spec:
-        print(f"{len(PROBE_SOURCE)} probe(s) after --extra-probes: {', '.join(PROBE_SOURCE)}", flush=True)
-
-
 def _resolve_loudness_column(args) -> str:
     """The loudness column to bin on, checked against the input table's OWN header.
 
@@ -366,62 +351,56 @@ def _resolve_loudness_column(args) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    out_default = Path("/workspace/reasoning_theatre/probe_loudness_heldout360")
-    ap.add_argument(
-        "--table", "--probe-csv", dest="probe_csv", type=Path, default=out_default / "heldout360_10probes.csv"
-    )
-    ap.add_argument(
-        "--rollout-dir",
-        type=Path,
-        default=Path("/workspace/reasoning_theatre/rollout_strategies_heldout360/every_token"),
-    )
+    ap.add_argument("--table", "--probe-csv", dest="probe_csv", type=Path, required=True)
+    ap.add_argument("--rollout-dir", type=Path, required=True)
     ap.add_argument(
         "--commitment-csv",
         type=Path,
-        default=Path("/workspace/reasoning_theatre/probe_vs_rollout/per_token.csv"),
+        required=True,
+        help="Per-token commitment CSV. It is the ROW SOURCE: this join iterates its "
+        "(name, step, token) keys and takes the sentence coordinates from it, so a token "
+        "absent here is absent from the output whatever the probe table holds.",
     )
     ap.add_argument(
         "--signal-json",
         type=Path,
-        default=Path("/workspace/jlens/direction_tokens_full.json"),
+        required=True,
         help="the vocabulary the mass table was built against; flags whether the TOKEN "
-        "ITSELF is a direction word, which is the standing confound.",
+        "at each cutoff is one of its words.",
     )
-    ap.add_argument("--out", type=Path, default=out_default / "per_token.csv")
-    ap.add_argument("--rowsets", default="all", help="comma-separated subset of ROWSETS, or 'all'.")
-    # Entry 47's convention: extend by flag, never by editing the registry, so re-running
-    # this against entry 48's inputs with no flag still produces byte-identical output.
+    ap.add_argument("--out", type=Path, required=True)
     ap.add_argument(
-        "--extra-probes",
-        default="",
-        help="Comma-separated key=probe_key pairs adding arms to PROBE_SOURCE, e.g. "
-        "'randb_lr=local_belief_baselines.random_belief_lr'. key is the short name the "
-        "per_token.csv columns use; probe_key is what eval_probe_per_token.py's probe_key() "
-        "gives that .pt ('<parent dir>.<stem>', with next_action_probe_ stripped). Empty by "
-        "default so existing outputs are unchanged.",
+        "--probes",
+        required=True,
+        help="Comma-separated key=column_prefix pairs naming the probes to join, e.g. "
+        "'jlens_lr=qwen_p2_local_belief_jlens_l27_lr,random_lr=...'. key is the short name "
+        "the output columns use; column_prefix is how the probe appears in --table, i.e. "
+        "the part before _pred. Every named probe must have _pred and its four _p_{action} "
+        "columns in the table, which means --full-probs on the scorer.",
     )
     ap.add_argument(
-        "--extra-probes-rowset",
-        default="p2",
-        help="Rowset the --extra-probes are appended to (default p2: every rowset holds "
-        "identical rows here, and p2 is the one whose figures carry the label contrast).",
+        "--rowset",
+        required=True,
+        help="Value written to the output's `rowset` column, which names WHICH PROBES a row "
+        "carries. One rowset per run: the probes are given explicitly now, so a second one "
+        "would only duplicate identical rows under another name.",
     )
     ap.add_argument("--mass-tol", type=float, default=1e-6, help="max |probe CSV mass - commitment CSV mass|.")
     ap.add_argument(
         "--lens",
-        default="jlens",
-        help="Which lens's loudness becomes the axis every downstream figure bins on "
-        "(default: %(default)s, which is what every page before entry 49 used). Say WHICH "
-        "LENS in any caption built from the output -- at layer 15 the two lenses' top-20 "
-        "sets overlap only about half, so an unqualified 'loudness' is not a quantity.",
+        required=True,
+        help="Which lens's loudness becomes the axis every downstream figure bins on. Say "
+        "WHICH LENS in any caption built from the output -- the two lenses' top-20 sets "
+        "overlap only about half, so an unqualified 'loudness' is not a quantity. Required: "
+        "the scorer writes both lenses' columns and only this picks between them.",
     )
     ap.add_argument(
         "--signal-name",
-        default="direction",
-        help="Which vocabulary the loudness was taken over (default: %(default)s). With "
-        "--lens and --layer this builds the column read from the input table.",
+        required=True,
+        help="Which vocabulary the loudness was taken over. With --lens and --layer this "
+        "builds the column read from the input table.",
     )
-    ap.add_argument("--layer", type=int, default=15, help="Layer the loudness is read at (default 15).")
+    ap.add_argument("--layer", type=int, required=True, help="Layer the loudness is read at.")
     ap.add_argument(
         "--mass-column",
         default=None,
@@ -438,18 +417,14 @@ def main() -> int:
     print(
         f"loudness axis: {args.mass_column}  ({cols.axis_label(args.lens, args.signal_name, args.layer)})", flush=True
     )
-    register_extra_probes(args.extra_probes, args.extra_probes_rowset)
-
-    wanted = list(ROWSETS) if args.rowsets == "all" else args.rowsets.split(",")
-    unknown = [r for r in wanted if r not in ROWSETS]
-    if unknown:
-        raise SystemExit(f"unknown rowset(s) {unknown}; choose from {list(ROWSETS)}")
+    probe_source = parse_probes(args.probes)
+    print(f"{len(probe_source)} probe(s): {', '.join(probe_source)}", flush=True)
     vocab = {t for lst in json.loads(args.signal_json.read_text()).values() for t in lst}
 
     print(f"reading {args.commitment_csv}", flush=True)
     coords = read_commitment(args.commitment_csv, args.mass_column)
     print(f"reading {args.probe_csv}", flush=True)
-    probes, _ = read_probe_csv(args.probe_csv, args.mass_column)
+    probes, _ = read_probe_csv(args.probe_csv, probe_source, args.mass_column)
     print(f"reading {args.rollout_dir}", flush=True)
     rollouts = read_rollouts(args.rollout_dir)
     print(
@@ -458,9 +433,8 @@ def main() -> int:
     )
 
     fields = list(BASE_FIELDS)
-    for rs in wanted:
-        for p in ROWSETS[rs]:
-            fields += [f"{p}_pred", f"{p}_p_local", f"{p}_p_final", f"{p}_pmax"]
+    for p in probe_source:
+        fields += [f"{p}_pred", f"{p}_p_local", f"{p}_p_final", f"{p}_pmax"]
 
     names = sorted(coords)
     if args.limit:
@@ -468,7 +442,6 @@ def main() -> int:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     n_rows = 0
-    per_rowset: dict[str, int] = defaultdict(int)
     skipped: dict[str, int] = defaultdict(int)
     mass_mismatch = 0
     label_mismatch = 0
@@ -579,25 +552,21 @@ def main() -> int:
                         "rollout_answer_prob": ev["answer_prob"],
                         "rollout_correct": int(bool(ev["correct"])),
                     }
-                    for rs_name in wanted:
-                        for pname in ROWSETS[rs_name]:
-                            pred, probs4 = pcell[pname]
-                            row[f"{pname}_pred"] = pred
-                            row[f"{pname}_p_local"] = f"{probs4[label_local]:.6f}" if label_local else ""
-                            row[f"{pname}_p_final"] = f"{probs4[label_final]:.6f}"
-                            row[f"{pname}_pmax"] = f"{max(probs4.values()):.6f}"
+                    for pname in probe_source:
+                        pred, probs4 = pcell[pname]
+                        row[f"{pname}_pred"] = pred
+                        row[f"{pname}_p_local"] = f"{probs4[label_local]:.6f}" if label_local else ""
+                        row[f"{pname}_p_final"] = f"{probs4[label_final]:.6f}"
+                        row[f"{pname}_pmax"] = f"{max(probs4.values()):.6f}"
                     # One identical row per rowset: the rowset now names WHICH PROBES are
                     # read, not which tokens, so every arm is scored on the same tokens.
-                    for rs_name in wanted:
-                        w.writerow({**row, "rowset": rs_name})
-                        per_rowset[rs_name] += 1
-                        n_rows += 1
+                    w.writerow({**row, "rowset": args.rowset})
+                    n_rows += 1
             if ni % 100 == 0 or ni == len(names):
                 print(f"    {ni}/{len(names)} trajectories, {n_rows} rows", flush=True)
 
     print(f"\nwrote {n_rows} rows -> {args.out}", flush=True)
-    for rs_name in wanted:
-        print(f"  {rs_name}: {per_rowset[rs_name]} rows", flush=True)
+    print(f"  rowset {args.rowset}: {n_rows} rows", flush=True)
     print(f"  probe CSV vs commitment CSV mass mismatches (>{args.mass_tol}): {mass_mismatch}", flush=True)
     print(f"  final-label mismatches: {label_mismatch}", flush=True)
     print(f"  rows whose rollout emitted no valid action (label_local blank): {no_action}", flush=True)

@@ -5,36 +5,48 @@
 # FINAL action. probe_accuracy_by_loudness.py bins on `label_local`, which only the
 # every_token rollout knows. This joins the two on (name, step, token_idx).
 #
-# --lens picks which lens's loudness becomes the axis the figures bin on; unlike the scorer,
-# this one takes a single lens. Run it twice with different --lens and --out to get both.
+# --probes names which probes to carry, as key=column_prefix: the key is the short name the
+# output columns use, the prefix is how the probe appears in the scorer's table.
 #
-# NOT RUNNABLE YET: join_rollouts.py hard-codes PROBE_SOURCE, ten gpt-oss probe columns it
-# raises SystemExit without, and reads --commitment-csv unconditionally (an entry-39/40/41
-# artefact with no Qwen equivalent). --extra-probes only ADDS to that registry. The
-# invocation below is the one that should work once PROBE_SOURCE is replaceable and the
-# commitment CSV optional.
+# --lens picks which lens's loudness becomes the axis; the scorer writes both, so run this
+# twice with different LENS and OUT to get both axes.
+#
+# STILL NEEDS A COMMITMENT CSV. --commitment-csv is the row source -- the join iterates its
+# (name, step, token) keys and takes the sentence coordinates from it -- and no Qwen one
+# exists yet.
 set -euo pipefail
 
 REPO=/workspace/repo/interp
 
-TABLE=/workspace/results/qwen_p2_local_belief/heldout/per_token_scores.csv
+RESULTS=/workspace/results/qwen_p2_local_belief/heldout
+TABLE=$RESULTS/per_token_scores.csv
+COMMITMENT=$RESULTS/commitment_per_token.csv
 ROLLOUTS=/workspace/rollouts/qwen_p2_heldout_every_token
-OUT=/workspace/results/qwen_p2_local_belief/heldout/per_token.csv
+OUT=$RESULTS/per_token.csv
 
 SIGNAL_JSON=/workspace/repo/interp/data/jlens/qwen/direction_tokens_full_qwen3-6-35b-a3b.json
 SIGNAL_NAME=direction
 
 LAYER=27
 LENS=jlens
+ROWSET=qwen_p2
 
-mkdir -p "$(dirname "$OUT")"
+P=qwen_p2_local_belief
+PROBES="jlens_lr=${P}_jlens_l${LAYER}_lr,jlens_mlp=${P}_jlens_l${LAYER}_mlp"
+PROBES="$PROBES,logitlens_lr=${P}_logitlens_l${LAYER}_lr,logitlens_mlp=${P}_logitlens_l${LAYER}_mlp"
+PROBES="$PROBES,random_lr=${P}_random_l${LAYER}_lr,random_mlp=${P}_random_l${LAYER}_mlp"
+
+mkdir -p "$RESULTS"
 cd "$REPO"
 
 uv run python telos_interp/loudness_analysis/join_rollouts.py \
     --table "$TABLE" \
     --rollout-dir "$ROLLOUTS" \
+    --commitment-csv "$COMMITMENT" \
     --signal-json "$SIGNAL_JSON" \
     --signal-name "$SIGNAL_NAME" \
     --lens "$LENS" \
     --layer "$LAYER" \
+    --probes "$PROBES" \
+    --rowset "$ROWSET" \
     --out "$OUT"
