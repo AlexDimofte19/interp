@@ -41,7 +41,7 @@
 # manifest, so the arms end up with slightly different row counts and none has the full 60
 # per trajectory. Read each stage-3 drop count rather than assuming.
 #
-# THE OUTPUT IS A NEW PREFIX, /workspace/prepared/qwen_p2_local_<arm>_<half>. The
+# THE OUTPUT IS A NEW PREFIX, /workspace/prepared/qwen_p2_local_belief_<arm>_<half>. The
 # final-action manifests under /workspace/prepared/qwen_p2 are left intact, since nothing
 # else on disk would distinguish the two labels. Point train_next_action_probes_all_
 # selections.sh at the local one.

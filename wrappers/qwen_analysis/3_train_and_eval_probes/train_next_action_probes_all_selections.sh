@@ -6,7 +6,7 @@
 #
 # THE LABEL IS THE LOCAL BELIEF, NOT THE FINAL ACTION, and the only thing that decides which
 # is the directory OUT names. /workspace/prepared/qwen_p2_* are the manifests as prepared,
-# labelled with the trajectory's final agent_action; /workspace/prepared/qwen_p2_local_* are
+# labelled with the trajectory's final agent_action; /workspace/prepared/qwen_p2_local_belief_* are
 # those same manifests after relabel_manifest_from_rollout.py swapped in what the model
 # answered when its reasoning was cut at that token. Both are valid v3 manifests of the same
 # shape and the trainer cannot tell them apart, so pointing OUT at the wrong one trains the
@@ -34,8 +34,8 @@ set -euo pipefail
 
 REPO=/workspace/repo/interp
 
-OUT=/workspace/prepared/qwen_p2_local  # reads ${OUT}_${arm}_{train,val}; the RELABELLED ones
-PROBES=/workspace/probes/qwen_p2_local
+OUT=/workspace/prepared/qwen_p2_local_belief  # reads ${OUT}_${arm}_{train,val}; the RELABELLED ones
+PROBES=/workspace/probes/qwen_p2_local_belief
 
 LAYER=27
 MODEL_TYPE=lr          # flip to mlp and re-run for the second half of the sweep
@@ -67,7 +67,7 @@ done
 uv run interp-cli train_next_action_probe \
     --train-data-path "${OUT}_jlens_train" \
     --eval-data-path "${OUT}_jlens_val" \
-    --output-path "${PROBES}/qwen_p2_local_jlens_l${LAYER}_${MODEL_TYPE}.pt" \
+    --output-path "${PROBES}/qwen_p2_local_belief_jlens_l${LAYER}_${MODEL_TYPE}.pt" \
     --model-type "$MODEL_TYPE" \
     --hidden-dims "$HIDDEN_DIMS" \
     --learning-rate "$LEARNING_RATE" \
@@ -84,7 +84,7 @@ uv run interp-cli train_next_action_probe \
 uv run interp-cli train_next_action_probe \
     --train-data-path "${OUT}_logitlens_train" \
     --eval-data-path "${OUT}_logitlens_val" \
-    --output-path "${PROBES}/qwen_p2_local_logitlens_l${LAYER}_${MODEL_TYPE}.pt" \
+    --output-path "${PROBES}/qwen_p2_local_belief_logitlens_l${LAYER}_${MODEL_TYPE}.pt" \
     --model-type "$MODEL_TYPE" \
     --hidden-dims "$HIDDEN_DIMS" \
     --learning-rate "$LEARNING_RATE" \
@@ -101,7 +101,7 @@ uv run interp-cli train_next_action_probe \
 uv run interp-cli train_next_action_probe \
     --train-data-path "${OUT}_random_train" \
     --eval-data-path "${OUT}_random_val" \
-    --output-path "${PROBES}/qwen_p2_local_random_l${LAYER}_${MODEL_TYPE}.pt" \
+    --output-path "${PROBES}/qwen_p2_local_belief_random_l${LAYER}_${MODEL_TYPE}.pt" \
     --model-type "$MODEL_TYPE" \
     --hidden-dims "$HIDDEN_DIMS" \
     --learning-rate "$LEARNING_RATE" \

@@ -32,7 +32,7 @@ TRAJ_VAL=/workspace/trajectories/qwen3.6-35b/replayed_single_step/mass_eval_144
 
 PREP=/workspace/prepared/qwen_p2              # stage 1 -> ${PREP}_${ARM}_{train,val}
 ROLLOUTS=/workspace/rollouts/qwen_p2          # stage 2 -> ${ROLLOUTS}/${ARM}_{train,val}/
-OUT=/workspace/prepared/qwen_p2_local         # stage 3 -> ${OUT}_${ARM}_{train,val}
+OUT=/workspace/prepared/qwen_p2_local_belief         # stage 3 -> ${OUT}_${ARM}_{train,val}
 
 MODEL=Qwen/Qwen3.6-35B-A3B
 LAYER=27
