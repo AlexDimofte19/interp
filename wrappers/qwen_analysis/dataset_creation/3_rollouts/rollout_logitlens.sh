@@ -37,7 +37,7 @@
 # described by a ruler that did not choose it.
 set -euo pipefail
 
-REPO=/workspace/repo/interp
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)   # repo root, as ../../p2_selection does
 
 ARM=logitlens
 LENS=logitlens      # the ruler that chose this arm's tokens; see the header
@@ -83,6 +83,7 @@ uv run --extra gpu python telos_interp/loudness_analysis/rollouts/run_inference.
     --batch-size "$BATCH_SIZE" \
     --max-batch-tokens "$MAX_BATCH_TOKENS" \
     --device-map "$DEVICE_MAP" \
+    --branch-cache \
     --skip-existing
 
 uv run --extra gpu python telos_interp/loudness_analysis/rollouts/run_inference.py \
@@ -98,6 +99,7 @@ uv run --extra gpu python telos_interp/loudness_analysis/rollouts/run_inference.
     --batch-size "$BATCH_SIZE" \
     --max-batch-tokens "$MAX_BATCH_TOKENS" \
     --device-map "$DEVICE_MAP" \
+    --branch-cache \
     --skip-existing
 
 # ------------------------------------------------------------------ 3. RELABEL

@@ -38,7 +38,7 @@
 # the two comparable as a covariate. It moves no cutoff -- the picks come from the record.
 set -euo pipefail
 
-REPO=/workspace/repo/interp
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)   # repo root, as ../../p2_selection does
 
 ARM=random
 LENS=jlens          # a scale for dir_logmass only; the control has no ruler of its own
@@ -84,6 +84,7 @@ uv run --extra gpu python telos_interp/loudness_analysis/rollouts/run_inference.
     --batch-size "$BATCH_SIZE" \
     --max-batch-tokens "$MAX_BATCH_TOKENS" \
     --device-map "$DEVICE_MAP" \
+    --branch-cache \
     --skip-existing
 
 uv run --extra gpu python telos_interp/loudness_analysis/rollouts/run_inference.py \
@@ -99,6 +100,7 @@ uv run --extra gpu python telos_interp/loudness_analysis/rollouts/run_inference.
     --batch-size "$BATCH_SIZE" \
     --max-batch-tokens "$MAX_BATCH_TOKENS" \
     --device-map "$DEVICE_MAP" \
+    --branch-cache \
     --skip-existing
 
 # ------------------------------------------------------------------ 3. RELABEL

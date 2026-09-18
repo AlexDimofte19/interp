@@ -23,7 +23,7 @@
 # through an absolute activations_root, so both outputs are a lone manifest.json. CPU only.
 set -euo pipefail
 
-REPO=/workspace/repo/interp
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)   # repo root, as ../../p2_selection does
 
 ARM=random
 

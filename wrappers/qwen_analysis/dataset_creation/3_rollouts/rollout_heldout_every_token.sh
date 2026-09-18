@@ -54,7 +54,7 @@
 # Resumable: --skip-existing skips trajectory files whose output JSON already exists.
 set -euo pipefail
 
-REPO=/workspace/repo/interp
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)   # repo root, as ../../p2_selection does
 
 # size*/*.json, NOT the bare directory. run_inference.py's expand_paths rglobs a directory
 # for *.json, and these dataset folders also hold replay_batch_summary{,1}.json plus stale
