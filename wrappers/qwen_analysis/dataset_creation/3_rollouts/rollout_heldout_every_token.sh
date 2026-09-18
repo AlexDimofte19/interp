@@ -54,9 +54,16 @@
 # Resumable: --skip-existing skips trajectory files whose output JSON already exists.
 set -euo pipefail
 
-REPO=/workspace/repo/interp
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)   # repo root, as ../../p2_selection does
 
-TRAJ=/workspace/trajectories/qwen3.6-35b/replayed_single_step/heldout_72
+# size*/*.json, NOT the bare directory. run_inference.py's expand_paths rglobs a directory
+# for *.json, and these dataset folders also hold replay_batch_summary{,1}.json plus stale
+# .ipynb_checkpoints/*-checkpoint.json copies. Handed the directory, the train set resolves
+# to 556 files rather than 549: the run dies on the first summary with
+# KeyError: 'model_params', and the checkpoint copies would be rolled out as trajectories
+# whose stem matches no selection record. This glob is the layout expand_paths documents,
+# and it reproduces the gather's 549 train / 52 val exactly.
+TRAJ="/workspace/trajectories/qwen3.6-35b/replayed_single_step/heldout_72/size*/*.json"
 LENS_ROOT=/workspace/activations/qwen_p2_heldout   # the mass tables, written by heldout_sample.sh
 OUT=/workspace/rollouts/qwen_p2_heldout_every_token
 

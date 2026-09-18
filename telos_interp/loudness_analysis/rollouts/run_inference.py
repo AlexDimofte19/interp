@@ -29,6 +29,7 @@ Run on the GPU host, e.g.:
 """
 
 import argparse
+import copy
 import json
 import re
 from glob import glob
@@ -200,6 +201,13 @@ def build_step_prompts(
         "ground_truth": step["agent_action"],
         "cutoffs": cutoffs,
         "eos_positions": [c.pos for c in cutoffs],
+        # Branching inputs (``generate_actions_branched``). Every prompt above is
+        # ``base_ids + chain_ids[:pos + 1] + final_prefix``, so keeping the three pieces
+        # lets one forward pass serve all of this step's cutoffs instead of re-prefilling
+        # each prompt whole. Cheap to carry: the prompts themselves are far larger.
+        "base_ids": build_prompt_ids_at(trajectory, step, -1, [])[:],
+        "chain_ids": [t["token_id"] for t in output_tokens],
+        "final_prefix": final_prefix,
     }
     return meta, prompts
 
@@ -385,6 +393,86 @@ def _generate_batch_into(
             )
 
 
+def generate_actions_branched(
+    meta: dict,
+    *,
+    model,
+    tokenizer,
+    model_device,
+    max_new_tokens: int,
+) -> list[dict]:
+    """One forward pass per step, branching at each cutoff; results align with ``meta["cutoffs"]``.
+
+    WHY. ``generate_actions`` re-prefills every cutoff's prompt whole, and this step's prompts
+    are nested prefixes of one sequence: 60 cutoffs over a 20k-token chain re-read ~500k tokens
+    to produce 60 single tokens. Here the chain is walked ONCE, and at each cutoff the cache is
+    snapshotted, the ~10-token final-channel prefix is run from the snapshot, and the branch is
+    dropped. Measured 3.4x on a size5 trajectory (97.4s -> 28.8s); the win is smaller than the
+    30x token ratio because the pass becomes many small forwards, which are latency-bound on
+    kernel launches and MoE routing rather than throughput-bound.
+
+    WHY A SNAPSHOT AND NOT A CROP. ``DynamicCache.crop`` rewinds a KV cache exactly, but this
+    model is hybrid -- 30 of its 40 layers are ``linear_attention``, whose recurrent state is
+    updated irreversibly and cannot be rewound. So cutoffs are visited in ASCENDING position
+    order, the main cache only ever moves forward, and each branch works on a deep copy.
+
+    EXACTNESS. Bit-identical to the unbatched reference (60/60 tokens on the validation
+    trajectory) and disagreeing with the batched reference exactly where the unbatched one
+    does -- i.e. within the padding nondeterminism the pipeline already has (see
+    ``rollout_strategies/RUN_STATE.md``). Segmenting a forward pass changes bf16 reduction
+    order, and in a 256-expert MoE that can flip top-8 routing, so "identical" is a claim
+    about agreement rates, not about bits.
+    """
+    if max_new_tokens != 1:
+        raise ValueError(
+            f"branched generation emits exactly one token, got --max-new-tokens {max_new_tokens}. "
+            'The final-channel prefix primes `"action": "`, so one token IS the action; drop '
+            "--branch-cache if you need more."
+        )
+
+    cutoffs: list[Cutoff] = meta["cutoffs"]
+    base_ids: list[int] = meta["base_ids"]
+    chain_ids: list[int] = meta["chain_ids"]
+    final_prefix: list[int] = meta["final_prefix"]
+
+    def forward(ids: list[int], past):
+        t = torch.tensor([ids], dtype=torch.long, device=model_device)
+        with torch.no_grad():
+            out = model(t, past_key_values=past, use_cache=True, logits_to_keep=1)
+        return out.logits[0, -1].float(), out.past_key_values
+
+    full = base_ids + chain_ids
+    results: list[dict | None] = [None] * len(cutoffs)
+    # Ascending, because the main cache cannot be rewound; ties reuse the cache as it stands.
+    order = sorted(range(len(cutoffs)), key=lambda i: cutoffs[i].pos)
+
+    cache = None
+    fed = 0
+    for i in order:
+        need = len(base_ids) + cutoffs[i].pos + 1
+        if need > fed:
+            _, cache = forward(full[fed:need], cache)
+            fed = need
+
+        branch = copy.deepcopy(cache)
+        try:
+            logits, _ = forward(final_prefix, branch)
+            probs = torch.softmax(logits, dim=-1)
+            token_id = int(logits.argmax())
+            raw_output = tokenizer.decode([token_id], skip_special_tokens=False)
+            results[i] = {
+                "model_action": parse_action(raw_output),
+                "answer_token": raw_output,
+                "answer_prob": float(probs[token_id]),
+                "raw_output": raw_output,
+            }
+        finally:
+            del branch
+
+    del cache
+    return results  # type: ignore[return-value]  # every slot is filled above
+
+
 def assemble_step_record(meta: dict, prompts: list[list[int]], results: list[dict]) -> dict:
     """Build a step record (per-cutoff evals + commitment metrics) from this step's slice.
 
@@ -490,6 +578,7 @@ def _flush_window(
     max_attn_elems: int,
     strategy: TruncationStrategy,
     overall: dict,
+    branch_cache: bool = False,
 ) -> None:
     """Generate over a whole window of prompts and write each file's results.
 
@@ -497,23 +586,43 @@ def _flush_window(
     each file's ``spans`` index into it. Batches inside ``generate_actions`` cross file and
     step boundaries freely, so a window only needs to hold whole files (never split one).
     Folds per-file metrics into the mutable ``overall`` accumulator.
+
+    ``branch_cache`` swaps that flat pass for ``generate_actions_branched``, which runs one
+    forward pass PER STEP and branches at each cutoff. Cutoffs then cannot cross step
+    boundaries -- a step's cache is its own -- so the window stops being a batching unit and
+    becomes only a write-grouping one. Results are still scattered back into window order, so
+    everything downstream is unchanged.
     """
     if not window_files:
         return
 
     stems = ", ".join(fw["file_stem"] for fw in window_files)
     print(f"  Flushing window: {len(window_files)} file(s), {len(window_prompts)} prompt(s) [{stems}]")
-    results = generate_actions(
-        window_prompts,
-        model=model,
-        tokenizer=tokenizer,
-        model_device=model_device,
-        stop_ids=stop_ids,
-        batch_size=batch_size,
-        max_batch_tokens=max_batch_tokens,
-        max_new_tokens=max_new_tokens,
-        max_attn_elems=max_attn_elems,
-    )
+    if branch_cache:
+        results: list[dict] = [None] * len(window_prompts)  # type: ignore[list-item]
+        n_steps = sum(len(fw["spans"]) for fw in window_files)
+        print(f"    Branched generation over {n_steps} step(s) (one forward pass each)")
+        for fw in window_files:
+            for meta, s, e in fw["spans"]:
+                results[s:e] = generate_actions_branched(
+                    meta,
+                    model=model,
+                    tokenizer=tokenizer,
+                    model_device=model_device,
+                    max_new_tokens=max_new_tokens,
+                )
+    else:
+        results = generate_actions(
+            window_prompts,
+            model=model,
+            tokenizer=tokenizer,
+            model_device=model_device,
+            stop_ids=stop_ids,
+            batch_size=batch_size,
+            max_batch_tokens=max_batch_tokens,
+            max_new_tokens=max_new_tokens,
+            max_attn_elems=max_attn_elems,
+        )
 
     # Return this window's reserved (but now unused) GPU blocks to the driver so the pool
     # doesn't accumulate across windows (mirrors gather_activations' per-trajectory cleanup).
@@ -583,6 +692,19 @@ def main() -> None:
             "once), so --max-batch-tokens (linear in L) does not bound it -- 16 rows x 1587 "
             "tokens is a 25k area and a 4.80 GiB tensor. 0 disables. The default keeps a single "
             "score tensor near 1.9 GiB, which leaves 16 rows untouched below ~1000 tokens."
+        ),
+    )
+    parser.add_argument(
+        "--branch-cache",
+        action="store_true",
+        help=(
+            "One forward pass per STEP instead of one per cutoff: walk the reasoning chain once "
+            "and branch at each cutoff off a snapshot of the cache (see "
+            "generate_actions_branched). A step's cutoffs are nested prefixes of one sequence, so "
+            "the flat path re-reads ~500k tokens per 20k-token chain to emit 60 single tokens; "
+            "this reads ~15k. Measured 3.4x end to end, matching the UNBATCHED reference 60/60 "
+            "and differing from the batched one only where the unbatched reference also does. "
+            "Requires --max-new-tokens 1. Off by default so the published path is unchanged."
         ),
     )
     parser.add_argument(
@@ -797,6 +919,7 @@ def main() -> None:
         "max_new_tokens": args.max_new_tokens,
         "strategy": strategy,
         "overall": overall,
+        "branch_cache": args.branch_cache,
     }
 
     # Accumulate whole files' cutoffs into a shared window, then flush (generate + write) once
