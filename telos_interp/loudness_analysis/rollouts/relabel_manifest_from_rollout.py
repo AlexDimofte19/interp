@@ -28,12 +28,19 @@ import json
 from collections import Counter
 from pathlib import Path
 
+from telos_interp.loudness_analysis.rollouts.truncation_strategies import STRATEGIES
+
 NEXT_ACTION_TO_ID = {"LEFT": 0, "UP": 1, "RIGHT": 2, "DOWN": 3}
 
 
-def load_rollout_evals(rollout_dir: Path, names: set[str]) -> dict[tuple[str, int, int], dict]:
-    """{(name, step_id, eos_token_pos): sentence_eval} for the wanted trajectory names."""
+def load_rollout_evals(rollout_dir: Path, names: set[str]) -> tuple[dict[tuple[str, int, int], dict], set[str]]:
+    """({(name, step_id, eos_token_pos): sentence_eval}, {strategy name}) for the wanted names.
+
+    The strategy names come back because the per-sentence guard below only applies to the arms
+    that promise one cutoff per sentence, and the rollout JSON is where that is recorded.
+    """
     out: dict[tuple[str, int, int], dict] = {}
+    strategies: set[str] = set()
     n_files = 0
     for name in sorted(names):
         size = name.split("_size")[1].split("_")[0]
@@ -44,6 +51,9 @@ def load_rollout_evals(rollout_dir: Path, names: set[str]) -> dict[tuple[str, in
             continue
         n_files += 1
         doc = json.loads(path.read_text())
+        sname = (doc.get("strategy") or {}).get("strategy")
+        if sname:
+            strategies.add(sname)
         for step in doc["steps"]:
             sid = step["step_id"]
             for ev in step["sentence_evals"]:
@@ -53,7 +63,9 @@ def load_rollout_evals(rollout_dir: Path, names: set[str]) -> dict[tuple[str, in
                 # keep the first eval for a position (endpoint/interior dupes are rare and equal)
                 out.setdefault((name, sid, pos), ev)
     print(f"  rollout: {n_files} files, {len(out)} (name, step, pos) cutoffs")
-    return out
+    if strategies:
+        print(f"  strategy: {', '.join(sorted(strategies))}")
+    return out, strategies
 
 
 def main() -> int:
@@ -92,7 +104,7 @@ def main() -> int:
     names = {s["name"] for s in samples}
     print(f"manifest: {len(samples)} samples over {len(names)} trajectories")
 
-    evals = load_rollout_evals(args.rollout_dir, names)
+    evals, strategies = load_rollout_evals(args.rollout_dir, names)
 
     out_samples: list[dict] = []
     rows: list[dict] = []
@@ -166,17 +178,33 @@ def main() -> int:
     # cut_sentence_idx, NOT sentence_idx: the latter is the cutoff's ordinal in the rollout's
     # eval list, so it counts cutoffs and would make every step look like it held one row per
     # sentence even when a sentence is represented twice.
+    # ...but ONLY for the arms that promise it. ``one_per_sentence`` is the strategy's own
+    # declaration (truncation_strategies.py); the position-choosing arms never made that promise
+    # -- jlens_top_k_global spends several cutoffs on a loud sentence and none on a quiet one,
+    # every_token takes them all, and recorded_selection replays picks that were ranked by
+    # loudness, which clusters. Applying the guard to those rejects a correct arm: the qwen P2
+    # recorded_selection run tripped it on 4052 sentences that simply held two or three of the
+    # 60 loudest tokens. An unknown strategy name is treated as per-sentence, so the guard still
+    # fires by default rather than silently lapsing.
+    per_sentence_arms = {s for s in strategies if getattr(STRATEGIES.get(s), "one_per_sentence", True)}
     by_sentence: Counter = Counter()
     for s in out_samples:
         if s.get("cut_sentence_idx") is not None:
             by_sentence[(s["name"], s["step"], s["cut_sentence_idx"])] += 1
     dupes = [k for k, n in by_sentence.items() if n > 1]
-    if dupes:
+    if dupes and per_sentence_arms:
         shown = ", ".join(f"{n}/step{st}/sentence{si} x{by_sentence[(n, st, si)]}" for n, st, si in sorted(dupes)[:5])
         raise SystemExit(
             f"{len(dupes)} (trajectory, step, sentence) triple(s) have more than one row, e.g. {shown}. "
-            "A per-sentence arm must hold exactly one cutoff per sentence; check whether the tree "
-            "holds both a sentence's interior pick and its end_of_reasoning bookend."
+            f"A per-sentence arm ({', '.join(sorted(per_sentence_arms))}) must hold exactly one cutoff "
+            "per sentence; check whether the tree holds both a sentence's interior pick and its "
+            "end_of_reasoning bookend."
+        )
+    if dupes:
+        worst = max(by_sentence.values())
+        print(
+            f"  {len(dupes)} sentence(s) hold >1 cutoff (max {worst}) -- expected for "
+            f"{', '.join(sorted(strategies))}, which chooses positions, not sentences"
         )
 
     kept_names = set(per_traj_kept)

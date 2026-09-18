@@ -284,6 +284,17 @@ class TruncationStrategy(ABC):
     # ...and whether a trajectory without a usable table is fatal for that trajectory.
     # The two differ for ``every_token``, which records loudness but never ranks on it.
     needs_loudness: bool = False
+    # Whether this strategy emits AT MOST ONE cutoff per reasoning sentence. True only for the
+    # three that walk the sentence grid (``eos``, ``jlens_argmax_per_sentence``,
+    # ``random_per_sentence``); the others choose positions and let the sentences fall where
+    # they may -- ``jlens_top_k_global`` by design ("a quiet sentence contributes nothing, a
+    # loud one several"), ``every_token`` trivially, and ``recorded_selection`` because it
+    # replays picks that were never constrained to one per sentence.
+    #
+    # It exists because ``relabel_manifest_from_rollout`` guards that invariant, and a guard
+    # that does not know which arms hold it rejects the arms that never claimed it. Default
+    # False so a new strategy does not silently inherit a promise it has not made.
+    one_per_sentence: bool = False
 
     @abstractmethod
     def cutoffs(self, trajectory: dict, step: dict, traj_name: str) -> list[Cutoff]:
@@ -302,6 +313,7 @@ class EosStrategy(TruncationStrategy):
     """Every reasoning sentence end, plus the no-reasoning and end-of-reasoning cutoffs."""
 
     name = "eos"
+    one_per_sentence = True
 
     def cutoffs(self, trajectory: dict, step: dict, traj_name: str) -> list[Cutoff]:
         eos = reasoning_eos_positions(step["output_tokens"])
@@ -380,6 +392,7 @@ class JlensArgmaxPerSentenceStrategy(LoudnessStrategy):
     """
 
     name = "jlens_argmax_per_sentence"
+    one_per_sentence = True
 
     def cutoffs(self, trajectory: dict, step: dict, traj_name: str) -> list[Cutoff]:
         scores, eos = self._scores(step, traj_name)
@@ -452,6 +465,7 @@ class RandomPerSentenceStrategy(LoudnessStrategy):
 
     name = "random_per_sentence"
     needs_loudness = False
+    one_per_sentence = True
 
     def __init__(
         self,
