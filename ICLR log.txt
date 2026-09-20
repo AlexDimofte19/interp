@@ -4336,3 +4336,265 @@ the same footing. Same-round gaps are.
 	ARTIFACTS:
 	  /workspace/probes/local_belief_action_l15/{p1,p1-top20,p2}/   20 probes
 	  /workspace/reasoning_theatre/cross_selection_eval/<slice>/<probe>.txt   50 cells
+
+59. THE QWEN3.6-35B-A3B P2 PIPELINE (code 2026-09-16, run 2026-09-17..20)
+
+	The line on a second model. This entry first recorded code that had never
+	executed; it now records what that code did.
+
+	RUN: the layer profile, the three gathers, and all six local-belief
+	datasets. NOT RUN: the probes themselves, the held-out rollout, and every
+	table and figure downstream of them. No probe accuracy appears below,
+	because none has been measured -- the comparison this round exists to make
+	is still open.
+
+	*** WHAT THE ROUND NEEDED THAT DID NOT EXIST ***
+
+	Four constants in build_loudness_tables.py were spelled `gpt-oss-20b` from a
+	time when there was one model. telos_interp/jlens_utils/models.py is now the
+	fifth registry (after METHODS, SCORES, STRATEGIES, PROBE_TYPES) and carries per
+	model: the HF repo id, the lens and unembed filenames, the two unembed weight
+	keys, where the text config sits, and the fitted target layer.
+
+	THE PROBLEM IT SOLVES IS A NAME COLLISION, NOT A MODEL COUNT. Two names identify
+	a model and they differ for Qwen: the SERVING id in every trajectory's
+	`model_params.model_id` (`gsarti/qwen3.6-35b`, a Together endpoint alias, not a
+	HF repo) and the HF repo id (`Qwen/Qwen3.6-35B-A3B`). For gpt-oss they are the
+	same string, which is why no flag was ever needed. `aliases` closes the gap, so
+	Qwen trees resolve with no flag; `--model-id` is for a model the file has not
+	seen. The activation tree path still derives from the SERVING id, so no existing
+	activations_root is stranded.
+
+	THE WEIGHT KEYS ARE DECLARED, NOT MATCHED BY SUFFIX. Qwen3.6 has three keys
+	ending in `norm.weight` outside the decoder layers: the real
+	`model.language_model.norm.weight`, `mtp.norm.weight` and
+	`model.visual.merger.norm.weight`. All three are the right rank and a plausible
+	shape, so guessing wrong is silently wrong logits for a whole run.
+	validate_against_index() only checks the declared keys, and does it BEFORE the
+	multi-GB shard download.
+
+	*** --data_sample_p: SAMPLING BEFORE SELECTION ***
+
+	Qwen chains run ~18k tokens against a ~250k vocabulary, ~30x the gpt-oss median.
+	The forward pass is linear in chain length and cannot be shortened, but the lens
+	transport, the unembed and the mass reduction all scale with (tokens x layers),
+	and that is the dominant term. `--data_sample_p` draws k = round(n*p) positions
+	uniformly per (trajectory, step) -- a draw, not a stride, because the chains are
+	periodic. It lives in build_pending() so both passes read the same sample and a
+	selection can never point at a .pt the sample dropped.
+
+	It narrows the pool BEFORE any selection runs, which is the intent for the
+	P2 arms: all three choose from the same sample, so the top-K is the loudest K of
+	the sample rather than of the chain and the control draws from that same pool.
+	The arms stay matched, which is the property the comparison needs. The fraction
+	and seed land in each mass table's .meta.json, so a sampled table can never be
+	mistaken for a full one.
+
+	*** THE JOIN ***
+
+	telos_interp/loudness_analysis/join_mass_tables.py concatenates a tree's
+	per-trajectory direction-mass tables into one token-level CSV per lens
+	(`trajectory` + the tables' own columns + L{layer}). It refuses to concatenate
+	tables whose sidecars disagree on the vocabulary -- mixing two produces a column
+	with no referent. csv.reader throughout: decoded tokens include the literal "NA",
+	empty strings and embedded commas, which pandas corrupts. An uncovered layer's
+	cell stays EMPTY, never floored -- "not covered" and "no mass here" differ.
+
+	scripts/jlens_layer_profile.py gained a trajectory-clustered error bar on its
+	argmax. The denominator is trajectories, not tokens: the ~18k tokens of one chain
+	share a prompt, a grid and a train of thought, so a token-level SE is too small
+	by the intra-chain correlation. separation() pairs the argmax against the
+	runner-up WITHIN each trajectory before taking the spread, since adjacent layers
+	move together. On the gpt-oss tables that bar put the argmax within z=2 of the
+	layer below it, i.e. the choice belonged on another ground. IT WAS NOT RUN FOR
+	QWEN -- see the margin below, which is a pooled row-level mean and carries no
+	error bar at all.
+
+	*** THE LAYER: 27, NAMED BY THE PROFILE ***
+
+	1,841,963 sampled reasoning tokens over 549 trajectories. At p=0.2 that is
+	~16.8k reasoning tokens per chain, which is the ~18k the sizing assumed.
+	Mean direction log-mass per layer, pooled over tokens:
+
+	  jlens      L3  -5.805   L7  -5.682   L11 -5.958   L15 -5.795   L19 -5.495
+	             L23 -5.527   L27 -5.249   L31 -5.552   L35 -7.144   L39 -10.354
+	  logitlens  flat across L0..L38, -6.09 at its quietest (L26) rising to
+	             -5.684 at L38, its argmax; then L39 -10.354
+
+	THE TWO LENSES DISAGREE ABOUT WHERE DIRECTION LIVES, and that is the finding
+	rather than the number. The jlens peaks mid-stack at 27/40 and falls off a
+	cliff above it (-7.1 at 35, -10.4 at 39). The logit lens is nearly flat --
+	0.41 nats from end to end -- and climbs monotonically to the penultimate
+	layer, which is mostly a statement about proximity to the unembed. At layer
+	27 the Jacobian is 0.82 nats louder than the logit lens (-5.249 vs -6.071);
+	peak against peak it is 0.44 (-5.249 vs -5.684). That margin is what the
+	logitlens arm exists to establish, and it is the first evidence on this model
+	that the fit bought anything.
+
+	L39 IS IDENTICAL UNDER BOTH LENSES (-10.353720 to six places). That is the
+	wiring check passing, not a coincidence: at the last layer apply_lens_transport
+	has an empty J_rows and IS the logit lens, exactly as layer 23 was on
+	gpt-oss-20b. The jlens is fitted only every fourth layer, so 27's neighbours
+	are 23 and 31, not 26 and 28.
+
+	27 WON BY 0.28 OVER BOTH FITTED NEIGHBOURS -- on a row-level mean over all
+	1.8M tokens, with no clustering and no error bar. A 0.28 margin against layers
+	four steps away is wider than the gpt-oss case that motivated the clustered
+	bar, but it has not been tested, and every artifact downstream is pinned to
+	this layer. Running jlens_layer_profile.py over these tables is cheap and is
+	the obvious loose end.
+
+	LAYER 15 IS NOT FORCE-KEPT: --select-always-layers is set empty, because 15/40
+	is not the place in the stack that 15/24 was on gpt-oss. There is therefore no
+	fixed-layer fallback for this model the way there is for that one -- a second
+	layer means a second gather.
+
+	*** THE WRAPPERS (wrappers/qwen_analysis/), NOW FOUR NUMBERED STAGES ***
+
+	  1_loudest_layer/
+	    sample_loudness_profile.sh     all layers, p=0.2, CSV-only, no .pt
+	    join_loudness_profile.sh       the join, CPU-only
+	    qwen_p2_loudest_layer.ipynb    mean per layer, one plot per lens
+	  2_dataset_creation/
+	    1_p2_selection/p2_training_selection.sh  3 arms at L27, mass_train_576
+	    1_p2_selection/p2_eval_selection.sh      the same run on mass_eval_144
+	    1_p2_selection/heldout_sample.sh         heldout_72, NO selection, p=1.0
+	    2_preparations/prepare_{jlens,logitlens,random}.sh
+	    3_rollouts/rollout_{jlens,logitlens,random}.sh
+	    3_rollouts/rollout_heldout_every_token.sh   stride 64          [UNRUN]
+	    build_local_belief_datasets.sh              master over both stages
+	  3_train_and_eval_probes/
+	    train_next_action_probes_all_selections.sh                     [UNRUN]
+	    cross_eval_local_belief_all_selections.sh   18 cells           [UNRUN]
+	  4_loudness_evaluation/
+	    score_probes_heldout_per_token.sh                              [UNRUN]
+	    join_heldout_rollouts.sh                                       [UNRUN]
+	    probe_accuracy_by_loudness_decile.ipynb                        [UNRUN]
+
+	Step 1 passes the vocabulary as --direction-mass-json and NOT --signal-json: the
+	latter switches the script into selective mode (filter, second pass, selection
+	record), and the profile wants none of that. The control arm is therefore not
+	drawn there -- it is drawn in the selecting gather, which is the only chance,
+	since a uniform draw over the chain cannot be made once the tree is pruned.
+
+	The held-out run passes no --signal-json at all, which is what makes it
+	unfiltered, and SAMPLE_PERCENT=1.0: the eval reads every token, and a token
+	absent from the tree cannot be scored later without re-running. One pass rather
+	than the usual two, and only because --layers and the probe layer are both
+	pinned to the same layer, so one tree serves as both --activations-dir and
+	--lens-dir. It finished in 8 h 40 m for 1,169,734 .pt at 37.5 files/s, and that
+	rate is NOT a planning number: throughput tracked wall-clock time rather than
+	chain length, so the variation is contention on the shared MooseFS cluster.
+
+	*** WHAT THE RUN BROKE, AND WHAT FIXED IT ***
+
+	THE BARE DIRECTORY IS NOT THE DATASET (be0ba59). run_inference.py's
+	expand_paths recurses a directory for *.json, and the replayed_single_step
+	folders also hold replay_batch_summary{,1}.json and stale
+	.ipynb_checkpoints/*-checkpoint.json. 556 files against the gather's 549. It
+	died on the first summary with KeyError: 'model_params' -- but the checkpoint
+	copies would have been rolled out as trajectories whose stem matches no
+	selection record, which is the quiet half. The wrappers now pin
+	--trajectory-paths to <dir>/size*/*.json.
+
+	PREFILL, NOT DECODE, AND THE CACHE CANNOT BE CROPPED (014e183). A step's
+	cutoffs are nested prefixes of ONE sequence, and generate_actions re-prefilled
+	each whole: 60 cutoffs over a ~20k chain re-read ~500k tokens to emit 60 single
+	tokens. --branch-cache walks the chain once in ascending cut order and branches
+	off a deep copy at each cutoff. It SNAPSHOTS rather than crops because this
+	model is hybrid -- 30 of its 40 layers are linear_attention, whose recurrent
+	state is updated irreversibly, so DynamicCache.crop would silently yield a wrong
+	state. Measured 97.4s -> 28.8s (3.4x, not the 30x token ratio: the pass becomes
+	120 small latency-bound forwards). It agrees with the unbatched reference 60/60
+	and disagrees with the batched one only where the unbatched reference also does.
+	Off by default, so nothing already on disk is affected.
+
+	ONE CUTOFF PER SENTENCE IS A PROMISE ONLY THREE STRATEGIES MAKE (6ebeb19). The
+	relabel guard rejected the jlens arm AFTER both its rollouts had completed --
+	4052 (trajectory, step, sentence) triples with more than one row -- and nothing
+	was wrong. The guard holds by construction for eos, jlens_argmax_per_sentence
+	and random_per_sentence, which walk the sentence grid, and is false for the
+	three that choose positions: recorded_selection replays picks ranked by
+	loudness and loud tokens CLUSTER. One sentence held 23 of that trajectory's 60
+	picks. `one_per_sentence` is now a third strategy class attribute beside
+	uses_loudness and needs_loudness, and the relabel reads the strategy name out of
+	the rollout JSON. An unrecognised name is treated as per-sentence, so it fails
+	closed.
+
+	*** THE DATASETS, AS BUILT ***
+
+	Three arms x {train, val}, 60 tokens per trajectory per arm, layer 27, labelled
+	with the LOCAL belief -- what the model answered when its reasoning was cut at
+	that token, not where the trajectory ended up.
+
+	  arm        train                          val
+	  jlens      32,750 / 32,940  547 traj      3,120 / 3,120  52 traj
+	  logitlens  32,740 / 32,940  548 traj      3,120 / 3,120  52 traj
+	  random     32,752 / 32,940  548 traj      3,120 / 3,120  52 traj
+
+	The denominators are 549 x 60 and 52 x 60. Train loses ~0.6% to cutoffs whose
+	forced token did not parse as an action; val loses none at all, in any arm.
+	ZERO "no matching cutoff" drops everywhere, i.e. the (name, step, pos) join is
+	exact -- which is the thing that would have been worth catching.
+
+	LOCAL AND FINAL AGREE:  train .898 jlens / .887 logitlens / .907 random
+	                        val   .939 jlens / .925 logitlens / .923 random
+	Mean rollout_answer_prob .93-.94 (train), .96-.97 (val).
+
+	SO THE MODEL IS ALREADY COMMITTED AT ~90% OF THESE TOKENS, and the two lens arms
+	sit 1.0 and 2.0 points BELOW the control on train -- loud tokens slightly less
+	committed, which is the direction the hypothesis wants. DO NOT READ IT YET. The
+	three arms are three populations; the ordering REVERSES on val (jlens highest);
+	and RUN_STATE.md's re-run floor is ~20 points of disagreement at no_reasoning,
+	against which 1-2 points is nothing. The measurement that settles it is the
+	probe, and the probe has not been trained.
+
+	*** THE DATA, AS GATHERED ***
+
+	  directory        JSONs on disk    trajectories gathered
+	  mass_train_576        556              549
+	  mass_eval_144          55               52
+	  heldout_72             74               70
+
+	Every name overpromises and mass_eval_144 badly: 52 trajectories is 36% of the
+	144 it claims. The replay script passes --skip_existing, so re-running resumes
+	rather than restarts. The round proceeded on the partial set by decision, not by
+	oversight, but every val number above rests on 52 trajectories and the eval half
+	of the cross-selection matrix will too.
+
+	SIZING: the gather needs an 80 GB card. The checkpoint is 66.97 GiB
+	(language_model 63.61, mtp 1.57, lm_head 0.95, visual 0.83), and all 256 experts
+	per layer must be resident even though 8 are active per token. Single GPU only --
+	device_map="auto" across several NaNs this MoE, as it does gpt-oss.
+
+	*** LANDMINES ***
+
+	(a) THE QWEN VOCABULARIES ARE NOT IN GIT, and every one of the 15 wrappers
+	points at one. .gitignore ignores data/** and re-admits `!data/jlens/*.json`,
+	which is the TOP LEVEL ONLY -- data/jlens/qwen/*.json stays ignored. All three
+	(direction 643 tokens, grid_full 1316, grid_pruned 533) exist on the GPU host
+	and nowhere else. This is exactly the failure the exception was added to
+	prevent: a fresh clone cannot score a single Qwen token. Fix the pattern to
+	`!data/jlens/**/*.json`, or force-add. Until then the round is not reproducible
+	from the repo.
+
+	(b) LAYER 27 IS EVERYWHERE, untested (see above), and with no layer-15 fallback
+	kept.
+
+	(c) STALE COPIES UNDER .ipynb_checkpoints/ throughout wrappers/qwen_analysis/
+	still carry LAYER=39 and the dead --signal-json path
+	/workspace/jlens/qwen_direction_tokens.json. They are gitignored but they are on
+	disk and grep finds them. Do not copy a flag out of one.
+
+	(d) /workspace/rollouts/qwen_p2/jlens_train_flatpath_backup (3.5 MB) is left
+	over from the flat-path fix and is not an arm.
+
+	(e) join_heldout_rollouts.sh IS BLOCKED on --commitment-csv, its row source. No
+	Qwen commitment CSV exists, so stage 4 cannot complete as written even once the
+	held-out rollout runs.
+
+	STATUS: stages 1 and 2 complete except the held-out rollout; stages 3 and 4
+	unrun. The next command is
+	3_train_and_eval_probes/train_next_action_probes_all_selections.sh, which is CPU
+	work over manifests that already exist. The held-out rollout is the GPU item and
+	it gates everything in stage 4.

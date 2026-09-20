@@ -7,7 +7,21 @@ this file names one of them as "the working branch", read that as history rather
 somewhere to go looking.
 
 **Newest first, if you only read one thing:** the file is append-only and chronological, so
-the last section is the current state. As of 2026-09-15 that is *The cross-selection matrix*
+the last section is the current state. As of 2026-09-20 that is *The Qwen3.6-35B-A3B P2
+pipeline* (log entry 59) — the whole line reproduced on a second model, in fifteen wrappers
+under `wrappers/qwen_analysis/` across four numbered stages. **Run:** the layer profile, the
+three gathers and all six local-belief datasets. **Not run:** the probes themselves, the
+held-out rollout, and everything in stage 4 — so no probe accuracy exists for this model yet
+and the comparison the round is for is still open.
+
+Two things to carry: the profile named **layer 27**, where the jlens is 0.82 nats louder than
+the logit lens, and the two lenses disagree about where direction lives (the jlens peaks
+mid-stack and collapses above it; the logit lens is flat and just climbs toward the unembed).
+And **the Qwen vocabularies are not in git** — `.gitignore`'s `!data/jlens/*.json` re-admits
+the top level only, so `data/jlens/qwen/*.json` exists on the GPU host and nowhere else, while
+all fifteen wrappers point at it. Entry 59's landmine list has the rest.
+
+One section older, *The cross-selection matrix*
 (log entry 58) — every local-belief ACTION probe read on every OTHER arm's selection of the
 eval-720. It fills the middle between the only two populations anything has been scored on so
 far (its own selection, and all 87,221 heldout-360 tokens with no selection at all), which is
