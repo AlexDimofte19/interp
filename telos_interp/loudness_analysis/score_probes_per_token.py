@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import csv
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import torch
@@ -72,6 +73,78 @@ def lens_cells(counts: dict, masses: dict, lenses: list[str], key: tuple[int, in
     return token, cells
 
 
+def _cache_file(cache_dir: Path, stem: str, layer: int) -> Path:
+    return cache_dir / f"{stem}_layer{layer}.pt"
+
+
+def load_activations(
+    act_folder: Path,
+    layer: int,
+    keys: list[tuple[int, int]],
+    stem: str,
+    cache_dir: Path | None,
+    threads: int,
+) -> dict[tuple[int, int], torch.Tensor]:
+    """``{(step_folder_idx, token_idx): activation}``, for the keys that exist on disk.
+
+    A gathered tree holds one ~5 KB .pt per token and lives on MooseFS, so the cost is one
+    network round trip per token -- 28 ms measured against ~0.1 ms for the same read on local
+    NVMe. The whole qwen held-out tree is 6.5 GB, so this is latency, never bandwidth. Three
+    things address it, and they are independent:
+
+      * ONE round trip per token, not two. The old code called ``pt.exists()`` and then
+        ``torch.load``; on a network mount that stat is a second round trip, paid on every
+        token, to answer what the open answers anyway.
+      * ``threads`` issues the reads concurrently. Latency-bound work scales nearly linearly
+        until the mount saturates. 1 restores the serial read exactly.
+      * ``cache_dir`` packs a trajectory's tensors into ONE file, so the second and later runs
+        over the same tree -- a new probe set, another signal, the other probe type -- pay one
+        read instead of tens of thousands.
+
+    The cache is keyed on the exact key list it was built for, so a tree that has since been
+    pruned or extended, or a lens table selecting a different universe, does not match and is
+    rebuilt. Tokens missing on disk are recorded as missing, so a cached run and an uncached
+    one skip the same tokens and write the same rows.
+    """
+    cache_path = _cache_file(cache_dir, stem, layer) if cache_dir is not None else None
+    if cache_path is not None and cache_path.exists():
+        try:
+            blob = torch.load(cache_path, map_location="cpu", weights_only=False)
+            if blob.get("layer") == layer and blob.get("requested") == keys:
+                acts = blob["acts"]
+                return {k: acts[i] for i, k in enumerate(blob["present"])}
+        except Exception:  # a truncated or unreadable cache must not fail the run
+            pass
+
+    def _read(key: tuple[int, int]):
+        folder_idx, token_idx = key
+        pt = act_folder / f"layer_{layer}" / f"step_{folder_idx}" / "output" / f"{token_idx}.pt"
+        try:
+            return torch.load(pt, map_location="cpu", weights_only=True).float()
+        except FileNotFoundError:
+            return None
+
+    if threads > 1 and len(keys) > 1:
+        with ThreadPoolExecutor(max_workers=threads) as pool:
+            loaded = list(pool.map(_read, keys))  # map preserves input order
+    else:
+        loaded = [_read(k) for k in keys]
+
+    out = {k: t for k, t in zip(keys, loaded, strict=True) if t is not None}
+
+    if cache_path is not None and out:
+        present = [k for k in keys if k in out]
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_path.with_suffix(".tmp")
+        torch.save(
+            {"layer": layer, "requested": keys, "present": present, "acts": torch.stack([out[k] for k in present])},
+            tmp,
+        )
+        tmp.replace(cache_path)  # atomic: an interrupted run leaves no half-written cache
+
+    return out
+
+
 def build_parser(probe_type_name: str | None = None) -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
@@ -97,6 +170,27 @@ def build_parser(probe_type_name: str | None = None) -> argparse.ArgumentParser:
     ap.add_argument("--signal-classes", "--direction-classes", dest="direction_classes", default="all")
     ap.add_argument("--full-probs", action="store_true", help="Also write each class's probability.")
     ap.add_argument("--batch-size", type=int, default=4096)
+    ap.add_argument(
+        "--read-threads",
+        type=int,
+        default=8,
+        help="Concurrent .pt reads (default 8). The tree is one small file per token on a "
+        "network mount, so this is latency and not bandwidth; 1 restores the serial read.",
+    )
+    ap.add_argument(
+        "--cache-activations",
+        action="store_true",
+        help="Pack each trajectory's tensors into one file under --cache-dir on first use and "
+        "read them back afterwards. Same tensors in the same order, so a cached run and an "
+        "uncached one write identical rows; it only changes how they are fetched. Worth it "
+        "whenever one tree is scored more than once -- a new probe set, another signal.",
+    )
+    ap.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="Where --cache-activations writes (default: <--out's directory>/_act_cache).",
+    )
     ap.add_argument("--limit", type=int, default=None, help="Process at most N trajectories.")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     # Probe-type flags are added after the type is known, so `--help` shows only the relevant
@@ -154,8 +248,14 @@ def main() -> int:
             "lenses": lenses,
             "signal_classes": args.direction_classes,
             "full_probs": args.full_probs,
+            "read_threads": args.read_threads,
+            "cache_activations": args.cache_activations,
         }
     )
+
+    cache_dir = (args.cache_dir or args.out.parent / "_act_cache") if args.cache_activations else None
+    if cache_dir is not None:
+        print(f"activation cache: {cache_dir}", flush=True)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     written = skipped_missing_pt = 0
@@ -179,7 +279,7 @@ def main() -> int:
             if act_folder is None:
                 continue
 
-            rows, acts, states = [], [], []
+            pending: list[tuple[int, int, int, int, object]] = []
             starts: dict[int, tuple[int, int]] = {}
             step_states: dict[int, object] = {}
             for step, abs_pos in universe:
@@ -200,15 +300,30 @@ def main() -> int:
                 if state is None:
                     continue
 
-                token_idx = abs_pos - start
-                pt = act_folder / f"layer_{args.layer}" / f"step_{folder_idx}" / "output" / f"{token_idx}.pt"
-                if not pt.exists():
+                pending.append((step, abs_pos, folder_idx, abs_pos - start, state))
+
+            # One fetch for the whole trajectory, so the reads can be issued together and
+            # cached together. Missing tokens come back absent, exactly as the per-token
+            # existence check used to report them.
+            tensors = load_activations(
+                act_folder,
+                args.layer,
+                [(folder_idx, token_idx) for _, _, folder_idx, token_idx, _ in pending],
+                stem,
+                cache_dir,
+                args.read_threads,
+            )
+
+            rows, acts, states = [], [], []
+            for step, abs_pos, folder_idx, token_idx, state in pending:
+                act = tensors.get((folder_idx, token_idx))
+                if act is None:
                     skipped_missing_pt += 1
                     continue
 
                 token, cells = lens_cells(counts, masses, lenses, (step, abs_pos), args.layer)
                 rows.append(ptype.row_prefix(stem, traj, step, abs_pos, token_idx, token, state) + cells)
-                acts.append(torch.load(pt, map_location="cpu", weights_only=True).float())
+                acts.append(act)
                 states.append(state)
 
             if not rows:

@@ -268,3 +268,67 @@ def test_run_config_records_the_ruler_and_the_vocabulary(tree):
     # The fingerprint is what actually decides comparability between two tables.
     assert len(cfg["measurement"]["signal_fingerprint"]) == 12
     assert cfg["row_counts"]["token_rows"] == N_TOKENS
+
+
+def _rows(path: Path) -> list[dict]:
+    with open(path, newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+def test_cache_and_threads_do_not_change_the_rows(tree):
+    """The fetch strategy is not allowed to be visible in the output.
+
+    Three runs over one fixture: the serial read, the threaded read, and a threaded read that
+    packs a cache -- then a fourth that must be served BY that cache. All four CSVs must be
+    byte-identical. This is the whole safety argument for --cache-activations: it changes how
+    tensors are fetched and nothing else, so a cached table and an uncached one are the same
+    measurement and can sit beside each other.
+    """
+    probe = tree["tmp"] / "probes" / "next_action_probe_arm_lr.pt"
+    _save_next_action_probe(probe)
+    common = ("--probe", str(probe), "--full-probs", "--probe-type", "next_action")
+    cache = tree["tmp"] / "cache"
+
+    serial = _run("telos_interp/loudness_analysis/score_probes_per_token.py",
+                  tree["tmp"] / "serial.csv", tree, *common, "--read-threads", "1")
+    threaded = _run("telos_interp/loudness_analysis/score_probes_per_token.py",
+                    tree["tmp"] / "threaded.csv", tree, *common, "--read-threads", "4")
+    fill = _run("telos_interp/loudness_analysis/score_probes_per_token.py",
+                tree["tmp"] / "fill.csv", tree, *common, "--cache-activations",
+                "--cache-dir", str(cache))
+    assert list(cache.glob("*.pt")), "the run did not write a cache"
+    hit = _run("telos_interp/loudness_analysis/score_probes_per_token.py",
+               tree["tmp"] / "hit.csv", tree, *common, "--cache-activations",
+               "--cache-dir", str(cache))
+
+    baseline = serial.read_text()
+    for other in (threaded, fill, hit):
+        assert other.read_text() == baseline, f"{other.name} differs from the serial read"
+
+
+def test_a_stale_cache_is_rebuilt_not_trusted(tree):
+    """A cache built for a different key list must not be served.
+
+    The tree it was packed from can be pruned or extended afterwards, and the lens tables can
+    select a different universe of tokens. Either way the packed file no longer answers the
+    question being asked, so it is rebuilt rather than returned.
+    """
+    from telos_interp.loudness_analysis.score_probes_per_token import _cache_file, load_activations
+
+    act_folder = tree["acts"] / "size3" / tree["stem"] / MODEL
+    cache = tree["tmp"] / "stale_cache"
+    keys = [(0, i) for i in range(N_TOKENS)]
+
+    full = load_activations(act_folder, LAYER, keys, tree["stem"], cache, threads=2)
+    assert len(full) == N_TOKENS
+    assert _cache_file(cache, tree["stem"], LAYER).exists()
+
+    # A different request over the same trajectory: the cache holds the wrong key list.
+    fewer = load_activations(act_folder, LAYER, keys[:2], tree["stem"], cache, threads=1)
+    assert list(fewer) == keys[:2]
+    for k in keys[:2]:
+        assert torch.equal(fewer[k], full[k])
+
+    # A key that is not on disk is reported missing rather than invented.
+    missing = load_activations(act_folder, LAYER, [(0, 999)], tree["stem"], None, threads=1)
+    assert missing == {}
