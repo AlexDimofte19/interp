@@ -16,7 +16,7 @@
 # exists yet.
 set -euo pipefail
 
-REPO=/workspace/repo/interp
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)   # repo root, as the stage-1/2 wrappers do
 
 RESULTS=/workspace/results/qwen_p2_local_belief/heldout
 TABLE=$RESULTS/per_token_scores.csv
