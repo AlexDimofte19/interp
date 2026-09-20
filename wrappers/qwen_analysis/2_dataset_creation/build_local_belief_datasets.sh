@@ -43,9 +43,9 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-bash "$HERE/2_preparations/prepare_jlens.sh"
-bash "$HERE/2_preparations/prepare_logitlens.sh"
-bash "$HERE/2_preparations/prepare_random.sh"
+# bash "$HERE/2_preparations/prepare_jlens.sh"
+# bash "$HERE/2_preparations/prepare_logitlens.sh"
+# bash "$HERE/2_preparations/prepare_random.sh"
 
 bash "$HERE/3_rollouts/rollout_jlens.sh"
 bash "$HERE/3_rollouts/rollout_logitlens.sh"

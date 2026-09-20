@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Qwen P2, step 5: train one next_action probe per arm, on the LOCAL BELIEF. Training only.
 #
-# The sibling of ../dataset_creation/build_local_belief_datasets.sh -- it consumes the six RELABELLED
+# The sibling of ../2_dataset_creation/build_local_belief_datasets.sh -- it consumes the six RELABELLED
 # manifests that master's rollout stage wrote, so keep OUT below equal to its OUT.
 #
 # THE LABEL IS THE LOCAL BELIEF, NOT THE FINAL ACTION, and the only thing that decides which
@@ -30,6 +30,14 @@
 #
 # MODEL_TYPE is one variable on purpose: run it as lr, then flip to mlp and run again. The
 # probe filenames carry the type, so the second pass adds files rather than overwriting.
+#
+# WHICH IS WHY --cache-activations IS ON. A next_action manifest copies no tensors -- it names
+# each .pt in the gather tree individually -- so a pass opens 107,610 small files over MooseFS
+# at ~50/s: ~36 minutes of load with the GPU idle, against seconds of actual training. The
+# cache packs (activations, labels) beside each manifest on first use, ~880 MB for all six, so
+# the mlp pass pays nothing. It is keyed on a fingerprint of the manifest and rebuilds when
+# that moves; same tensors, same order, same NaN filtering, so a cached run and an uncached
+# one train on identical data.
 set -euo pipefail
 
 REPO=/workspace/repo/interp
@@ -59,7 +67,7 @@ cd "$REPO"
 for d in "${OUT}_jlens_train" "${OUT}_jlens_val" \
          "${OUT}_logitlens_train" "${OUT}_logitlens_val" \
          "${OUT}_random_train" "${OUT}_random_val"; do
-    [ -f "$d/manifest.json" ] || { echo "!! missing manifest: $d/manifest.json -- run ../dataset_creation/build_local_belief_datasets.sh first" >&2; exit 1; }
+    [ -f "$d/manifest.json" ] || { echo "!! missing manifest: $d/manifest.json -- run ../2_dataset_creation/build_local_belief_datasets.sh first" >&2; exit 1; }
     grep -q '"final_label"' "$d/manifest.json" || { echo "!! $d is NOT relabelled (no final_label) -- it carries the final action, not the local belief" >&2; exit 1; }
 done
 
@@ -78,6 +86,7 @@ uv run interp-cli train_next_action_probe \
     --normalize \
     --seed "$SEED" \
     --device "$DEVICE" \
+    --cache-activations \
     --verbose
 
 # --------------------------------------------------------------- logitlens
@@ -95,6 +104,7 @@ uv run interp-cli train_next_action_probe \
     --normalize \
     --seed "$SEED" \
     --device "$DEVICE" \
+    --cache-activations \
     --verbose
 
 # ------------------------------------------------------------------ random
@@ -112,4 +122,5 @@ uv run interp-cli train_next_action_probe \
     --normalize \
     --seed "$SEED" \
     --device "$DEVICE" \
+    --cache-activations \
     --verbose

@@ -35,4 +35,4 @@ done
 
 echo
 echo "wrote $OUT_DIR/{jlens,logitlens}_tokens.csv"
-echo "next: wrappers/qwen_analysis/loudest_layer/qwen_p2_loudest_layer.ipynb"
+echo "next: wrappers/qwen_analysis/1_loudest_layer/qwen_p2_loudest_layer.ipynb"

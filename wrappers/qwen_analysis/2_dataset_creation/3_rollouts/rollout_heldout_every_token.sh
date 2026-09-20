@@ -83,7 +83,7 @@ cd "$REPO"
 
 # Print the cutoff count and the prompt tails for the first step, then exit. Worth one run
 # before committing hours: it is where a stride that is not what you meant shows up.
-#   DRY_RUN=1 bash wrappers/qwen_analysis/3_train_and_eval_probes/heldout_rollout_every_token.sh
+#   DRY_RUN=1 bash wrappers/qwen_analysis/2_dataset_creation/3_rollouts/rollout_heldout_every_token.sh
 DRY_RUN=${DRY_RUN:-0}
 EXTRA=""
 [ "$DRY_RUN" = "1" ] && EXTRA="--dry-run"
