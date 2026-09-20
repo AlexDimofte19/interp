@@ -85,7 +85,11 @@ for slice in $SLICES; do
     for arm in $ARMS; do
         for mt in $MODEL_TYPES; do
             f="$OUT/$slice/${arm}_${mt}.txt"
-            bal=$(grep -m1 'bal acc vs LOCAL belief' "$f" 2>/dev/null | awk '{print $NF}')
+            # `|| bal=` is load-bearing: under `set -e` with pipefail, an assignment whose
+            # command substitution fails EXITS. A cell that did not run has no such line, so
+            # without this the summary dies on the first gap -- taking both the MISSING marker
+            # and the failure message below with it, in precisely the case they exist for.
+            bal=$(grep -m1 'bal acc vs LOCAL belief' "$f" 2>/dev/null | awk '{print $NF}') || bal=
             diag=$([ "$slice" = "$arm" ] && echo " <- diagonal" || echo "")
             printf '  slice=%-10s probe=%-10s %-3s  %s%s\n' "$slice" "$arm" "$mt" "${bal:-MISSING}" "$diag"
         done
