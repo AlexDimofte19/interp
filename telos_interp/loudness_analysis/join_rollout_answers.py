@@ -90,6 +90,27 @@ ACTION_FIELDS = (
     "n_prompt_tokens",
 )
 
+# Where the cutoff sits on the `eos` sentence grid, carried through from the rollout so this
+# table can stand in for the commitment-boundary CSV that `join_rollouts.py` takes as its row
+# source. Two traps are baked into the names:
+#
+#   * `sentence_idx` is the eval's `cut_sentence_idx` -- the sentence the cut LANDS IN -- and
+#     never its `sentence_idx`, which is the cutoff's ordinal in the eval list. The two
+#     coincide for the `eos` arm alone, so a mix-up survives an eos spot-check and is wrong
+#     under every other strategy (CLAUDE.md).
+#   * `frac_in_sentence` is the position WITHIN the sentence. It is the loudness-vs-position
+#     control, not a commitment quantity, so it is filled whether or not the boundary is.
+SENTENCE_FIELDS = (
+    "label_name",
+    "n_sentences",
+    "sentence_idx",
+    "pos_in_sentence",
+    "sentence_len",
+    "frac_in_sentence",
+    "is_sentence_end",
+    "convinced_sentence_idx",
+)
+
 REBUILD_HINT = """no rollout for {name}. The every_token arm is built with:
 
   NAMES_FILE={names} \\
@@ -112,11 +133,11 @@ def lens_columns(lens: str, layer: int) -> tuple[str, str]:
 
 
 def fieldnames(lenses: list[str], layer: int) -> list[str]:
-    """The CSV header: identity, then both lenses' loudness, then the truncated answer."""
+    """The header: identity, both lenses' loudness, the truncated answer, the sentence grid."""
     cols = list(KEY_FIELDS)
     for lens in lenses:
         cols.extend(lens_columns(lens, layer))
-    return cols + list(ACTION_FIELDS)
+    return cols + list(ACTION_FIELDS) + list(SENTENCE_FIELDS)
 
 
 def read_row_meta(path: Path) -> dict[int, dict[int, dict]]:
@@ -249,7 +270,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def resolve_names(args: argparse.Namespace) -> list[str]:
     """Trajectory stems to join, from the names file or from what the rollout directory holds."""
-    if args.names_file and str(args.names_file):
+    # `not in ("", ".")` because argparse has already run the empty string through
+    # type=Path, and Path("") is Path("."): truthy, so the documented "empty string takes
+    # every rollout" fell through to read_text() on the working directory instead.
+    if args.names_file and str(args.names_file) not in ("", "."):
         return sorted(set(args.names_file.read_text().split()))
     return sorted(p.stem for p in args.rollout_dir.glob("*.json"))
 
@@ -316,6 +340,54 @@ def add_loudness(row: dict, loaded: dict, lenses: list[str], layer: int, step_id
     return consistent
 
 
+def count_sentences(evals: list[dict]) -> int | None:
+    """How many sentences the chain has, as the eos grid saw it: ``max(cut_sentence_idx) + 1``.
+
+    Taken from the placements rather than from the rollout's ``n_reasoning_sentences``, which
+    under any strategy but ``eos`` counts CUTOFFS, not sentences (CLAUDE.md names it a
+    misnomer). ``None`` when no eval carries a placement.
+
+    >>> count_sentences([{"cut_sentence_idx": 3}, {"cut_sentence_idx": None}])
+    4
+    >>> count_sentences([{"cut_sentence_idx": None}]) is None
+    True
+    """
+    placed = [e["cut_sentence_idx"] for e in evals if e.get("cut_sentence_idx") is not None]
+    return max(placed) + 1 if placed else None
+
+
+def sentence_coords(ev: dict, n_sentences: int | None) -> dict:
+    """The cutoff's place on the eos sentence grid, blank where the rollout did not place it.
+
+    A cutoff the strategy never placed -- the cut at the very first reasoning token, which
+    has no sentence before it -- yields blanks rather than a guess. Downstream that row
+    simply cannot serve the within-sentence control; inventing sentence 0 for it would put a
+    fabricated point at ``frac_in_sentence == 0`` in every position figure.
+
+    >>> sentence_coords({"cut_sentence_idx": 2, "pos_in_sentence": 3, "sentence_len": 5}, 9)
+    {'n_sentences': 9, 'sentence_idx': 2, 'pos_in_sentence': 3, 'sentence_len': 5, 'frac_in_sentence': '0.750000', 'is_sentence_end': 0}
+    >>> sentence_coords({"cut_sentence_idx": None}, 9)["sentence_idx"]
+    ''
+    """
+    si = ev.get("cut_sentence_idx")
+    pos = ev.get("pos_in_sentence")
+    length = ev.get("sentence_len")
+    if si is None or pos is None or length is None:
+        return dict.fromkeys(("n_sentences", "sentence_idx", "pos_in_sentence", "sentence_len"), "") | {
+            "frac_in_sentence": "",
+            "is_sentence_end": "",
+        }
+    frac = pos / (length - 1) if length > 1 else 0.0
+    return {
+        "n_sentences": "" if n_sentences is None else n_sentences,
+        "sentence_idx": si,
+        "pos_in_sentence": pos,
+        "sentence_len": length,
+        "frac_in_sentence": f"{frac:.6f}",
+        "is_sentence_end": int(pos == length - 1),
+    }
+
+
 def step_rows(
     *,
     name: str,
@@ -333,6 +405,7 @@ def step_rows(
     """One row per reasoning token of one step, joined against that token's truncated answer."""
     step_id = step["step_id"]
     by_pos = {e["eos_token_pos"]: e for e in evals}
+    n_sentences = count_sentences(evals)
     output_tokens = step["output_tokens"]
     ana = analysis_positions(output_tokens)
     if not ana:
@@ -356,6 +429,17 @@ def step_rows(
         if is_sentinel and ev.get("cutoff_kind") != KIND_NO_REASONING:
             tally.skip("no_reasoning cutoff is not where expected")
             continue
+        # ... and the converse, which is NOT symmetric bookkeeping. The no_reasoning cutoff
+        # sits at its own `eos_token_pos`, and whether that position is also a reasoning
+        # token depends on where the analysis channel starts: with a `<|channel|>analysis
+        # <|message|>` header the sentinel lands before token 0 and can collide with
+        # nothing, but where reasoning starts at token 0 (Qwen) it lands ON a real token.
+        # Joined there it would answer "what does the model say given NO reasoning" under
+        # that token's loudness -- one wrong row per step, and wrong in the direction that
+        # looks plausible.
+        if not is_sentinel and ev.get("cutoff_kind") == KIND_NO_REASONING:
+            tally.skip("no_reasoning cutoff collides with a reasoning token")
+            continue
 
         row = {
             "name": name,
@@ -375,6 +459,14 @@ def step_rows(
             "ground_truth": step["agent_action"],
             "cutoff_kind": ev.get("cutoff_kind", ""),
             "n_prompt_tokens": ev.get("n_prompt_tokens", ""),
+            # The final action under the name `read_commitment` looks for, beside
+            # `ground_truth` under the name this table has always used.
+            "label_name": step["agent_action"],
+            # Left blank: the boundary is a property of the whole step, not of this cutoff,
+            # and under a strided arm it is only resolved to +-stride. `join_rollouts.py
+            # --commitment off` is the consumer side of that decision.
+            "convinced_sentence_idx": "",
+            **sentence_coords(ev, n_sentences),
         }
         if not add_loudness(row, loaded, lenses, layer, step_id, reasoning_pos):
             tally.token_mismatch += 1

@@ -187,7 +187,9 @@ def read_commitment(path: Path, mass_column: str = DEFAULT_MASS_COLUMN) -> dict[
                 # NOT that file's `sentence_frac`, which is sentence_idx/n_sentences.
                 "sentence_frac": r["frac_in_sentence"],
                 "is_sentence_end": r["is_sentence_end"],
-                "convinced_idx": r["convinced_sentence_idx"],
+                # Optional: a row source built from a strided arm carries no sentence-end
+                # boundary, and `--commitment off` is the run that does not want one.
+                "convinced_idx": r.get("convinced_sentence_idx", ""),
             }
     return out
 
@@ -284,16 +286,25 @@ def convinced_token(evals: list[dict]) -> int | None:
     return None if idx is None else positions[idx]
 
 
-def ct_sentence(ct_pos: int, toks: dict[int, dict]) -> int:
+def ct_sentence(ct_pos: int, toks: dict[int, dict]) -> int | None:
     """Sentence index of the per-token boundary, or -1 for the no-reasoning sentinel.
 
     ``toks`` is the step's ``{token_id: coords}`` map, so the lookup is the boundary
     token's own ``sentence_idx``. The sentinel sits before sentence 0 and gets -1, which
     keeps ``rel_sentence_token`` a signed sentence offset for every row.
+
+    ``None`` when the boundary token is absent from the row source, or is present but
+    carries no sentence placement. Both are real rather than defensive: the cut at the
+    first reasoning token has no sentence before it to be placed in, and it is the computed
+    boundary on a large minority of steps -- 45 of the 70 Qwen held-out steps -- so raising
+    here would fail an entire join over a boundary column the run may not even want.
     """
     if ct_pos == NO_REASONING_POS:
         return -1
-    return int(toks[ct_pos]["sentence_idx"])
+    coords = toks.get(ct_pos)
+    if coords is None or coords["sentence_idx"] == "":
+        return None
+    return int(coords["sentence_idx"])
 
 
 def read_rollouts(root: Path) -> dict[str, dict[int, dict]]:
@@ -329,21 +340,28 @@ def ranks(values: dict[int, float]) -> dict[int, int]:
     return {t: i + 1 for i, t in enumerate(order)}
 
 
-def _resolve_loudness_column(args) -> str:
-    """The loudness column to bin on, checked against the input table's OWN header.
+def _resolve_loudness_column(path: Path, args) -> str:
+    """The loudness column to read, checked against THAT table's OWN header.
 
     Resolved rather than assumed, so a table from either evaluator generation joins without a
     flag. An explicit --mass-column wins.
+
+    Each input is resolved separately, because the two carry the same quantity under
+    different legal spellings: ``score_probes_per_token.py`` writes the canonical
+    ``{lens}_{signal}_logmass_L{layer}`` while ``join_rollout_answers.py`` writes
+    ``{lens}_logmass_L{layer}``, and ``columns.py`` exists to accept both on read. Sharing
+    one resolved name between them is what made a perfectly good row source look like it had
+    no loudness at all.
     """
     if args.mass_column is not None:
         return args.mass_column
-    with open(args.probe_csv, newline="", encoding="utf-8") as fh:
+    with open(path, newline="", encoding="utf-8") as fh:
         fields = next(csv.reader(fh))
     try:
         return cols.resolve(fields, args.lens, args.signal_name, args.layer)
     except KeyError as exc:
         raise SystemExit(
-            f"{args.probe_csv} carries no {args.lens}/{args.signal_name} loudness at layer "
+            f"{path} carries no {args.lens}/{args.signal_name} loudness at layer "
             f"{args.layer}.\n{exc}\nPass --mass-column explicitly if the table uses a "
             "spelling this does not know."
         ) from None
@@ -387,6 +405,20 @@ def main() -> int:
     )
     ap.add_argument("--mass-tol", type=float, default=1e-6, help="max |probe CSV mass - commitment CSV mass|.")
     ap.add_argument(
+        "--commitment",
+        choices=("auto", "on", "off"),
+        default="auto",
+        help="Whether to emit the commitment-boundary columns (convinced_*, rel_sentence, "
+        "rel_token, is_convinced, x_sentence). 'auto' is the historical behaviour -- emit "
+        "whatever the row source supports -- so nothing already on disk changes meaning. "
+        "'off' blanks them all, for a row source built from a STRIDED arm, where the "
+        "boundary is only resolved to +-stride and a relapse between two sampled cutoffs "
+        "is invisible. 'on' requires the row source to carry convinced_sentence_idx and "
+        "fails if it does not, rather than writing a silently empty column. Says it "
+        "outright rather than inferring it from an absent column: inference from absence "
+        "is what the --thin-mode round already cost (CLAUDE.md).",
+    )
+    ap.add_argument(
         "--lens",
         required=True,
         help="Which lens's loudness becomes the axis every downstream figure bins on. Say "
@@ -412,17 +444,37 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=None, help="first N trajectories (smoke test).")
     args = ap.parse_args()
 
-    args.mass_column = _resolve_loudness_column(args)
+    # Both resolved before either is assigned back: _resolve_loudness_column treats a set
+    # args.mass_column as the explicit override and returns it unread.
+    probe_mass_column = _resolve_loudness_column(args.probe_csv, args)
+    commitment_mass_column = _resolve_loudness_column(args.commitment_csv, args)
+    args.mass_column = probe_mass_column
 
     print(
         f"loudness axis: {args.mass_column}  ({cols.axis_label(args.lens, args.signal_name, args.layer)})", flush=True
     )
+    if commitment_mass_column != args.mass_column:
+        print(f"  row source spells it {commitment_mass_column}; --mass-tol checks they agree", flush=True)
     probe_source = parse_probes(args.probes)
     print(f"{len(probe_source)} probe(s): {', '.join(probe_source)}", flush=True)
     vocab = {t for lst in json.loads(args.signal_json.read_text()).values() for t in lst}
 
     print(f"reading {args.commitment_csv}", flush=True)
-    coords = read_commitment(args.commitment_csv, args.mass_column)
+    coords = read_commitment(args.commitment_csv, commitment_mass_column)
+    has_boundary = any(
+        c["convinced_idx"] not in ("", None)
+        for steps in coords.values()
+        for toks in steps.values()
+        for c in toks.values()
+    )
+    if args.commitment == "on" and not has_boundary:
+        raise SystemExit(
+            f"--commitment on, but no row of {args.commitment_csv} carries a "
+            "convinced_sentence_idx. A row source built from a strided arm has no "
+            "sentence-end boundary; re-run with --commitment off, which blanks the "
+            "boundary columns instead of writing an empty one that looks computed."
+        )
+    print(f"commitment columns: {args.commitment} (row source has a boundary: {has_boundary})", flush=True)
     print(f"reading {args.probe_csv}", flush=True)
     probes, _ = read_probe_csv(args.probe_csv, probe_source, args.mass_column)
     print(f"reading {args.rollout_dir}", flush=True)
@@ -478,6 +530,12 @@ def main() -> int:
                     if ev is None:
                         skipped["no rollout eval"] += 1
                         continue
+                    # No placement on the sentence grid means no within-sentence position,
+                    # which is the control every loudness figure pairs against loudness. The
+                    # cut at the first reasoning token is the case that reaches here.
+                    if c["sentence_idx"] == "" or c["sentence_frac"] == "":
+                        skipped["no sentence placement"] += 1
+                        continue
                     if abs(pcell["_mass"] - c["dir_logmass"]) > args.mass_tol:
                         mass_mismatch += 1
                     if pcell["_label_final"] != c["label_final"]:
@@ -488,7 +546,7 @@ def main() -> int:
                     # Per-token boundary, in the three coordinates the figures bin on.
                     # reasoning_pos of the sentinel is -1, one step before the first
                     # reasoning token, so `rel_token` stays a signed token offset.
-                    ct_pos = rstep["convinced_token_pos"]
+                    ct_pos = None if args.commitment == "off" else rstep["convinced_token_pos"]
                     ct_rp = None if ct_pos is None else (-1 if ct_pos == NO_REASONING_POS else ct_pos - first_tok)
                     ct_frac = None if ct_rp is None else (ct_rp / (n_tok - 1) if n_tok > 1 else 0.0)
                     # Which SENTENCE the per-token boundary falls in, so the entry-41 axis
@@ -496,7 +554,7 @@ def main() -> int:
                     # of around the sentence end that happened to follow it.
                     ct_si = None if ct_pos is None else ct_sentence(ct_pos, toks)
                     frac = float(c["sentence_frac"])
-                    conv = c["convinced_idx"]
+                    conv = "" if args.commitment == "off" else c["convinced_idx"]
                     si = int(c["sentence_idx"])
                     rel = "" if conv in ("", None) else si - int(conv)
                     # The rollout answers with a single token and almost always emits one of

@@ -33,8 +33,13 @@ PROBES = {
     "p1_full": ["p1_lr", "p1_mlp"],
     "p1_top20": ["p1t20_lr", "p1t20_mlp"],
     "p2": ["p2_lr", "p2_mlp", "base_lr", "base_mlp", "rand_lr", "rand_mlp"],
+    # Qwen3.6-35B-A3B, layer 27. Three SELECTION arms x two probe types, and the arm is
+    # what differs: jlens- and logitlens-ranked tokens against a matched random draw.
+    "qwen_p2": ["jlens_lr", "jlens_mlp", "logitlens_lr", "logitlens_mlp", "random_lr", "random_mlp"],
 }
-# which label a probe was TRAINED against -- base_/rand_ are the entry-38 final-action probes
+# which label a probe was TRAINED against -- base_/rand_ are the entry-38 final-action probes.
+# The Qwen arms are all local-belief probes, `random_*` included: there `random` names the
+# token SELECTION, not the label, so it does not belong here.
 FINAL_LABEL_PROBES = {"base_lr", "base_mlp", "rand_lr", "rand_mlp"}
 
 

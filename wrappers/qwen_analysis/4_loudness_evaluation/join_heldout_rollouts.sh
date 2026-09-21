@@ -11,9 +11,18 @@
 # --lens picks which lens's loudness becomes the axis; the scorer writes both, so run this
 # twice with different LENS and OUT to get both axes.
 #
-# STILL NEEDS A COMMITMENT CSV. --commitment-csv is the row source -- the join iterates its
-# (name, step, token) keys and takes the sentence coordinates from it -- and no Qwen one
-# exists yet.
+# --commitment-csv is the ROW SOURCE: the join iterates its (name, step, token) keys and
+# takes the sentence coordinates from it, so a token absent there is absent from the output
+# whatever the probe table holds. Build it first with build_commitment_per_token.sh.
+#
+# --commitment off, AND THAT IS A RESULT, NOT A SHORTCUT. The boundary columns (convinced_*,
+# rel_sentence, rel_token, is_convinced, x_sentence) come out blank because this rollout is
+# strided at 64: the boundary is resolved only to +-64 tokens and a relapse between two
+# sampled cutoffs is invisible, so a number there would be precision the arm does not have.
+# probe_accuracy_by_loudness.py reads none of them -- it bins on loudness and pairs against
+# frac_in_sentence, both of which ARE filled -- so nothing downstream is lost. A commitment
+# analysis on Qwen needs a dense (stride 1) or `eos` arm first; then run --commitment on,
+# which fails loudly rather than writing an empty column that looks computed.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)   # repo root, as the stage-1/2 wrappers do
@@ -31,10 +40,15 @@ LAYER=27
 LENS=jlens
 ROWSET=qwen_p2
 
+# The column prefix is score_probes_per_token.py's probe_key(): "<parent dir>.<stem>", so
+# the probe directory name leads and the full stem follows it -- NOT the stem alone. Getting
+# it wrong fails loudly ("missing 30 column(s)"), which is the only reason it is safe to
+# write the doubled name out like this.
 P=qwen_p2_local_belief
-PROBES="jlens_lr=${P}_jlens_l${LAYER}_lr,jlens_mlp=${P}_jlens_l${LAYER}_mlp"
-PROBES="$PROBES,logitlens_lr=${P}_logitlens_l${LAYER}_lr,logitlens_mlp=${P}_logitlens_l${LAYER}_mlp"
-PROBES="$PROBES,random_lr=${P}_random_l${LAYER}_lr,random_mlp=${P}_random_l${LAYER}_mlp"
+K="${P}.${P}"
+PROBES="jlens_lr=${K}_jlens_l${LAYER}_lr,jlens_mlp=${K}_jlens_l${LAYER}_mlp"
+PROBES="$PROBES,logitlens_lr=${K}_logitlens_l${LAYER}_lr,logitlens_mlp=${K}_logitlens_l${LAYER}_mlp"
+PROBES="$PROBES,random_lr=${K}_random_l${LAYER}_lr,random_mlp=${K}_random_l${LAYER}_mlp"
 
 mkdir -p "$RESULTS"
 cd "$REPO"
@@ -49,4 +63,5 @@ uv run python telos_interp/loudness_analysis/join_rollouts.py \
     --layer "$LAYER" \
     --probes "$PROBES" \
     --rowset "$ROWSET" \
+    --commitment off \
     --out "$OUT"
