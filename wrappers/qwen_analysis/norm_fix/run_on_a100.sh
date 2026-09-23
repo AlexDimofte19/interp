@@ -56,6 +56,11 @@ FORWARD_BATCH_SIZE=1    # one ~12k-token chain at a time
 
 export CUDA_VISIBLE_DEVICES=0                       # ONE card: device_map across GPUs NaNs this MoE
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# The 67 GiB of weights are already on the network volume. A fresh pod without HF_HOME would
+# otherwise download them into its own home directory.
+export HF_HOME=${HF_HOME:-/workspace/shared/hf_cache}
+[ -d "$HF_HOME/hub/models--Qwen--Qwen3.6-35B-A3B" ] \
+    || echo "!! no Qwen weights under $HF_HOME/hub: the first gather will download ~72 GB" >&2
 
 mkdir -p "$OUT_ROOT" "$LOGS"
 cd "$REPO"
