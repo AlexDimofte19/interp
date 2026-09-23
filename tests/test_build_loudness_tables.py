@@ -147,13 +147,16 @@ def test_no_save_activations_writes_only_the_csv(env):
     assert list(out.rglob("*.pt")) == []
 
 
-def _reference_run(env, out_name):
+def _reference_run(env, out_name, norm_offset=0.0):
     """The pre-batching inner loop, kept verbatim as a golden reference.
 
     Transcribed from the commit before the speedups (one forward per step, one lens
     matmul per layer, one `tok.decode` per top-k id, serial `.pt` writes). Everything the
     optimisation touched is supposed to be semantics-preserving, and this is what
     "preserved" is measured against.
+
+    `norm_offset` is the one addition: the final norm scales by `w + norm_offset`, so the
+    same reference also pins a zero-centred (Qwen) norm, `1 + w`.
     """
     from telos_interp.commands.gather_activations.gather_activations_utils import (
         extract_activations_single_pass,
@@ -165,7 +168,7 @@ def _reference_run(env, out_name):
     ids, tok = sampled.action_token_ids()
     id_cols = [ids[a] for a in jrt.ACTIONS]
     lens = torch.load(env["jlens_dir"] / "gpt-oss-20b_jacobian_lens.pt", map_location="cpu")
-    lm_head, norm_w, eps = assets["lm_head"], assets["norm_weight"].float(), assets["rms_eps"]
+    lm_head, norm_w, eps = assets["lm_head"], assets["norm_weight"].float() + norm_offset, assets["rms_eps"]
 
     model = _StubModel()
     model.eval()
@@ -258,6 +261,55 @@ def test_matches_the_pre_batching_implementation(env):
         a = torch.load(reference / rel, map_location="cpu", weights_only=True)
         b = torch.load(current / rel, map_location="cpu", weights_only=True)
         assert torch.equal(a, b), rel
+
+
+def _with_norm_offset(monkeypatch, offset):
+    """Swap the gpt-oss spec (the one the stub runs as) for a copy with `norm_offset`."""
+    import dataclasses
+
+    from telos_interp.jlens_utils import models
+
+    spec = models.MODELS["openai/gpt-oss-20b"]
+    monkeypatch.setitem(models.MODELS, spec.model_id, dataclasses.replace(spec, norm_offset=offset))
+
+
+def test_the_spec_norm_offset_reaches_the_lens(env, monkeypatch):
+    """A zero-centred norm (`1 + w`) changes every lens value, and to exactly the reference's.
+
+    The gpt-oss case is `test_matches_the_pre_batching_implementation`, which pins offset 0 to
+    the pre-fix reference bit for bit. This pins offset 1 to the same reference computed with
+    `1 + w`, and checks it is not just the offset-0 table again.
+    """
+    _with_norm_offset(monkeypatch, 1.0)
+    current = _run(env, "current")
+    stem = env["stem"]
+    assert_csvs_agree(
+        current / f"{stem}_jlens_analysis.csv",
+        _reference_run(env, "ref_offset1", norm_offset=1.0) / f"{stem}_jlens_analysis.csv",
+    )
+    with pytest.raises(AssertionError):
+        assert_csvs_agree(
+            current / f"{stem}_jlens_analysis.csv",
+            _reference_run(env, "ref_offset0", norm_offset=0.0) / f"{stem}_jlens_analysis.csv",
+        )
+
+
+def test_gpt_oss_and_qwen_declare_their_norms():
+    """gpt-oss applies the stored weight as it is; Qwen3.6's is zero-centred."""
+    from telos_interp.jlens_utils import models
+
+    assert models.MODELS["openai/gpt-oss-20b"].norm_offset == 0.0
+    assert models.MODELS["Qwen/Qwen3.6-35B-A3B"].norm_offset == 1.0
+
+
+@pytest.mark.parametrize("offset", [0.0, 1.0])
+def test_the_mass_sidecar_records_the_norm_offset(env, signal_json, monkeypatch, offset):
+    """Every new table names the norm it was gathered with, 0 included, so a table without the
+    key is identifiably from before the fix."""
+    _with_norm_offset(monkeypatch, offset)
+    out = _run(env, f"offset{offset:g}", "--direction-mass-json", str(signal_json))
+    (meta_path,) = out.glob("*_jlens_direction_mass.csv.meta.json")
+    assert json.loads(meta_path.read_text())["final_norm_offset"] == offset
 
 
 def test_crashed_run_leaves_no_csv(env, monkeypatch):

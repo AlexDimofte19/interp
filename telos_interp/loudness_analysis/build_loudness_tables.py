@@ -856,6 +856,9 @@ def annotate_mass_meta(mass_meta: dict, spec, trajectory_model_id: str, args) ->
     if args.data_sample_p is not None:
         mass_meta["data_sample_p"] = args.data_sample_p
         mass_meta["data_sample_seed"] = args.data_sample_seed
+    # Always written, 0 included: a table with the key was gathered after the norm fix, and
+    # its absence means "before", which for Qwen means the wrong norm.
+    mass_meta["final_norm_offset"] = spec.norm_offset
     return mass_meta
 
 
@@ -1821,7 +1824,9 @@ def main() -> None:
 
     dev = torch.device(args.device)
     lm_head = assets["lm_head"].to(dev)
-    norm_w = assets["norm_weight"].float().to(dev)
+    # The spec says how the stored weight is applied: `w` for gpt-oss, `1 + w` for Qwen's
+    # zero-centred norm. The one place the gather builds the norm, so both lenses get it.
+    norm_w = spec.lens_norm_weight(assets["norm_weight"].float().to(dev))
     eps = assets["rms_eps"]
 
     layers_by_lens, transport_by_lens = build_lens_transports(

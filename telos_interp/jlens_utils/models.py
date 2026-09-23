@@ -65,6 +65,13 @@ class ModelSpec:
             identity and no `J` is applied. A property of the fit, so it is pinned here
             and checked against the config rather than derived from it.
         aliases: serving ids that mean this model.
+        norm_offset: added to the stored final-norm weight before the lens applies it, so
+            the lens scales by `w + norm_offset`. 0 for a standard RMSNorm (`x * w`, gpt-oss);
+            1 for a zero-centred one (`x * (1 + w)`, Qwen3.5/3.6), whose checkpoint stores the
+            deviation from 1. Declared here, never inferred from the weights: the stored
+            values do not say which convention they follow, and every Qwen lens output
+            gathered before this field existed used `x * w` (see
+            wrappers/qwen_analysis/norm_fix/README.md).
     """
 
     model_id: str
@@ -75,6 +82,20 @@ class ModelSpec:
     config_path: tuple[str, ...] = ()
     target_layer: int | None = None
     aliases: tuple[str, ...] = field(default_factory=tuple)
+    norm_offset: float = 0.0
+
+    def lens_norm_weight(self, stored):
+        """The final-norm scale the lens multiplies by: the stored weight plus `norm_offset`.
+
+        Works on anything that supports `+ float` (a tensor in the gather), so this module
+        stays stdlib-only.
+
+        >>> MODELS["openai/gpt-oss-20b"].lens_norm_weight(2.0)
+        2.0
+        >>> MODELS["Qwen/Qwen3.6-35B-A3B"].lens_norm_weight(2.0)
+        3.0
+        """
+        return stored + self.norm_offset
 
     @property
     def name(self) -> str:
@@ -200,6 +221,8 @@ MODELS: dict[str, ModelSpec] = {
         config_path=("text_config",),
         target_layer=39,
         aliases=("gsarti/qwen3.6-35b",),
+        # Qwen3.5/3.6's final RMSNorm is zero-centred: `x * (1 + w)`, not `x * w`.
+        norm_offset=1.0,
     ),
 }
 
