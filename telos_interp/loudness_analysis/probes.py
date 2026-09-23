@@ -29,6 +29,7 @@ from collections import defaultdict
 
 __all__ = [
     "PROBE_TYPES",
+    "GridBinaryProbeType",
     "GridTileProbeType",
     "NextActionProbeType",
     "ProbeType",
@@ -365,9 +366,120 @@ class GridTileProbeType(ProbeType):
         return rows
 
 
+class GridBinaryProbeType(GridTileProbeType):
+    """A ONE-VS-REST cell probe (`train_binary_cognitive_map_probe`): is this cell `_`/`#`/`A`/`G`?
+
+    Same features and same row prefix as `grid_tile` -- a token still fans out over its
+    step's cells, and `n_true_{c}` still counts them by their real class. Three things differ:
+
+      * THE CELLS ARE PREPARE'S. `step_state` draws them with
+        `prepare_activations_for_probing._grid_cell_payload`, seeded exactly as prepare seeds
+        it, so a table scored here holds the same (token, cell) rows as a manifest prepared
+        with the same `--pad-to-size` / `--max-cells` / `--seed` -- and its pooled balanced
+        accuracy reproduces `eval_binary_cognitive_map_probe` on that manifest. `grid_tile`'s
+        own draw is seeded differently and does not.
+      * THE VERDICT IS A CONFUSION MATRIX. Per probe, per token: `tp`, `fn`, `tn`, `fp` at
+        the probe's own 0.5 threshold. Each probe carries its OWN counts because each has
+        its own positive class; pooling them against the shared `n_true_{c}` columns is the
+        aliasing trap `stats.bal_acc_from_counts` warns about.
+      * THE STATISTIC is `stats.bal_acc_binary_from_counts` (aggregation "binary_counts"):
+        mean of pooled recall and pooled specificity. Padding cells count as negatives, as
+        they do in training and in the evaluator.
+    """
+
+    name = "grid_binary"
+    strip_prefixes = ("grid_binary_probe_",)
+    aggregation = "binary_counts"
+
+    def load_probe(self, path):
+        from telos_interp.commands.train_binary_cognitive_map_probe.train_binary_cognitive_map_probe_fn import (
+            BinaryCognitiveMapProbe,
+        )
+
+        return BinaryCognitiveMapProbe.load(path)
+
+    def step_state(self, traj: dict, step: int, stem: str, args):
+        import torch
+
+        from telos_interp.commands.prepare_activations_for_probing.prepare_activations_for_probing_fn import (
+            _grid_cell_payload,
+        )
+
+        payload = _grid_cell_payload(
+            traj,
+            trajectory_name=stem,
+            step_idx=step,
+            pad_to_size=getattr(args, "pad_to_size", None),
+            max_positions=getattr(args, "max_cells", None),
+            balance_classes=False,
+            seed=getattr(args, "seed", 42),
+        )
+        if payload is None:
+            return None
+        cells, _ = payload
+        pos = torch.tensor(cells["positions"], dtype=torch.float32)
+        lab = torch.tensor(cells["labels"], dtype=torch.long)
+        return (pos, lab)
+
+    def result_columns(self, probe_names: list[str], full_probs: bool) -> list[str]:
+        cols: list[str] = []
+        for n in probe_names:
+            cols += [f"{n}_n_correct", f"{n}_acc", f"{n}_tp", f"{n}_fn", f"{n}_tn", f"{n}_fp"]
+        return cols
+
+    def score(self, probes, acts, states, batch_size, device, full_probs) -> list[list]:
+        """Batched exactly like `grid_tile.score`; only the verdict differs."""
+        import torch
+
+        per_probe: dict[str, list] = {n: [] for n in probes}
+        n_tokens = len(acts)
+        i = 0
+        while i < n_tokens:
+            j, rows_in_batch = i, 0
+            while j < n_tokens:
+                c = int(states[j][1].numel())
+                if rows_in_batch and rows_in_batch + c > batch_size:
+                    break
+                rows_in_batch += c
+                j += 1
+
+            chunk_x, chunk_y, spans = [], [], []
+            for k in range(i, j):
+                pos, lab = states[k]
+                a = acts[k].unsqueeze(0).expand(lab.numel(), -1)
+                chunk_x.append(torch.cat([a, pos], dim=1))
+                chunk_y.append(lab)
+                spans.append(lab.numel())
+            x = torch.cat(chunk_x).to(device)
+            y = torch.cat(chunk_y)
+
+            for name, probe in probes.items():
+                pred_pos = (probe.predict(x) == probe.positive_cell_id).cpu()
+                true_pos = y == probe.positive_cell_id
+                off = 0
+                for span in spans:
+                    p, t = pred_pos[off : off + span], true_pos[off : off + span]
+                    tp, fn = int((p & t).sum()), int((~p & t).sum())
+                    tn, fp = int((~p & ~t).sum()), int((p & ~t).sum())
+                    per_probe[name].append((tp, fn, tn, fp))
+                    off += span
+            i = j
+
+        rows = []
+        for idx in range(n_tokens):
+            cells: list = []
+            for n in probes:
+                tp, fn, tn, fp = per_probe[n][idx]
+                total = tp + fn + tn + fp
+                cells += [tp + tn, f"{(tp + tn) / total:.6f}" if total else "", tp, fn, tn, fp]
+            rows.append(cells)
+        return rows
+
+
 PROBE_TYPES: dict[str, type[ProbeType]] = {
     NextActionProbeType.name: NextActionProbeType,
     GridTileProbeType.name: GridTileProbeType,
+    GridBinaryProbeType.name: GridBinaryProbeType,
 }
 
 DEFAULT_PROBE_TYPE = NextActionProbeType.name
@@ -377,7 +489,7 @@ def probe_type_names() -> list[str]:
     """Registered probe types, in registry order.
 
     >>> probe_type_names()
-    ['next_action', 'grid_tile']
+    ['next_action', 'grid_tile', 'grid_binary']
     """
     return list(PROBE_TYPES)
 
@@ -392,7 +504,7 @@ def get_probe_type(name: str) -> ProbeType:
     >>> get_probe_type("nope")
     Traceback (most recent call last):
         ...
-    ValueError: Unknown probe type 'nope'; available: ['grid_tile', 'next_action']
+    ValueError: Unknown probe type 'nope'; available: ['grid_binary', 'grid_tile', 'next_action']
     """
     try:
         cls = PROBE_TYPES[name]

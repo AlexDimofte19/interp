@@ -389,6 +389,14 @@ def main() -> int:
     df = pd.read_csv(args.per_token, keep_default_na=False, na_values=[""], low_memory=False)
 
     ptype = _probes.get_probe_type(args.probe_type)
+    if ptype.aggregation == "binary_counts":
+        # Neither mode below reads a one-vs-rest table: counts mode would pool per-class
+        # columns this table does not have, and rows mode has no single prediction per row.
+        raise SystemExit(
+            f"--probe-type {args.probe_type} is analysed in "
+            "wrappers/qwen_analysis/grid/4_loudness_evaluation/probe_accuracy_by_loudness_decile.ipynb "
+            "(stats.bal_acc_binary_from_counts), not here."
+        )
     CLASSES[:] = ptype.analysis_classes
     df, mass_col, n_before, n_after = _prepare(df, args)
     args.out.mkdir(parents=True, exist_ok=True)

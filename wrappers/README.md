@@ -70,6 +70,21 @@ gpt-oss one is stage 2 of `reproduce_all.sh` rather than a wrapper. `SMOKE=1` ru
 into a separate `--out-dir` and is what fixes `DIM_BATCH` from a measured peak -- run it first
 on any new host. It has no published result yet.
 
+## The P2 pipelines
+
+Four folders, each the same four stages (loudest layer → selection + dataset → train and
+cross-eval → held-out loudness) under the same file names:
+
+| Folder | Model | Signal | Label |
+|---|---|---|---|
+| `qwen_analysis/` | Qwen3.6-35B-A3B | direction | next action, local belief |
+| `qwen_analysis/grid/` | Qwen3.6-35B-A3B | grid (pruned) | binary grid cell |
+| `gptoss_analysis/direction/` | gpt-oss-20b | direction | next action, local belief |
+| `gptoss_analysis/grid/` | gpt-oss-20b | grid (pruned) | binary grid cell |
+
+The gpt-oss folders reuse the existing pruned trees instead of re-gathering them; see
+`gptoss_analysis/README.md`.
+
 ## Older rounds
 
 `script.sh`, `general_probe_train.sh`, `reasoning_theatre.ps1` and `run_commands.ps1` are the

@@ -9,6 +9,9 @@ kept, named apart, because collapsing them would silently change published figur
     (`n_true_{c}`, `{probe}_correct_{c}`), where one row already summarises many predictions.
     What the grid analyses use, because a grid row carries a whole step's cells.
 
+A one-vs-rest grid probe gets a third, `bal_acc_binary_from_counts`: the counts form of the
+binary balanced accuracy (mean of recall and specificity) over the probe's own tp/fn/tn/fp.
+
 Averaging per-token accuracies instead of pooling per-class counts weights a token with two
 cells the same as one with twenty-five. Reach for the counts form whenever a row is a bucket.
 
@@ -27,6 +30,7 @@ import pandas as pd
 
 __all__ = [
     "bal_acc",
+    "bal_acc_binary_from_counts",
     "bal_acc_from_counts",
     "boot_bal_acc",
     "clustered_band",
@@ -74,6 +78,28 @@ def bal_acc_from_counts(df: pd.DataFrame, probe: str, classes) -> tuple[float, d
             recalls[c] = float(df[ccol].sum()) / n_true
     ba = float(np.mean(list(recalls.values()))) if recalls else float("nan")
     return ba, recalls
+
+
+def bal_acc_binary_from_counts(df: pd.DataFrame, probe: str) -> tuple[float, float, float]:
+    """A ONE-VS-REST probe's balanced accuracy over a bucket, as (bal_acc, recall, specificity).
+
+    Pools the probe's own `{probe}_tp/_fn/_tn/_fp` columns (`probes.GridBinaryProbeType`)
+    before dividing, so -- like `bal_acc_from_counts` -- a token with 25 cells carries 25
+    cells' weight. It reads nothing shared: two binary probes with different positive classes
+    cannot alias each other's ground truth. A side with no support is dropped, not zeroed.
+
+    >>> d = pd.DataFrame({"p_tp": [3, 1], "p_fn": [1, 0], "p_tn": [10, 6], "p_fp": [2, 2]})
+    >>> bal_acc_binary_from_counts(d, "p")
+    (0.8, 0.8, 0.8)
+    >>> bal_acc_binary_from_counts(d.assign(p_tp=0, p_fn=0), "p")  # no positives: specificity only
+    (0.8, nan, 0.8)
+    """
+    tp, fn = float(df[f"{probe}_tp"].sum()), float(df[f"{probe}_fn"].sum())
+    tn, fp = float(df[f"{probe}_tn"].sum()), float(df[f"{probe}_fp"].sum())
+    recall = tp / (tp + fn) if tp + fn else float("nan")
+    spec = tn / (tn + fp) if tn + fp else float("nan")
+    sides = [v for v in (recall, spec) if not np.isnan(v)]
+    return (float(np.mean(sides)) if sides else float("nan")), recall, spec
 
 
 def plain_accuracy(df: pd.DataFrame, probe: str) -> float:

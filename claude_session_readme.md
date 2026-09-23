@@ -7,7 +7,9 @@ this file names one of them as "the working branch", read that as history rather
 somewhere to go looking.
 
 **Newest first, if you only read one thing:** the file is append-only and chronological, so
-the last section is the current state. As of 2026-09-20 that is *The Qwen3.6-35B-A3B P2
+the last section is the current state. As of 2026-09-23 that is *The gpt-oss grid P2 pipeline*: all GPU gathers done at **layer 14**, probes training, and a numbered list of the five steps left. It also records that **every Qwen lens output used the wrong final norm** (`w`, not `1 + w`), so do not build on the Qwen numbers below. Qwen is parked.
+
+One section older, as of 2026-09-20: *The Qwen3.6-35B-A3B P2
 pipeline* (log entry 59) — the whole line reproduced on a second model, in fifteen wrappers
 under `wrappers/qwen_analysis/` across four numbered stages. **Run:** the layer profile, the
 three gathers and all six local-belief datasets. **Not run:** the probes themselves, the
@@ -1446,3 +1448,97 @@ published tables, so the merge is written up in `scripts/INVENTORY.md` rather th
 442 tests pass (was 408). Loose script files 97 → 74; repo-wide `.py`/`.sh` went 135 → **141**,
 because the six shared library modules are new files — the duplication moved into named, tested
 modules rather than vanishing.
+
+## The gpt-oss grid P2 pipeline (2026-09-23), and what is left
+
+The grid-signal, grid-label twin of the Qwen P2 line, on gpt-oss-20b. Wrappers:
+`wrappers/gptoss_analysis/grid/` (see `wrappers/gptoss_analysis/README.md`). Pruned grid
+vocabulary (`data/jlens/grid_tokens_pruned.json`, `--signal-name grid`). Binary one-vs-rest
+probes (empty `_` / wall `#` / agent `A` / goal `G`) x {lr, mlp} x arms {jlens, logitlens, random}
+= 24 probes.
+
+**Layer 14, not 15.** The grid loudest-layer profile (train 2,880, whole chain, 7:23) puts the
+J-lens grid argmax at **L14** (-3.710; L13 -3.778; L15 -4.024), 500/500 trajectory resamples
+(logit lens: L13). Figures: `/workspace/loudness_evaluation/gptoss_p2_grid_layer_profile/figures/`.
+So nothing at layer 15 is reused. The random control and the held-out tensors were gathered
+fresh at 14.
+
+### Done (all GPU model work is finished; nothing left loads gpt-oss-20b)
+
+| stage | output |
+|---|---|
+| grid profile + join | `/workspace/activations/gptoss_grid_loudness_profile`, `.../gptoss_p2_grid_layer_profile/{jlens,logitlens}_tokens.csv` |
+| selection gathers, L14, 20 tokens/arm, whole chain | `/workspace/activations/gptoss_grid_mass_l14` (2,880), `..._l14_eval` (720) |
+| held-out gather, every token, L14 tensors + grid mass | `/workspace/activations/heldout360_l14_grid` (360 traj, 87,221 .pt) |
+| datasets (pad pinned to 15, 25 cells, seed 42) | `/workspace/prepared/gptoss_p2_grid_{jlens,logitlens,random}_{train,val}` (57,522 / 14,391 entries each), `/workspace/prepared/gptoss_p2_grid_heldout` (87,221) |
+
+Unlike Qwen's eval set, every gpt-oss split is balanced across grid sizes.
+
+### Running now
+
+Training, the three arms as three parallel processes of the SAME wrapper
+(`ARMS=<arm> bash wrappers/gptoss_analysis/grid/3_train_and_eval_probes/train_binary_grid_probes_all_selections.sh`),
+~25 min per probe, 8 per arm. 6 of 24 were done at 13:05 UTC, so all 24 should land ~15:30 UTC.
+Probes go to `/workspace/probes/gptoss_p2_grid/gptoss_p2_grid_<arm>_<class>_l14_<lr|mlp>.pt`,
+logs to `/workspace/probes/gptoss_p2_grid/logs/`. Progress: `/workspace/logs/gptoss_grid_pipeline/status.txt`.
+
+The driver (`gptoss_grid_phase2.sh`) lives in a session scratchpad under `/tmp` and may not
+survive. If it is gone, run the remaining steps by hand, in order. Each is resumable.
+
+### What is left, in order
+
+1. **Finish training.** Re-running the wrapper per arm skips every probe already on disk.
+   Check: 24 `.pt` files.
+2. **Cross-eval, 72 cells on the 720:**
+   `bash wrappers/gptoss_analysis/grid/3_train_and_eval_probes/cross_eval_binary_grid_all_selections.sh`
+   -> `/workspace/results/gptoss_p2_grid/cross_selection_eval/`. Check: every diagonal cell
+   equals that probe's FINAL (not best) training balanced accuracy.
+3. **Held-out eval, 24 probes on all 87,221 tokens:**
+   `bash wrappers/gptoss_analysis/grid/4_loudness_evaluation/eval_binary_probes_heldout.sh`
+   -> `/workspace/results/gptoss_p2_grid/heldout/<arm>_<class>_<type>.json`. Skips existing results.
+4. **Per-token scoring** (the pipeline scorer, `grid_binary` probe type, no model):
+   ```
+   uv run --extra gpu python telos_interp/loudness_analysis/score_probes_per_token.py \
+       --probe-type grid_binary --probe /workspace/probes/gptoss_p2_grid/gptoss_p2_grid_<arm>_<class>_l14_<lr|mlp>.pt (x24) \
+       --activations-dir /workspace/activations/heldout360_l14_grid \
+       --trajectories-dir /workspace/trajectories/heldout360 \
+       --signal-json /workspace/repo/interp/data/jlens/grid_tokens_pruned.json --signal-name grid \
+       --layer 14 --pad-to-size 15 --max-cells 25 --seed 42 \
+       --cache-activations --read-threads 16 --device cuda \
+       --out /workspace/results/gptoss_p2_grid/heldout/per_token_scores.csv
+   ```
+   The pad/cap/seed MUST match the held-out dataset: `grid_binary` draws prepare's own cells
+   (`_grid_cell_payload`), which is what lets step 5 check itself against step 3.
+5. **Loudness notebook:**
+   `wrappers/gptoss_analysis/grid/4_loudness_evaluation/probe_accuracy_by_loudness_decile.ipynb`.
+   Execute it to a copy (e.g. `jupyter nbconvert --to notebook --execute ... --output-dir <somewhere>`);
+   the repo copy stays output-free. Cell 2 asserts the pooled numbers reproduce step 3's
+   JSONs: identical ground truth, and at most a few cells flipped at the 0.5 threshold (GPU
+   batch-shape rounding). It writes decile tables and three figures under
+   `/workspace/results/gptoss_p2_grid/heldout/`.
+
+### How to read it (the Qwen grid run's lessons)
+
+- Lead with **held-out**, and read the cross-eval **down a column** (same rows within a slice).
+- On Qwen the random-trained probe won held-out in 7 of 8 (class x type) rows. Lens-trained
+  probes climbed steeply with grid loudness but only met the random probe at the loudest
+  decile, so they are worse on quiet tokens, not better on loud ones. Check whether gpt-oss
+  repeats that.
+- Pooled binary balanced accuracy (`stats.bal_acc_binary_from_counts`), never per-token averages.
+- Padding cells are easy negatives. Most grid mass is AXIS (row/column) words.
+
+### Code added this round
+
+`loudness_analysis/probes.py`: the `grid_binary` probe type. `stats.py`:
+`bal_acc_binary_from_counts`. `probe_accuracy_by_loudness.py` refuses `grid_binary` and points
+at the notebook. All grid prepare wrappers now pin `--pad-to-size 15`: auto-padding picks the
+widest size PRESENT, and Qwen's eval set (no size-15 grid) came out padded to 13.
+
+### Qwen: parked, and its lens numbers are wrong
+
+`apply_lens_transport` applies the final RMSNorm as `* w`. Qwen3.5/3.6 MoE uses `* (1 + w)`
+(zero-centred), so **every Qwen jlens and logitlens output on both lines is off**. With the
+correct norm, logit-lens top-1 changes for 87% of L27 tokens and jlens for 19%, and grid-mass
+rank correlation is ~0.92. gpt-oss is unaffected. Fix proposed, not made. It needs the Qwen GPU
+gathers re-run, and the user parked Qwen on 2026-09-23. The Qwen eval set also cannot be
+completed: 52 of 144, almost all 5x5/7x7 grids, after Together 503s.
