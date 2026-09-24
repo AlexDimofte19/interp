@@ -16,6 +16,12 @@
 # Every stage writes its own folder, so no join overwrites another's run_config.json. The
 # notebook reads stages/4_*/per_token_scores.csv. Resumable: a finished file is skipped.
 #
+# gptoss_agent is the odd one out, and is NOT in the default ONLY: the two BINARY agent-cell
+# probes (grid_binary_l15, random arm only, layer 15) on their own eval split, scored by
+# eval_binary_cognitive_map_probe --per-token-out, merged, and joined to AGENT loudness at L15
+# from build_agent_loudness_eval720.sh's tree -- which is a GPU pass and must run first. Its
+# table is stages/3_agent/per_token_scores.csv, read by the notebook's agent cell.
+#
 # Usage: bash wrappers/loudness_analysis/build_random_eval_tables.sh    (ONLY="gptoss_grid qwen_grid" to subset)
 set -euo pipefail
 
@@ -57,12 +63,26 @@ evaluate() {  # run kind slice probe_glob_prefix probe_suffix signal_json
     [ "$failed" -eq 0 ] || { echo "!! an evaluation failed under $T/$run/stages/1_probe_counts" >&2; exit 1; }
 }
 
-merge() {  # run traj_dir direction_json grid_json
-    local out="$T/$1/stages/2_merged/per_token_scores.csv"
+evaluate_binary() {  # run slice probe_dir positive_class   (sequential: the two share one activation pack)
+    local run=$1 slice=$2 pdir=$3 cls=$4
+    mkdir -p "$T/$run/stages/1_probe_counts"
+    for mt in $MODEL_TYPES; do
+        local probe="$pdir/grid_binary_probe_${cls}_${mt}.pt" out
+        out="$T/$run/stages/1_probe_counts/$(basename "$probe" .pt).csv"
+        [ -s "$out" ] && { echo "exists: $out"; continue; }
+        uv run interp-cli eval_binary_cognitive_map_probe --probe-path "$probe" --data-path "$slice" \
+            --output-path "${out%.csv}.json" --per-token-out "$out" --cache-activations \
+            > "${out%.csv}.txt" 2>&1 || { echo "!! $probe failed, see ${out%.csv}.txt" >&2; exit 1; }
+    done
+}
+
+merge() {  # run traj_dir name=signal_json...
+    local run=$1 traj=$2 out="$T/$1/stages/2_merged/per_token_scores.csv"
+    shift 2
     [ -s "$out" ] && { echo "exists: $out"; return; }
     $PY -m telos_interp.loudness_analysis.build_slice_per_token_table \
-        $(for f in "$T/$1"/stages/1_probe_counts/*.csv; do printf -- '--probe-counts %s ' "$f"; done) \
-        --trajectories-dir "$2" --signal "direction=$3" --signal "grid=$4" --exclude-radius 2 --out "$out"
+        $(for f in "$T/$run"/stages/1_probe_counts/*.csv; do printf -- '--probe-counts %s ' "$f"; done) \
+        --trajectories-dir "$traj" $(for s in "$@"; do printf -- '--signal %s ' "$s"; done) --exclude-radius 2 --out "$out"
 }
 
 join() {  # run from_stage to_stage lens_root lenses signal_name signal_json layer
@@ -80,7 +100,7 @@ for run in $ONLY; do
     gptoss_direction)
         evaluate $run direction "$P/entry49_random_belief_split_eval" \
             /workspace/probes/gptoss_p2_local_belief/gptoss_p2_local_belief l15 "$J/direction_tokens_full.json"
-        merge $run "$GPTOSS_TRAJ" "$J/direction_tokens_full.json" "$J/grid_tokens_pruned.json"
+        merge $run "$GPTOSS_TRAJ" "direction=$J/direction_tokens_full.json" "grid=$J/grid_tokens_pruned.json"
         join $run 2_merged 3a_direction_jlens "$A/jlens_mass_l15" jlens direction "$J/direction_tokens_full.json" 15
         join $run 3a_direction_jlens 3b_direction_logitlens "$A/logitlens_mass_l15" logitlens direction "$J/direction_tokens_full.json" 15
         join $run 3b_direction_logitlens 4_grid "$A/gptoss_grid_mass_l14_eval" jlens,logitlens grid "$J/grid_tokens_pruned.json" 14
@@ -88,7 +108,7 @@ for run in $ONLY; do
     gptoss_grid)
         evaluate $run grid "$P/gptoss_p2_grid_random_val" \
             /workspace/probes/gptoss_p2_grid/gptoss_p2_grid multiclass_l14 "$J/grid_tokens_pruned.json"
-        merge $run "$GPTOSS_TRAJ" "$J/direction_tokens_full.json" "$J/grid_tokens_pruned.json"
+        merge $run "$GPTOSS_TRAJ" "direction=$J/direction_tokens_full.json" "grid=$J/grid_tokens_pruned.json"
         join $run 2_merged 3a_grid "$A/gptoss_grid_mass_l14_eval" jlens,logitlens grid "$J/grid_tokens_pruned.json" 14
         join $run 3a_grid 3b_direction_jlens "$A/jlens_mass_l15" jlens direction "$J/direction_tokens_full.json" 15
         join $run 3b_direction_jlens 4_direction_logitlens "$A/logitlens_mass_l15" logitlens direction "$J/direction_tokens_full.json" 15
@@ -96,16 +116,22 @@ for run in $ONLY; do
     qwen_direction)
         evaluate $run direction "$P/qwen_p2_local_belief_random_val" \
             /workspace/probes/qwen_p2_local_belief/qwen_p2_local_belief l27 "$J/qwen/$QDIR.json"
-        merge $run "$QWEN_TRAJ" "$J/qwen/$QDIR.json" "$J/qwen/grid_tokens_pruned_qwen3-6-35b-a3b.json"
+        merge $run "$QWEN_TRAJ" "direction=$J/qwen/$QDIR.json" "grid=$J/qwen/grid_tokens_pruned_qwen3-6-35b-a3b.json"
         join $run 2_merged 3_direction "$A/qwen_fixnorm/eval52_direction" jlens,logitlens $QDIR "$J/qwen/$QDIR.json" 27
         join $run 3_direction 4_grid "$A/qwen_fixnorm/eval52_grid" jlens,logitlens grid "$J/qwen/grid_tokens_pruned_qwen3-6-35b-a3b.json" 27
         ;;
     qwen_grid)
         evaluate $run grid "$P/qwen_p2_grid_random_val" \
             /workspace/probes/qwen_p2_grid/qwen_p2_grid multiclass_l27 "$J/qwen/grid_tokens_pruned_qwen3-6-35b-a3b.json"
-        merge $run "$QWEN_TRAJ" "$J/qwen/$QDIR.json" "$J/qwen/grid_tokens_pruned_qwen3-6-35b-a3b.json"
+        merge $run "$QWEN_TRAJ" "direction=$J/qwen/$QDIR.json" "grid=$J/qwen/grid_tokens_pruned_qwen3-6-35b-a3b.json"
         join $run 2_merged 3_grid "$A/qwen_fixnorm/eval52_grid" jlens,logitlens grid "$J/qwen/grid_tokens_pruned_qwen3-6-35b-a3b.json" 27
         join $run 3_grid 4_direction "$A/qwen_fixnorm/eval52_direction" jlens,logitlens $QDIR "$J/qwen/$QDIR.json" 27
+        ;;
+    gptoss_agent)
+        [ -d "$A/gptoss_agent_mass_l15_eval" ] || { echo "!! run build_agent_loudness_eval720.sh first (GPU)" >&2; exit 1; }
+        evaluate_binary $run "$P/grid_binary_l15_random_split_eval" /workspace/probes/grid_binary_l15 agent
+        merge $run "$GPTOSS_TRAJ" "agent=$J/agent_tokens.json"
+        join $run 2_merged 3_agent "$A/gptoss_agent_mass_l15_eval" jlens,logitlens agent "$J/agent_tokens.json" 15
         ;;
     esac
 done

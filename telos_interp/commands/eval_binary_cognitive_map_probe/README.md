@@ -30,6 +30,7 @@ dataset's manifest for the generalisation number — nothing but the manifest ch
 | `--probe-path` | *required* | `.pt` written by `train_binary_cognitive_map_probe` |
 | `--data-path` | *required* | v3 prepared dataset directory (`probe_type=grid_tile`) |
 | `--output-path` | `eval_{probe}_{dataset}.json` beside the probe | Results JSON |
+| `--per-token-out` | none | Also write one row per token (manifest entry) with per-class cell counts `n_true_{c}` / `correct_{c}` (original cell ids; a non-positive cell is correct when called negative). Pooled, they reproduce `global`. Input of `loudness_analysis/build_slice_per_token_table.py` |
 | `--threshold` | `0.5` | Positive-class probability above which a cell is called positive |
 | `--batch-size` | `8192` | Rows per forward pass |
 | `--cache-activations` | `False` | Shares `_packed_activations.pt` with the trainer |
