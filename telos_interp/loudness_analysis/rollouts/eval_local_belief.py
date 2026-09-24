@@ -24,6 +24,7 @@ from pathlib import Path
 import torch
 
 from telos_interp.commands.prepare_activations_for_probing.manifest_loader import load_next_action_compact
+from telos_interp.loudness_analysis.slice_tokens import write_counts
 from telos_interp.probe_models import create_classification_model
 
 DEFAULT_SIGNAL_JSON = "/workspace/jlens/direction_tokens_full.json"
@@ -74,6 +75,13 @@ def main() -> int:
         default="signal",
         help="What to call this vocabulary's words in the output, e.g. 'direction' or 'grid'.",
     )
+    ap.add_argument(
+        "--per-token-out",
+        type=Path,
+        default=None,
+        help="Also write one row per sample in count form, scored against the LOCAL belief "
+        "(slice_tokens.write_counts): the input of build_slice_per_token_table.py.",
+    )
     args = ap.parse_args()
 
     manifest = json.loads((args.eval_dir / "manifest.json").read_text())
@@ -102,6 +110,12 @@ def main() -> int:
         X = (X - mean) / std
     with torch.no_grad():
         pred = m(X).argmax(-1)
+
+    if args.per_token_out:
+        classes = sorted(set(manifest["action_to_id"].values()))
+        n_true = torch.stack([y_local == c for c in classes], dim=1).long()
+        correct = n_true * (pred == y_local).long().unsqueeze(1)
+        write_counts(args.per_token_out, samples, classes, n_true.tolist(), correct.tolist())
 
     n = len(pred)
     acc_local = (pred == y_local).float().mean().item()

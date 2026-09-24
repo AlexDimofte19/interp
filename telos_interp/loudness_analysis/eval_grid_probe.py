@@ -29,6 +29,7 @@ from telos_interp.commands.train_cognitive_map_probe.train_cognitive_map_probe_f
     _load_grid_tile_compact_cached,
 )
 from telos_interp.grid_utils import CELL_ID_TO_SYMBOL, CELL_SYMBOL_TO_ID
+from telos_interp.loudness_analysis.slice_tokens import write_counts
 from telos_interp.probe_models import create_classification_model
 
 PADDING_ID = CELL_SYMBOL_TO_ID["+"]
@@ -78,6 +79,13 @@ def main() -> int:
         help="Also write the global block (per-class support / correct / predicted, keyed by cell id) "
         "as JSON: what a per-token decile notebook's check cell compares against.",
     )
+    ap.add_argument(
+        "--per-token-out",
+        type=Path,
+        default=None,
+        help="Also write one row per entry: its cells counted per original cell id "
+        "(slice_tokens.write_counts), the input of build_slice_per_token_table.py.",
+    )
     args = ap.parse_args()
 
     manifest_path = args.eval_dir / "manifest.json"
@@ -126,6 +134,12 @@ def main() -> int:
             if mean is not None:
                 rows = (rows - mean) / std
             pred[s:e] = model(rows).argmax(-1).reshape(e - s, C).cpu()
+
+    if args.per_token_out:
+        ids = sorted(idx_to_label)
+        n_true = torch.stack([((y == i) & valid).sum(dim=1) for i in ids], dim=1)
+        correct = torch.stack([((y == i) & (pred == i) & valid).sum(dim=1) for i in ids], dim=1)
+        write_counts(args.per_token_out, entries, [idx_to_label[i] for i in ids], n_true.tolist(), correct.tolist())
 
     signal_vocab = set()
     for v in json.loads(Path(args.signal_json).read_text()).values():
