@@ -71,6 +71,13 @@ def main() -> int:
     ap.add_argument("--cache-activations", action="store_true", help="Use the trainer's packed cache.")
     ap.add_argument("--batch-size", type=int, default=65536, help="Rows per forward pass.")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument(
+        "--out-json",
+        type=Path,
+        default=None,
+        help="Also write the global block (per-class support / correct / predicted, keyed by cell id) "
+        "as JSON: what a per-token decile notebook's check cell compares against.",
+    )
     args = ap.parse_args()
 
     manifest_path = args.eval_dir / "manifest.json"
@@ -148,10 +155,34 @@ def main() -> int:
     print(f"  bal acc (no padding)             : {b_np:.4f}")
     print(f"  acc                              : {acc:.4f}")
     print(f"  {'class':<6}{'precision':>10}{'recall':>9}{'support':>10}{'predicted':>11}")
+    per_class = {}
     for i, sym in classes:
         tp = int(((pp == i) & (yy == i)).sum())
         sup, prd = int((yy == i).sum()), int((pp == i).sum())
         print(f"  {sym:<6}{tp / prd if prd else 0:>10.4f}{tp / sup if sup else 0:>9.4f}{sup:>10}{prd:>11}")
+        # Keyed by the ORIGINAL cell id, which is what a per-token table's n_true_{c} uses.
+        per_class[str(idx_to_label[i])] = {"symbol": sym, "support": sup, "correct": tp, "predicted": prd}
+
+    if args.out_json:
+        args.out_json.parent.mkdir(parents=True, exist_ok=True)
+        args.out_json.write_text(
+            json.dumps(
+                {
+                    "probe": str(args.probe),
+                    "data": str(args.eval_dir),
+                    "global": {
+                        "n_entries": T,
+                        "n_rows": int(valid.sum()),
+                        "accuracy": acc,
+                        "balanced_accuracy": b,
+                        "balanced_accuracy_no_padding": b_np,
+                        "per_class": per_class,
+                    },
+                },
+                indent=2,
+            )
+        )
+        print(f"  -> {args.out_json}")
 
     # As in eval_local_belief.py: a manifest whose entries carry no `token` would put every row in
     # the NOT bucket and restate the top line as if it were a finding. Say so instead.

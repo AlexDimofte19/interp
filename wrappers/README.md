@@ -102,3 +102,32 @@ the manifests point into, and the manifests' partitions are the evaluation's par
 Every stage tests for its own output first, so it is resumable and a second run is a no-op
 check. `STAGES=` selects, `FORCE=1` redoes, `DRY_RUN=1` prints. `LIMIT` is for smoke runs
 only -- it truncates every membership list, which makes the numbers meaningless.
+
+## The Qwen final-norm fix (`_fixnorm` copies)
+
+Every Qwen lens table before `wrappers/qwen_analysis/norm_fix/` applied the final RMSNorm as `x · w`
+instead of Qwen's `x · (1 + w)`. `norm_fix/run_on_a100.sh` re-gathered the tables into
+`/workspace/activations/qwen_fixnorm/`. Each notebook below is an executed **copy** of the one beside
+it, changed only where noted in its first cell. The originals are left as the record of the old run.
+
+| Copy | Beside | Reads | Writes |
+|---|---|---|---|
+| `lens_agreement/jlens_vs_logitlens_loudness_fixnorm.ipynb` | `jlens_vs_logitlens_loudness.ipynb` | `qwen_fixnorm/eval52_{direction,grid}` (Qwen cells only; the gpt-oss cells are dropped, not affected) | `/workspace/results/lens_agreement_fixnorm/` |
+| `qwen_analysis/1_loudest_layer/qwen_p2_loudest_layer_fixnorm.ipynb` | `qwen_p2_loudest_layer.ipynb` | `join_mass_tables` over `qwen_fixnorm/profile_p05_direction` (5%, not the old 20%) | `/workspace/loudness_evaluation/qwen_p2_layer_profile_fixnorm/` |
+| `qwen_analysis/grid/1_loudest_layer/qwen_p2_grid_loudest_layer_fixnorm.ipynb` | `qwen_p2_grid_loudest_layer.ipynb` | `join_mass_tables` over `qwen_fixnorm/profile_p05_grid` | `/workspace/loudness_evaluation/qwen_p2_grid_layer_profile_fixnorm/` |
+| `qwen_analysis/4_loudness_evaluation/probe_accuracy_by_loudness_decile_fixnorm.ipynb` | `probe_accuracy_by_loudness_decile.ipynb` | `results/qwen_p2_local_belief/heldout_fixnorm/per_token_scores.csv` | same folder |
+| `qwen_analysis/grid/4_loudness_evaluation/probe_accuracy_by_loudness_decile_fixnorm.ipynb` | `probe_accuracy_by_loudness_decile.ipynb` (binary) | `results/qwen_p2_grid/heldout_fixnorm/per_token_scores.csv` | same folder |
+| `qwen_analysis/grid/4_loudness_evaluation/probe_accuracy_by_loudness_decile_multiclass_fixnorm.ipynb` | `probe_accuracy_by_loudness_decile_multiclass.ipynb` | `results/qwen_p2_grid/heldout_multiclass_fixnorm/per_token_scores.csv` | same folder |
+
+The two `heldout_fixnorm` tables are the old per-token tables, with their probe columns' values
+unchanged and their 8 loudness columns replaced. The old columns were dropped, then
+`join_signal_loudness.py --layer 27` added the corrected ones from `qwen_fixnorm/heldout70_{direction,grid}`.
+The direction join ran under the tree's sidecar signal name (`direction_tokens_full_qwen3-6-35b-a3b`)
+and its columns were renamed to `direction` afterwards, which is the name the notebook resolves.
+
+The multiclass copy is **not** a straight re-run. Its per-token table never existed before the fix, so it
+is new: `grid/4_loudness_evaluation/score_multiclass_probes_heldout_per_token.sh` (its `--lens-dir` is the
+corrected `heldout70_grid`), checked against `eval_multiclass_probes_heldout.sh`'s JSONs. Its figures
+were redrawn in the direction notebook's style (one panel per probe, then all MLP probes under each lens).
+The original's per-class recall grid and verbalisation control are not drawn; the per-class recalls are
+still in its decile CSV.

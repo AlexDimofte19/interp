@@ -476,10 +476,27 @@ class GridBinaryProbeType(GridTileProbeType):
         return rows
 
 
+class GridMulticlassProbeType(GridTileProbeType):
+    """A MULTICLASS cell probe (`train_cognitive_map_probe`), scored on PREPARE'S cells.
+
+    Everything is `grid_tile`'s -- the loader, the per-class `{probe}_correct_{c}` counts, the
+    statistic (`stats.bal_acc_from_counts`, aggregation "counts") -- except the cells. `grid_tile`
+    draws its own, seeded differently from prepare; this draws them exactly as `grid_binary`
+    does, with `_grid_cell_payload`, so a table scored here holds the same (token, cell) rows as
+    a manifest prepared with the same `--pad-to-size` / `--max-cells` / `--seed`, and its pooled
+    numbers reproduce `eval_grid_probe.py` on that manifest. A separate entry rather than a
+    change to `grid_tile`, so every `grid_tile` table already on disk keeps its meaning.
+    """
+
+    name = "grid_multiclass"
+    step_state = GridBinaryProbeType.step_state
+
+
 PROBE_TYPES: dict[str, type[ProbeType]] = {
     NextActionProbeType.name: NextActionProbeType,
     GridTileProbeType.name: GridTileProbeType,
     GridBinaryProbeType.name: GridBinaryProbeType,
+    GridMulticlassProbeType.name: GridMulticlassProbeType,
 }
 
 DEFAULT_PROBE_TYPE = NextActionProbeType.name
@@ -489,7 +506,7 @@ def probe_type_names() -> list[str]:
     """Registered probe types, in registry order.
 
     >>> probe_type_names()
-    ['next_action', 'grid_tile', 'grid_binary']
+    ['next_action', 'grid_tile', 'grid_binary', 'grid_multiclass']
     """
     return list(PROBE_TYPES)
 
