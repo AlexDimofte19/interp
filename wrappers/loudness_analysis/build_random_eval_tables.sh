@@ -19,7 +19,7 @@
 # gptoss_agent is the odd one out, and is NOT in the default ONLY: the two BINARY agent-cell
 # probes (grid_binary_l15, random arm only, layer 15) on their own eval split, scored by
 # eval_binary_cognitive_map_probe --per-token-out, merged, and joined to AGENT loudness at L15
-# from build_agent_loudness_eval720.sh's tree -- which is a GPU pass and must run first. Its
+# from build_agent_loudness_eval720.sh (model-free: lensed from the saved L15 .pt), run first. Its
 # table is stages/3_agent/per_token_scores.csv, read by the notebook's agent cell.
 #
 # Usage: bash wrappers/loudness_analysis/build_random_eval_tables.sh    (ONLY="gptoss_grid qwen_grid" to subset)
@@ -128,7 +128,7 @@ for run in $ONLY; do
         join $run 3_grid 4_direction "$A/qwen_fixnorm/eval52_direction" jlens,logitlens $QDIR "$J/qwen/$QDIR.json" 27
         ;;
     gptoss_agent)
-        [ -d "$A/gptoss_agent_mass_l15_eval" ] || { echo "!! run build_agent_loudness_eval720.sh first (GPU)" >&2; exit 1; }
+        [ -d "$A/gptoss_agent_mass_l15_eval" ] || { echo "!! run build_agent_loudness_eval720.sh first" >&2; exit 1; }
         evaluate_binary $run "$P/grid_binary_l15_random_split_eval" /workspace/probes/grid_binary_l15 agent
         merge $run "$GPTOSS_TRAJ" "agent=$J/agent_tokens.json"
         join $run 2_merged 3_agent "$A/gptoss_agent_mass_l15_eval" jlens,logitlens agent "$J/agent_tokens.json" 15
