@@ -11,6 +11,7 @@
 #
 # Resumable: a probe whose JSON exists is skipped.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../grid_layer.sh"   # GRID_LAYER
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)   # repo root
 
@@ -18,7 +19,7 @@ PROBES=/workspace/probes/gptoss_p2_grid
 DATA=/workspace/prepared/gptoss_p2_grid_heldout   # built by prepare_heldout_grid.sh
 OUT=/workspace/results/gptoss_p2_grid/heldout_multiclass
 SIGNAL_JSON=$REPO/data/jlens/grid_tokens_pruned.json
-LAYER=14
+LAYER=$GRID_LAYER
 ARMS="jlens logitlens random"
 MODEL_TYPES=${MODEL_TYPES:-"lr mlp"}
 DEVICE=cuda

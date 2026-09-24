@@ -26,7 +26,7 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)   # so uv finds p
 
 MODEL=openai/gpt-oss-20b
 DATASET=/workspace/activations/mass_train2880_view/trajectories
-JLENS_DIR=/workspace/jlens   # this host keeps gpt-oss-20b_jacobian_lens.pt + _unembed.pt here; its gridenv/ holds only ckpt.pt
+JLENS_DIR=/workspace/jlens/gridenv   # the GRID-ENVIRONMENT lens; /workspace/jlens holds the wikitext fit (self-check 2026-09-24)
 SIGNAL_JSON=/workspace/repo/interp/data/jlens/grid_tokens_pruned.json
 SIGNAL_NAME=grid
 OUT=/workspace/activations/gptoss_grid_loudness_profile

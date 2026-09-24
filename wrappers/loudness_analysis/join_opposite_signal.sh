@@ -11,6 +11,7 @@
 # Outputs go under $OUT/tables/, never beside the source tables, so the join's
 # run_config.json cannot overwrite the scorer's.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../gptoss_analysis/grid/grid_layer.sh"   # GPT-oss grid GRID_LAYER
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=/workspace/loudness_probe_performance_analysis/tables
@@ -28,7 +29,7 @@ join() {  # name table lens_root signal_name signal_json layer
 }
 
 join gptoss_direction "$R/gptoss_p2_local_belief/heldout/per_token_scores.csv" \
-    "$A/heldout360_l14_grid" grid "$J/grid_tokens_pruned.json" 14
+    "$A/heldout360_l${GRID_LAYER}_grid" grid "$J/grid_tokens_pruned.json" "$GRID_LAYER"
 join gptoss_grid "$R/gptoss_p2_grid/heldout_multiclass/per_token_scores.csv" \
     "$A/heldout360_lens" direction "$J/direction_tokens_full.json" 15
 join qwen_direction "$R/qwen_p2_local_belief/heldout_fixnorm/per_token_scores.csv" \

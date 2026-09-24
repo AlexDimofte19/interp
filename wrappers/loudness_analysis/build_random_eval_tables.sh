@@ -24,6 +24,7 @@
 #
 # Usage: bash wrappers/loudness_analysis/build_random_eval_tables.sh    (ONLY="gptoss_grid qwen_grid" to subset)
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../gptoss_analysis/grid/grid_layer.sh"   # GPT-oss grid GRID_LAYER
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 T=/workspace/loudness_probe_performance_analysis/tables/random_eval
@@ -103,13 +104,13 @@ for run in $ONLY; do
         merge $run "$GPTOSS_TRAJ" "direction=$J/direction_tokens_full.json" "grid=$J/grid_tokens_pruned.json"
         join $run 2_merged 3a_direction_jlens "$A/jlens_mass_l15" jlens direction "$J/direction_tokens_full.json" 15
         join $run 3a_direction_jlens 3b_direction_logitlens "$A/logitlens_mass_l15" logitlens direction "$J/direction_tokens_full.json" 15
-        join $run 3b_direction_logitlens 4_grid "$A/gptoss_grid_mass_l14_eval" jlens,logitlens grid "$J/grid_tokens_pruned.json" 14
+        join $run 3b_direction_logitlens 4_grid "$A/gptoss_grid_mass_l${GRID_LAYER}_eval" jlens,logitlens grid "$J/grid_tokens_pruned.json" "$GRID_LAYER"
         ;;
     gptoss_grid)
         evaluate $run grid "$P/gptoss_p2_grid_random_val" \
-            /workspace/probes/gptoss_p2_grid/gptoss_p2_grid multiclass_l14 "$J/grid_tokens_pruned.json"
+            /workspace/probes/gptoss_p2_grid/gptoss_p2_grid multiclass_l${GRID_LAYER} "$J/grid_tokens_pruned.json"
         merge $run "$GPTOSS_TRAJ" "direction=$J/direction_tokens_full.json" "grid=$J/grid_tokens_pruned.json"
-        join $run 2_merged 3a_grid "$A/gptoss_grid_mass_l14_eval" jlens,logitlens grid "$J/grid_tokens_pruned.json" 14
+        join $run 2_merged 3a_grid "$A/gptoss_grid_mass_l${GRID_LAYER}_eval" jlens,logitlens grid "$J/grid_tokens_pruned.json" "$GRID_LAYER"
         join $run 3a_grid 3b_direction_jlens "$A/jlens_mass_l15" jlens direction "$J/direction_tokens_full.json" 15
         join $run 3b_direction_jlens 4_direction_logitlens "$A/logitlens_mass_l15" logitlens direction "$J/direction_tokens_full.json" 15
         ;;

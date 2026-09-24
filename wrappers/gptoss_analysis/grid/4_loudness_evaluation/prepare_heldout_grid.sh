@@ -3,7 +3,7 @@
 # Every reasoning token, no selection.
 #
 # The gpt-oss twin of wrappers/qwen_analysis/grid/4_loudness_evaluation/prepare_heldout_grid.sh.
-# The source is heldout360_l14_grid (../2_dataset_creation/1_p2_selection/heldout_sample.sh):
+# The source is heldout360_l${GRID_LAYER}_grid (../2_dataset_creation/1_p2_selection/heldout_sample.sh):
 # a layer-14 .pt for every reasoning token of the 360. The layer-15 dataset
 # grid_binary_l15_heldout360 is NOT reused, because the probes are trained at 14.
 #
@@ -13,14 +13,15 @@
 # SAME CELLS AS THE ARMS: MAX_CELLS, SEED and PAD match ../2_dataset_creation/2_preparations/,
 # so a held-out (trajectory, step) is scored on the same cells whichever arm's probe reads it.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../grid_layer.sh"   # GRID_LAYER
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)   # repo root
 
-ACT=/workspace/activations/heldout360_l14_grid
+ACT=/workspace/activations/heldout360_l${GRID_LAYER}_grid
 TRAJ=/workspace/trajectories/heldout360
 OUT=/workspace/prepared/gptoss_p2_grid_heldout
 
-LAYER=14
+LAYER=$GRID_LAYER
 MAX_CELLS=25
 SEED=42
 PAD=15                 # PINNED, never auto: auto pads to the widest size PRESENT

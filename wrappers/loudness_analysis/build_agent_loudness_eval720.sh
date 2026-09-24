@@ -5,9 +5,10 @@
 # already holds through the gather's own lens arithmetic (apply_lens_transport ->
 # unembed -> logsumexp over the vocabulary's ids). The gather lenses exactly the tensor it
 # saves, so this is the number a gather against agent_tokens.json would have written: its
-# --self-check reproduces jlens_mass_l15's direction mass at L15 to 6e-3 (jlens, bf16
-# rounding) and 1e-6 (logit lens) -- but ONLY with --jlens_dir /workspace/jlens/gridenv; the
-# jacobian_lens.pt one level up is a different J and misses by up to 4 nats.
+# --self-check reproduces jlens_mass_l15's direction mass at L15 from its own .pt: exact where
+# the .pt came from the scoring pass, within ~0.3 (bf16 batching noise) where the selecting
+# gather re-ran the forward to save them -- but ONLY with --jlens_dir /workspace/jlens/gridenv;
+# the jacobian_lens.pt one level up is the wikitext J and misses by 2-4 nats.
 #
 # Tokens: every eval-720 token with a layer-15 .pt in the pruned tree (jlens, logitlens and
 # random picks), which covers every token of grid_binary_l15_random_split_eval.

@@ -20,17 +20,18 @@
 # would put a second layer or a second vocabulary's tables beside the first under the same
 # filenames.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../../grid_layer.sh"   # GRID_LAYER
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)   # so uv finds pyproject.toml
 
 MODEL=openai/gpt-oss-20b
 DATASET=/workspace/trajectories/heldout360
-JLENS_DIR=/workspace/jlens   # this host keeps gpt-oss-20b_jacobian_lens.pt + _unembed.pt here; its gridenv/ holds only ckpt.pt
+JLENS_DIR=/workspace/jlens/gridenv   # the GRID-ENVIRONMENT lens; /workspace/jlens holds the wikitext fit (self-check 2026-09-24)
 SIGNAL_JSON=/workspace/repo/interp/data/jlens/grid_tokens_pruned.json
 SIGNAL_NAME=grid
-OUT=/workspace/activations/heldout360_l14_grid   # .pt at L14 + both lenses' grid mass tables at L14
+OUT=/workspace/activations/heldout360_l${GRID_LAYER}_grid   # .pt at L14 + both lenses' grid mass tables at L14
 
-LAYER=14               # the probes' layer; keep equal to the two selecting runs
+LAYER=$GRID_LAYER               # the probes' layer; keep equal to the two selecting runs
 SAMPLE_PERCENT=1.0     # NO THINNING: every reasoning token gets a .pt and a mass cell
 SAMPLE_SEED=42
 

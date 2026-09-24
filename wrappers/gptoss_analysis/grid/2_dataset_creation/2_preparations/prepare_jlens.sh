@@ -26,19 +26,20 @@
 #
 # Cheap: nothing is copied. CPU only.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../../grid_layer.sh"   # GRID_LAYER
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)   # repo root
 
 ARM=jlens
 
-ACT_TRAIN=/workspace/activations/gptoss_grid_mass_l14
-ACT_VAL=/workspace/activations/gptoss_grid_mass_l14_eval
+ACT_TRAIN=/workspace/activations/gptoss_grid_mass_l${GRID_LAYER}
+ACT_VAL=/workspace/activations/gptoss_grid_mass_l${GRID_LAYER}_eval
 TRAJ_TRAIN=/workspace/activations/mass_train2880_view/trajectories
 TRAJ_VAL=/workspace/activations/mass_eval720_view/trajectories
 
 PREP=/workspace/prepared/gptoss_p2_grid        # -> ${PREP}_${ARM}_{train,val}
 
-LAYER=14
+LAYER=$GRID_LAYER
 PROBE_TYPE=grid_tile
 MAX_CELLS=25           # cells per (trajectory, step); matches grid_binary_l15_* and the Qwen grid line
 SEED=42                # seeds the per-(trajectory, step) cell draw; keep equal across arms

@@ -225,8 +225,12 @@ def self_check(args, folders, traj_paths, lenses, assets, tok, torch) -> int:
             diffs = [abs(m - ref[(pre[3], pre[5])]) for pre, m in got]
             worst = max(worst, max(diffs, default=0.0))
             print(f"{stem} {lens}: {len(diffs)} tokens, max |diff| {max(diffs, default=0):.2e}", flush=True)
-    print(f"self-check: worst |diff| {worst:.2e}")
-    return 0 if worst < 1e-2 else 1
+    # A wrong lens misses by nats (the wikitext J against a gridenv tree: 2-4). The .pt of a
+    # SELECTING gather come from a second forward pass with a different batch shape, and bf16
+    # moves those by up to ~0.3 (the batching noise floor), so exact agreement is only seen on
+    # unselected trees. The threshold separates the two, not bf16 from bf16.
+    print(f"self-check: worst |diff| {worst:.2e} ({'OK' if worst < 1.0 else 'WRONG LENS?'})")
+    return 0 if worst < 1.0 else 1
 
 
 if __name__ == "__main__":

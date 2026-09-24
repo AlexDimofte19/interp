@@ -29,17 +29,18 @@
 #
 # IF YOU PRUNE THIS TREE LATER, give delete_non_jlens_selected.py --candidate-layers 14.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../../grid_layer.sh"   # GRID_LAYER
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)   # so uv finds pyproject.toml
 
 MODEL=openai/gpt-oss-20b
 DATASET=/workspace/activations/mass_train2880_view/trajectories
-JLENS_DIR=/workspace/jlens   # this host keeps gpt-oss-20b_jacobian_lens.pt + _unembed.pt here; its gridenv/ holds only ckpt.pt
+JLENS_DIR=/workspace/jlens/gridenv   # the GRID-ENVIRONMENT lens; /workspace/jlens holds the wikitext fit (self-check 2026-09-24)
 SIGNAL_JSON=/workspace/repo/interp/data/jlens/grid_tokens_pruned.json
 SIGNAL_NAME=grid
-OUT=/workspace/activations/gptoss_grid_mass_l14
+OUT=/workspace/activations/gptoss_grid_mass_l${GRID_LAYER}
 
-LAYER=14               # the grid profile's J-lens argmax; see the header
+LAYER=$GRID_LAYER               # the grid profile's J-lens argmax; see the header
 SAMPLE_PERCENT=1.0     # NO SAMPLING: select over the whole chain, as jlens_mass_l15 did
 SAMPLE_SEED=42
 
