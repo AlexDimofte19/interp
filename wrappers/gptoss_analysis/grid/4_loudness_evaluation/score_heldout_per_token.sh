@@ -11,11 +11,11 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../grid_layer.sh"   # GRID_LAYER
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)
-PROBES=/workspace/probes/gptoss_p2_grid
+PROBES=/workspace/probes/gptoss_p2_grid_l${GRID_LAYER}   # one dir per layer: a rerun at another layer never overwrites
 ACT=/workspace/activations/heldout360_l${GRID_LAYER}_grid
 TRAJ=/workspace/trajectories/heldout360
 SIGNAL_JSON=/workspace/repo/interp/data/jlens/grid_tokens_pruned.json
-R=/workspace/results/gptoss_p2_grid
+R=/workspace/results/gptoss_p2_grid_l${GRID_LAYER}
 
 cd "$REPO"
 score() {  # probe_type out_dir probe_glob
@@ -29,5 +29,5 @@ score() {  # probe_type out_dir probe_glob
         --layer "$GRID_LAYER" --pad-to-size 15 --max-cells 25 --seed 42 \
         --cache-activations --read-threads 16 --device cuda --out "$out"
 }
-score grid_binary heldout "$(ls $PROBES/gptoss_p2_grid_*_{empty,wall,agent,goal}_l${GRID_LAYER}_{lr,mlp}.pt)"
+[ "${BINARY:-1}" = 1 ] && score grid_binary heldout "$(ls $PROBES/gptoss_p2_grid_*_{empty,wall,agent,goal}_l${GRID_LAYER}_{lr,mlp}.pt)"
 score grid_multiclass heldout_multiclass "$(ls $PROBES/gptoss_p2_grid_*_multiclass_l${GRID_LAYER}_{lr,mlp}.pt)"

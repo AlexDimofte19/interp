@@ -19,7 +19,7 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)   # repo root
 
 ACT=/workspace/activations/heldout360_l${GRID_LAYER}_grid
 TRAJ=/workspace/trajectories/heldout360
-OUT=/workspace/prepared/gptoss_p2_grid_heldout
+OUT=/workspace/prepared/gptoss_p2_grid_l${GRID_LAYER}_heldout
 
 LAYER=$GRID_LAYER
 MAX_CELLS=25

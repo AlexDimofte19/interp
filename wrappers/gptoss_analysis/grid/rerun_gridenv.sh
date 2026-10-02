@@ -27,12 +27,16 @@
 #   CONFIRM_DELETE=1 STAGE=profile bash wrappers/gptoss_analysis/grid/rerun_gridenv.sh
 #   # edit grid_layer.sh to the printed argmax, then:
 #   CONFIRM_DELETE=1 CONFIRM_LAYER=<L> STAGE=rest bash wrappers/gptoss_analysis/grid/rerun_gridenv.sh
+#   (BINARY=0 to skip the binary probes; the notebooks read only the multiclass ones.
+#    HELDOUT=0 to skip the held-out set; EVAL="random_eval" in the notebook needs none of it)
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 source "$HERE/grid_layer.sh"   # GRID_LAYER
 
 STAGE=${STAGE:?set STAGE=profile or STAGE=rest}
+HELDOUT=${HELDOUT:-1}  # HELDOUT=0: skip the held-out gather/prepare/eval/per-token and its tables (EVAL="heldout" in the notebook)
+BINARY=${BINARY:-1}   # BINARY=0: multiclass only -- skip the one-vs-rest train, cross-eval, held-out eval and scoring
 OLD_LAYER=14   # the wikitext round's layer; its paths are cleared too
 A=/workspace/activations
 LOUD=/workspace/loudness_probe_performance_analysis/tables
@@ -50,7 +54,7 @@ case $STAGE in
 profile)
     PROFILE_TREE=$A/gptoss_grid_loudness_profile
     PROFILE_OUT=/workspace/loudness_evaluation/gptoss_p2_grid_layer_profile
-    wipe "$PROFILE_TREE" "$PROFILE_OUT"
+#    wipe "$PROFILE_TREE" "$PROFILE_OUT"
     bash "$HERE/1_loudest_layer/sample_loudness_profile.sh"
     bash "$HERE/1_loudest_layer/join_loudness_profile.sh"
     cd "$REPO"
@@ -80,20 +84,22 @@ rest)
     # GPU: the three gathers (selection on train and eval, every held-out token)
     bash "$HERE/2_dataset_creation/1_p2_selection/p2_training_selection.sh"
     bash "$HERE/2_dataset_creation/1_p2_selection/p2_eval_selection.sh"
-    bash "$HERE/2_dataset_creation/1_p2_selection/heldout_sample.sh"
+    [ "$HELDOUT" = 1 ] && bash "$HERE/2_dataset_creation/1_p2_selection/heldout_sample.sh"
     # prepare, train, cross-evaluate
     bash "$HERE/2_dataset_creation/build_grid_datasets.sh"
-    bash "$HERE/3_train_and_eval_probes/train_binary_grid_probes_all_selections.sh"
+    [ "$BINARY" = 1 ] && bash "$HERE/3_train_and_eval_probes/train_binary_grid_probes_all_selections.sh"
     bash "$HERE/3_train_and_eval_probes/train_grid_probes_all_selections.sh"
-    bash "$HERE/3_train_and_eval_probes/cross_eval_binary_grid_all_selections.sh"
+    [ "$BINARY" = 1 ] && bash "$HERE/3_train_and_eval_probes/cross_eval_binary_grid_all_selections.sh"
     bash "$HERE/3_train_and_eval_probes/cross_eval_grid_all_selections.sh"
     # held-out: prepare, evaluate, per-token table with loudness
-    bash "$HERE/4_loudness_evaluation/prepare_heldout_grid.sh"
-    bash "$HERE/4_loudness_evaluation/eval_binary_probes_heldout.sh"
-    bash "$HERE/4_loudness_evaluation/eval_multiclass_probes_heldout.sh"
-    bash "$HERE/4_loudness_evaluation/score_heldout_per_token.sh"
+    if [ "$HELDOUT" = 1 ]; then
+        bash "$HERE/4_loudness_evaluation/prepare_heldout_grid.sh"
+        [ "$BINARY" = 1 ] && bash "$HERE/4_loudness_evaluation/eval_binary_probes_heldout.sh"
+        bash "$HERE/4_loudness_evaluation/eval_multiclass_probes_heldout.sh"
+        BINARY=$BINARY bash "$HERE/4_loudness_evaluation/score_heldout_per_token.sh"
+    fi
     # the cross-model notebook's gpt-oss tables (the direction ones carry the grid ruler)
-    bash "$REPO/wrappers/loudness_analysis/join_opposite_signal.sh"
+    [ "$HELDOUT" = 1 ] && bash "$REPO/wrappers/loudness_analysis/join_opposite_signal.sh"
     ONLY="gptoss_direction gptoss_grid" bash "$REPO/wrappers/loudness_analysis/build_random_eval_tables.sh"
     echo
     echo "done. Re-run the notebooks: 4_loudness_evaluation/*.ipynb and wrappers/loudness_analysis/probe_performance_by_loudness.ipynb"

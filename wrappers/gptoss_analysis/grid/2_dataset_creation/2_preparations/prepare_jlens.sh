@@ -37,7 +37,7 @@ ACT_VAL=/workspace/activations/gptoss_grid_mass_l${GRID_LAYER}_eval
 TRAJ_TRAIN=/workspace/activations/mass_train2880_view/trajectories
 TRAJ_VAL=/workspace/activations/mass_eval720_view/trajectories
 
-PREP=/workspace/prepared/gptoss_p2_grid        # -> ${PREP}_${ARM}_{train,val}
+PREP=/workspace/prepared/gptoss_p2_grid_l${GRID_LAYER}        # -> ${PREP}_${ARM}_{train,val}
 
 LAYER=$GRID_LAYER
 PROBE_TYPE=grid_tile

@@ -4,5 +4,6 @@
 # It is the J-lens grid argmax of 1_loudest_layer/ (train 2,880, whole chain), under the
 # GRID-ENVIRONMENT lens (/workspace/jlens/gridenv). 14 was that argmax under the wikitext lens
 # in /workspace/jlens, which the first round used by mistake; rerun_gridenv.sh re-picks it
-# and this default must be updated to what it prints before stage 2 runs.
-GRID_LAYER=${GRID_LAYER:-14}
+# and this default must be updated to what it prints before stage 2 runs. Gridenv argmax
+# (2026-09-25): L9, z=30.4 over L11 (logit lens: L13).
+GRID_LAYER=${GRID_LAYER:-9}

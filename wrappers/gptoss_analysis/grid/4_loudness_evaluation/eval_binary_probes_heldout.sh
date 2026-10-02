@@ -20,9 +20,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/../grid_layer.sh"   # GRID_LAYER
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)   # repo root
 
-PROBES=/workspace/probes/gptoss_p2_grid
-DATA=/workspace/prepared/gptoss_p2_grid_heldout   # built by prepare_heldout_grid.sh from heldout360_l14_grid
-OUT=/workspace/results/gptoss_p2_grid/heldout
+PROBES=/workspace/probes/gptoss_p2_grid_l${GRID_LAYER}   # one dir per layer: a rerun at another layer never overwrites
+DATA=/workspace/prepared/gptoss_p2_grid_l${GRID_LAYER}_heldout   # built by prepare_heldout_grid.sh from heldout360_l14_grid
+OUT=/workspace/results/gptoss_p2_grid_l${GRID_LAYER}/heldout
 
 LAYER=$GRID_LAYER
 ARMS="jlens logitlens random"
