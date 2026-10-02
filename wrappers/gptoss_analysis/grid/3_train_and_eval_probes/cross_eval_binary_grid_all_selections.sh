@@ -25,14 +25,15 @@
 # beside the val manifest. That makes every cell seconds of GPU time, so there is nothing to
 # gain by running them concurrently.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../grid_layer.sh"   # GRID_LAYER
 
 REPO=/workspace/repo/interp
 
-PROBES=/workspace/probes/gptoss_p2_grid
-PREP=/workspace/prepared/gptoss_p2_grid       # reads ${PREP}_${slice}_val
-OUT=/workspace/results/gptoss_p2_grid/cross_selection_eval
+PROBES=/workspace/probes/gptoss_p2_grid_l${GRID_LAYER}   # one dir per layer: a rerun at another layer never overwrites
+PREP=/workspace/prepared/gptoss_p2_grid_l${GRID_LAYER}       # reads ${PREP}_${slice}_val
+OUT=/workspace/results/gptoss_p2_grid_l${GRID_LAYER}/cross_selection_eval
 
-LAYER=14
+LAYER=$GRID_LAYER
 ARMS="jlens logitlens random"
 SLICES="jlens logitlens random"
 CLASSES="empty wall agent goal"

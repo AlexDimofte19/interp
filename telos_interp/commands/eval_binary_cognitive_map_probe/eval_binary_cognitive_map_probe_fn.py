@@ -34,6 +34,7 @@ from telos_interp.commands.train_binary_cognitive_map_probe import (
 from telos_interp.commands.train_cognitive_map_probe.train_cognitive_map_probe_fn import (
     _load_grid_tile_compact_cached,
 )
+from telos_interp.loudness_analysis.slice_tokens import write_counts
 from telos_interp.training import resolve_device
 
 COMPLEXITY_RE = re.compile(r"_comp([0-9]*\.?[0-9]+)")
@@ -176,10 +177,36 @@ def _grouped(
     return out
 
 
+def _write_per_token_counts(
+    path: Path, entries: list[dict], raw_labels: torch.Tensor, predicted_positive: torch.Tensor, positive_cell_id: int
+) -> None:
+    """One row per entry in `slice_tokens.write_counts` form, keyed by the ORIGINAL cell ids.
+
+    A cell is correct when the verdict matches its truth: called positive if it is the
+    positive class, called negative if it is anything else (padding included, as in
+    training). So `correct_{positive}` is the entry's TP count and the other classes'
+    `correct_{c}` sum to its TN count, and pooling the rows reproduces the global block.
+
+    Args:
+        path: CSV to write.
+        entries: Manifest entries aligned with the rows (carry name, step, token_id).
+        raw_labels: (T, C) original cell ids.
+        predicted_positive: (T, C) bool, the probe's verdict at the threshold.
+        positive_cell_id: The probe's positive class.
+    """
+    classes = sorted(torch.unique(raw_labels).tolist())
+    is_positive = raw_labels == positive_cell_id
+    agree = predicted_positive == is_positive
+    n_true = torch.stack([(raw_labels == c).sum(dim=1) for c in classes], dim=1)
+    correct = torch.stack([((raw_labels == c) & agree).sum(dim=1) for c in classes], dim=1)
+    write_counts(path, entries, classes, n_true.tolist(), correct.tolist())
+
+
 def eval_binary_cognitive_map_probe(
     probe_path: str,
     data_path: str,
     output_path: str | None = None,
+    per_token_out: str | None = None,
     threshold: float = 0.5,
     batch_size: int = 8192,
     cache_activations: bool = False,
@@ -198,6 +225,9 @@ def eval_binary_cognitive_map_probe(
         data_path: Path to a v3 prepared dataset directory (probe_type=grid_tile)
         output_path: Where to write the results JSON. Defaults to
             `eval_{probe stem}_{dataset dirname}.json` beside the probe.
+        per_token_out: Also write one CSV row per manifest entry (token) with per-class
+            `n_true_{c}` / `correct_{c}` cell counts (`slice_tokens.write_counts`), the input
+            of `build_slice_per_token_table.py`. Classes are original cell ids.
         threshold: Positive-class probability above which a cell is called positive
         batch_size: Rows per forward pass
         cache_activations: Read/write `_packed_activations.pt` beside the manifest. Shared
@@ -243,9 +273,14 @@ def eval_binary_cognitive_map_probe(
             "the dataset were built from different layers or token categories."
         )
 
-    compact = _drop_nan_entries(
-        _load_grid_tile_compact_cached(manifest, manifest_path, cache_activations, verbose), verbose
-    )
+    compact = _load_grid_tile_compact_cached(manifest, manifest_path, cache_activations, verbose)
+    # The NaN filter below drops rows; the entry list must drop the same ones to stay aligned.
+    entries = manifest["trajectories"]
+    if len(entries) != compact["base_act"].shape[0]:
+        raise ValueError(f"{len(entries)} manifest entries but {compact['base_act'].shape[0]} loaded rows")
+    keep = (~torch.isnan(compact["base_act"]).any(dim=1)).tolist()
+    entries = [e for e, k in zip(entries, keep, strict=True) if k]
+    compact = _drop_nan_entries(compact, verbose)
 
     base_act = compact["base_act"]
     positions = compact["positions"]
@@ -257,6 +292,10 @@ def eval_binary_cognitive_map_probe(
         print(f"Scoring {num_entries} entries x {cells_per_entry} cells = {num_entries * cells_per_entry} rows")
 
     scores = _score_all_cells(probe, base_act, positions, batch_size, verbose)
+    if per_token_out is not None:
+        _write_per_token_counts(
+            Path(per_token_out), entries, compact["labels"], scores > threshold, probe.positive_cell_id
+        )
 
     flat_labels = labels.reshape(-1)
     flat_scores = scores.reshape(-1)

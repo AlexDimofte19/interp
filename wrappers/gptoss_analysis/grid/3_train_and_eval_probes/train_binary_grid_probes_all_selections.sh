@@ -28,14 +28,15 @@
 # Resumable: a probe already on disk is skipped. ARMS / CLASSES / MODEL_TYPES are overridable
 # to resume a partial sweep; the filenames carry all three.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../grid_layer.sh"   # GRID_LAYER
 
 REPO=/workspace/repo/interp
 
-PREP=/workspace/prepared/gptoss_p2_grid   # reads ${PREP}_${arm}_{train,val}
-PROBES=/workspace/probes/gptoss_p2_grid
+PREP=/workspace/prepared/gptoss_p2_grid_l${GRID_LAYER}   # reads ${PREP}_${arm}_{train,val}
+PROBES=/workspace/probes/gptoss_p2_grid_l${GRID_LAYER}   # one dir per layer: a rerun at another layer never overwrites
 LOGS=$PROBES/logs
 
-LAYER=14
+LAYER=$GRID_LAYER
 ARMS=${ARMS:-"jlens logitlens random"}
 CLASSES=${CLASSES:-"empty wall agent goal"}   # aliases for _  #  A  G
 MODEL_TYPES=${MODEL_TYPES:-"lr mlp"}

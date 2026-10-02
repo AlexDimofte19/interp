@@ -31,17 +31,18 @@
 # PARALLEL WITHIN A SLICE, SERIAL ACROSS, as in the template. Every cell reads its slice
 # through --cache-activations, the pack the trainer wrote beside each val manifest.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../grid_layer.sh"   # GRID_LAYER
 
 REPO=/workspace/repo/interp
 
-PROBES=/workspace/probes/gptoss_p2_grid
-PREPARED=/workspace/prepared/gptoss_p2_grid          # reads ${PREPARED}_${slice}_val
-OUT=/workspace/results/gptoss_p2_grid/cross_selection_eval_multiclass
+PROBES=/workspace/probes/gptoss_p2_grid_l${GRID_LAYER}   # one dir per layer: a rerun at another layer never overwrites
+PREPARED=/workspace/prepared/gptoss_p2_grid_l${GRID_LAYER}          # reads ${PREPARED}_${slice}_val
+OUT=/workspace/results/gptoss_p2_grid_l${GRID_LAYER}/cross_selection_eval_multiclass
 
 SIGNAL_JSON=/workspace/repo/interp/data/jlens/grid_tokens_pruned.json
 SIGNAL_NAME=grid
 
-LAYER=14
+LAYER=$GRID_LAYER
 ARMS="jlens logitlens random"
 SLICES="jlens logitlens random"
 MODEL_TYPES="lr mlp"
