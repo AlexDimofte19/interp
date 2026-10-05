@@ -27,7 +27,7 @@ when any of them is rebuilt. The three inputs and the key that ties them togethe
 
 Every mass table is read through ``MassTableLoudness``, which refuses one that has no
 ``.meta.json`` sidecar: this repo points two vocabularies at the same trees, so a table
-whose vocabulary is unknown must not be read at all (CLAUDE.md).
+whose vocabulary is unknown must not be read at all.
 
 Defaults are the held-out 360 -- 360 trajectories, 10 per size x complexity cell, drawn from
 the pool the 3600-trajectory gather never touched, so overlap with every probe's training set
@@ -97,7 +97,7 @@ ACTION_FIELDS = (
 #   * `sentence_idx` is the eval's `cut_sentence_idx` -- the sentence the cut LANDS IN -- and
 #     never its `sentence_idx`, which is the cutoff's ordinal in the eval list. The two
 #     coincide for the `eos` arm alone, so a mix-up survives an eos spot-check and is wrong
-#     under every other strategy (CLAUDE.md).
+#     under every other strategy.
 #   * `frac_in_sentence` is the position WITHIN the sentence. It is the loudness-vs-position
 #     control, not a commitment quantity, so it is filled whether or not the boundary is.
 SENTENCE_FIELDS = (
@@ -123,7 +123,7 @@ REBUILD_HINT = """no rollout for {name}. The every_token arm is built with:
 def lens_columns(lens: str, layer: int) -> tuple[str, str]:
     """``(logmass column, probability column)`` for one lens at one layer.
 
-    The layer travels in the name, as in ``eval_probe_per_token.py``, so a table built at a
+    The layer travels in the name, so a table built at a
     different layer can never be mistaken for this one.
 
     >>> lens_columns("jlens", 15)
@@ -179,7 +179,7 @@ class LensTable:
     def sidecar(self, name: str) -> dict:
         """The table's ``.meta.json``, read before its values.
 
-        A mass table is never read without its sidecar (CLAUDE.md): this repo points two
+        A mass table is never read without its sidecar: this repo points two
         vocabularies at the same trees, so a table whose vocabulary is unknown is unusable.
         Reading it first is what lets a layer the table does not cover fail as the
         configuration error it is, rather than as a trajectory whose artifact is missing.
@@ -344,8 +344,7 @@ def count_sentences(evals: list[dict]) -> int | None:
     """How many sentences the chain has, as the eos grid saw it: ``max(cut_sentence_idx) + 1``.
 
     Taken from the placements rather than from the rollout's ``n_reasoning_sentences``, which
-    under any strategy but ``eos`` counts CUTOFFS, not sentences (CLAUDE.md names it a
-    misnomer). ``None`` when no eval carries a placement.
+    under any strategy but ``eos`` counts CUTOFFS, not sentences (a misnomer). ``None`` when no eval carries a placement.
 
     >>> count_sentences([{"cut_sentence_idx": 3}, {"cut_sentence_idx": None}])
     4

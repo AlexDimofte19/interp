@@ -1,4 +1,4 @@
-"""Tests for scripts/link_end_of_reasoning_activations.py.
+"""Tests for telos_interp/loudness_analysis/rollouts/link_end_of_reasoning_activations.py.
 
 The script repairs a silent data loss: a per-sentence arm whose pick lands on the final
 reasoning token has that pick merged into the `end_of_reasoning` bookend by `_dedupe`, and
@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-link = importlib.import_module("scripts.link_end_of_reasoning_activations")
+link = importlib.import_module("telos_interp.loudness_analysis.rollouts.link_end_of_reasoning_activations")
 
 
 def ev(cut_sentence_idx, kind, pos, ordinal=None):

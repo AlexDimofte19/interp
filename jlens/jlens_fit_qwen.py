@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Fit a Jacobian lens on Qwen3.6-35B-A3B using its own replayed grid trajectories.
 
-The sibling of ``jlens_fit_gpt_oss.py``, which is left untouched -- it is stage 2 of
-``scripts/reproduce_all.sh`` and its defaults are the record of the gpt-oss fit. Everything about
+The sibling of ``jlens_fit_gpt_oss.py``. Everything about
 the corpus is shared with it by import, so any difference between the two lenses is the model and
 the fit window, and nothing else.
 
@@ -44,7 +43,7 @@ Usage
     # the real fit (GPU host, >= 80GB)
     python jlens/jlens_fit_qwen.py --n-prompts 144 --dim-batch 1
 
-or through ``wrappers/jlens_fit_qwen.sh``, which is the recorded invocation.
+or through ``wrappers/qwen_analysis/fit_jlens.sh``, which is the recorded invocation.
 """
 
 from __future__ import annotations
@@ -556,7 +555,7 @@ def fit_windowed(
         )
 
         if n_done == 0:
-            # CLAUDE.md records this MoE family producing NaNs under a multi-GPU device_map. A
+            # This MoE family produces NaNs under a multi-GPU device_map. A
             # NaN here poisons the running mean irrecoverably, so it is caught before the sum.
             nonfinite = [layer for layer, J in per_prompt_J.items() if not torch.isfinite(J).all()]
             if nonfinite:

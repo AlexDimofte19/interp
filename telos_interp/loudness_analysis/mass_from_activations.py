@@ -89,9 +89,9 @@ def lens_trajectory(rows, act_folder: Path, traj: dict, layer: int, lenses, asse
 def build_assets(args, lenses, torch):
     """The gather's own unembed, norm and transports, built through its own helpers."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from scripts.jlens_action_ranks import action_token_ids, ensure_unembed_assets
     from telos_interp.jlens_utils import get_model
     from telos_interp.loudness_analysis.build_loudness_tables import build_lens_transports
+    from telos_interp.loudness_analysis.jlens_action_ranks import action_token_ids, ensure_unembed_assets
 
     spec = get_model(args.model_id)
     dev = torch.device(args.device)

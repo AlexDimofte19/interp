@@ -578,9 +578,8 @@ def _prepare_train_eval_v3_binary(
             raise ValueError(
                 f"{num_trajectories} entries cover only {len(set(compact['trajectory_names']))} "
                 "trajectories, so this manifest is token-major and an internal --eval-split "
-                "would put the same trajectory in both halves. Split it by trajectory first "
-                "(scripts/split_next_action_manifest.py ... --train-out X_train --eval-out "
-                "X_eval) and pass --eval-data-path."
+                "would put the same trajectory in both halves. Prepare train and eval from disjoint "
+                "trajectory sets and pass --eval-data-path."
             )
         if subset < 1.0:
             raise ValueError(

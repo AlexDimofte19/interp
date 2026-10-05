@@ -16,8 +16,7 @@ The original label is kept as `final_label`, plus `rollout_answer_prob`,
 restricts which cutoff kinds survive, for arms built off a tree that holds more
 positions than the arm wants. Nothing
 else about the manifest changes -- it stays token-major, `activations_root` is
-untouched, no activations move -- so `split_next_action_manifest.py` and
-`train_next_action_probe` read it unchanged.
+untouched, no activations move -- so `train_next_action_probe` reads it unchanged.
 
     python relabel_manifest_from_rollout.py PREPARED_DIR ROLLOUT_DIR OUT_DIR
 """
@@ -139,9 +138,8 @@ def main() -> int:
         s2["sentence_idx"] = ev.get("sentence_idx")
         s2["cut_sentence_idx"] = ev.get("cut_sentence_idx")
         # direction_count / layer_direction_count = the layer-15 loudness (log direction
-        # mass) of the cut token, so split_next_action_manifest.py can rank tokens by
-        # loudness (--tokens-per-trajectory K) instead of drawing uniformly, and analysis
-        # can bin probe correctness by loudness. Absent on the endpoint cutoffs.
+        # mass) of the cut token, so analysis can bin probe correctness by loudness.
+        # Absent on the endpoint cutoffs.
         lm = ev.get("dir_logmass")
         if lm is not None:
             s2["direction_count"] = lm

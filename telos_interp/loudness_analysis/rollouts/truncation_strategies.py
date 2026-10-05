@@ -17,10 +17,8 @@ Five strategies, selected by name:
 
 ``jlens_argmax_per_sentence``
     One cutoff per sentence, as ``eos``, but placed at the sentence's *loudest*
-    token instead of its final one. Motivated by log entry 42: loudness falls ~2.2x
-    through a sentence and peaks in its second decile, so a sentence end is
-    systematically the quietest place in it, and entry 41(c) put the commitment at
-    the first tokens of a sentence -- a median ~7 tokens before ``eos`` can see it.
+    token instead of its final one. Loudness falls ~2.2x through a sentence and peaks
+    in its second decile, so a sentence end is systematically the quietest place in it.
 
 ``jlens_top_k_global``
     The K loudest tokens of the whole step's reasoning, wherever they fall, so the
@@ -44,11 +42,11 @@ Five strategies, selected by name:
     depend on the lens -- loudness is still attached per cutoff when a mass table
     is there, but it never decides where to cut.
 
-LOUDNESS is the layer-15 full-vocabulary direction mass of log entry 42:
+LOUDNESS is the layer-15 full-vocabulary direction mass:
 ``sum(exp(logprob(t)))`` over the 446-token ``direction_tokens_full.json``. The
 direction-mass table beside each analysis CSV already holds its log, so this module
 ranks on ``L15`` directly (exp is monotone) and only exponentiates for the record.
-Per CLAUDE.md a mass table is never read without its ``.meta.json`` sidecar: the
+A mass table is never read without its ``.meta.json`` sidecar: the
 vocabulary it was baked against is verified and reported, not assumed.
 """
 
@@ -641,7 +639,7 @@ class RecordedSelectionStrategy(LoudnessStrategy):
 
     It exists for the ``random`` control. A control arm's tokens are a seeded uniform
     draw over the whole reasoning chain, taken *before* the tree was pruned to the
-    selection -- CLAUDE.md: once the tree holds only the selected tokens, that draw can
+    selection -- once the tree holds only the selected tokens, that draw can
     never be made again, and the record is the only place it survives. So a rollout that
     is supposed to label the SAME tokens the random probe trained on cannot re-draw them;
     it has to read them. The same applies to any arm whose probe already exists.
@@ -733,7 +731,7 @@ class RecordedSelectionStrategy(LoudnessStrategy):
         for pos in picks:
             # A pick outside the reasoning region would be a coordinate bug upstream
             # (token_idx is an output_tokens index, abs_pos is prompt-inclusive), and a
-            # silently-empty join is exactly what CLAUDE.md warns about -- so it is loud.
+            # silently-empty join would go unnoticed -- so it is loud.
             if pos not in ana:
                 raise SelectionUnavailable(
                     f"{traj_name} step {step['step_id']}: recorded token_idx {pos} is not an "

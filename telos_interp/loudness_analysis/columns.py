@@ -1,15 +1,14 @@
 """One name per quantity, and one label per axis.
 
 THE PROBLEM THIS SOLVES. The same number -- log P(any signal word) at a layer -- was written
-under three different column names by three different producers:
+under several different column names:
 
-    dir_logmass_L15          build_sentence_loudness.py
-    dir_logmass              build_probe_loudness.py, build_probe_loudness_heldout.py
-    {lens}_logmass_L{layer}  build_token_loudness_x_infered_action_probability.py
-    {lens}_mass_L{layer}     eval_probe_per_token.py
+    dir_logmass_L15
+    dir_logmass
+    {lens}_logmass_L{layer}
+    {lens}_mass_L{layer}
 
-Readers hard-coded the variant they expected, which is why the four builders could not be one
-builder. The canonical name is `{lens}_{signal}_logmass_L{layer}` -- it states the lens that
+Readers hard-coded the variant they expected. The canonical name is `{lens}_{signal}_logmass_L{layer}` -- it states the lens that
 read it, the vocabulary it was read against, and the layer it was read at, none of which the
 old names carried in full. `resolve` accepts every legacy spelling, so **every CSV already on
 disk still loads**.
@@ -207,7 +206,7 @@ def score_columns(lens: str, signal: str, layer: int | str) -> list[str]:
 
 
 def legacy_score_columns(lens: str, layer: int | str) -> list[str]:
-    """The same four as `eval_probe_per_token.py` wrote them, for reading old CSVs.
+    """The same four under their legacy names, for reading old CSVs.
 
     >>> legacy_score_columns("jlens", 15)
     ['jlens_count', 'jlens_mass_L15', 'jlens_mass_best_layer', 'jlens_mass_best']

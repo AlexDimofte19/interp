@@ -26,17 +26,15 @@ what lets both rounds keep identical filenames: the round binning on jlens loudn
 ``jlens_ruler/``, the logitlens round writes ``logitlens_ruler/``, and neither can overwrite the
 other. A figure's FILENAME PREFIX is the lens that selected that probe's TRAINING tokens
 (``jlens`` / ``logitlens`` / ``random``) and is NOT the ruler -- under ``--ruler jlens`` the file
-``logitlens_p1_local_belief.png`` is the logitlens-selected probe binned by jlens loudness, which
-is exactly the cross entry 49 asked for.
+``logitlens_p1_local_belief.png`` is the logitlens-selected probe binned by jlens loudness.
 
-THE ROWSET TRAP. The source CSV is 3 x 87,221 rows: since entry 48 its three rowsets hold
+THE ROWSET TRAP. The source CSV is 3 x 87,221 rows: its three rowsets hold
 IDENTICAL rows, every one of which carries EVERY probe's columns, so a rowset name selects which
 probes a report reads and not which tokens. Read all three and every count triples. This filters
 to one (``--rowset``, default ``p2``) and reports the survivor count.
 
 The self-check that matters is printed per probe: pooling all 100 cells of a grid must reproduce
-that probe's published held-out balanced accuracy (``PUBLISHED`` below, taken from
-``build_sixteen_probe_report_page.py``). A mismatch means the rowset dedup or the label column is
+that probe's published held-out balanced accuracy (``PUBLISHED`` below). A mismatch means the rowset dedup or the label column is
 wrong, which are the two ways this join fails silently, and the script exits non-zero.
 """
 
@@ -70,7 +68,7 @@ RULERS = {
     "logitlens": "per_token_logitlens_loudness.csv",
 }
 
-# dataviz reference palette, as scripts/jlens_rank_analysis.py.
+# dataviz reference palette.
 SURFACE, INK, MUTED = "#fcfcfb", "#0b0b0b", "#898781"
 BLUE_SEQ = ["#cde2fb", "#0d366b"]
 MASKED = "#e8e7e0"
@@ -105,8 +103,7 @@ class Arm:
 
 
 # The nine slots. Three have no probe yet and carry stem=None; filling one in is a single edit
-# here once its column exists in the source CSV -- which needs eval_probe_per_token.py and then
-# build_probe_loudness_heldout.py --extra-probes, both outside this script.
+# here once its column exists in the source CSV.
 ARMS = [
     Arm("jlens", "p1", "p1", "P1 - jlens per-sentence loudest"),
     Arm("jlens", "p1-top20", "p1t20", "P1 top-20 - jlens per-sentence, thinned to 20/traj"),
@@ -119,8 +116,7 @@ ARMS = [
     Arm("random", "p2", "randb", "P2 - random selection (seeded uniform, replayed picks)"),
 ]
 
-# Published held-out balanced accuracy per probe column, from the registry in
-# build_sixteen_probe_report_page.py. Pooling a grid must reproduce these.
+# Published held-out balanced accuracy per probe column. Pooling a grid must reproduce these.
 PUBLISHED = {
     "p1_lr": 0.4634,
     "p1_mlp": 0.5276,

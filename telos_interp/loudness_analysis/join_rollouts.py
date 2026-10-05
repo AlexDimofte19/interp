@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """Join a probe table, an every-token rollout and a commitment CSV into one per-token table.
 
-Entry 46 asked whether a louder token decodes better. It answered on the eval-720 split,
-and -- the limitation this script removes -- it read each probe only on the tokens that
-probe's own jlens selection had picked. Inside a fixed top-K arm the loudness axis is
-truncated by construction, which is exactly why entry 46(b) needed a chain-length control.
+Reading each probe only on the tokens its own jlens selection picked truncates the
+loudness axis by construction: inside a fixed top-K arm it needs a chain-length control.
 
 Here every probe is read on the SAME 87,221 tokens: every reasoning token of the 360
-held-out trajectories, a tree disjoint from every probe's training set
-(``scripts/audit_trajectory_sets.py``). No selection sits between the loudness axis and
+held-out trajectories, a tree disjoint from every probe's training set. No selection sits between the loudness axis and
 the label, so the axis spans the real distribution and no arm gets a token set tuned to it.
 
 THE PROBES ARE AN ARGUMENT. ``--probes`` names them as key=column_prefix pairs and
@@ -25,7 +22,7 @@ re-run when any of them is rebuilt:
                       the chain cut at EVERY token and the model asked for its action, so
                       ``label_local`` is a measured per-token belief rather than the
                       sentence-end answer standing in for one.
-``--commitment-csv``  entries 39/40/41's join, already one row per reasoning token of these
+``--commitment-csv``  the commitment-boundary join, already one row per reasoning token of these
                       same 360 trajectories. It supplies the loudness and the sentence
                       coordinates; the two GPU passes above only add the label and the
                       six local-belief probes.
@@ -34,11 +31,10 @@ COORDINATE TRAP, and it is silent: this script's ``sentence_frac`` is the WITHIN
 position (0 at a sentence's first token, 1 at its last), which in the commitment-boundary
 CSV is called ``frac_in_sentence``. That file's own ``sentence_frac`` is
 ``sentence_idx / n_sentences``, a different quantity. Reading the wrong one does not fail,
-it quietly destroys the loudness-vs-position control -- entry 46's result (c).
+it quietly destroys the loudness-vs-position control.
 
 ``n_switches`` is counted over the DENSE per-token action sequence, so it is a strictly
-larger number than entry 46's per-sentence count and the two are not comparable
-digit-for-digit.
+larger number than a per-sentence count and the two are not comparable digit-for-digit.
 
 THE COMMITMENT BOUNDARY IS NOW PER-TOKEN. Every earlier script took the boundary from
 ``convinced_sentence_idx``, which ran "first cutoff from which every later answer is
@@ -58,7 +54,7 @@ Both coordinate families are written, so a figure can be rebuilt either way:
 
 ``convinced_token_pos`` is a position in ``step["output_tokens"]``; ``NO_REASONING_POS``
 (-1) means the step was already committed at the no-reasoning cutoff -- the per-token twin
-of ``convinced_sentence_idx == 0`` and the cohort entries 41/42 drop. ``rel_token`` is
+of ``convinced_sentence_idx == 0``. ``rel_token`` is
 ``reasoning_pos - convinced_token_reasoning_pos``, signed, 0 AT the boundary token.
 """
 
@@ -83,18 +79,17 @@ csv.field_size_limit(10**9)
 # --mass-column; every downstream caption must name the lens it got.
 DEFAULT_MASS_COLUMN = "jlens_mass_L15"
 
-# id -> action, the fixed LEFT,UP,RIGHT,DOWN order eval_probe_per_token.py writes its
-# --full-probs columns in and plot_commitment_probs.py already uses.
+# id -> action, the fixed LEFT,UP,RIGHT,DOWN order of the --full-probs columns.
 ID2A = {0: "LEFT", 1: "UP", 2: "RIGHT", 3: "DOWN"}
 ACTIONS = ("LEFT", "UP", "RIGHT", "DOWN")
 
 
-# entry-46 probe key -> the key eval_probe_per_token.py's probe_key() gives that same .pt
+# probe key -> the key probe_key() gives that same .pt
 # ("<parent dir>.<stem>", with next_action_probe_ stripped).
 def parse_probes(spec: str) -> dict[str, str]:
     """``key=column_prefix`` pairs -> ``{key: column_prefix}``, in the order given.
 
-    The probes are an ARGUMENT, not a registry. This script used to carry ten entry-48
+    The probes are an ARGUMENT, not a registry. This script used to carry ten
     probe keys as a module constant and exit on any table missing their columns, which
     made it unusable for any other round; ``--extra-probes`` could only add to that list,
     never replace it.
@@ -167,7 +162,7 @@ def read_commitment(path: Path, mass_column: str = DEFAULT_MASS_COLUMN) -> dict[
 
     Only the columns this script needs are kept. ``token_idx`` there indexes
     ``step["output_tokens"]`` -- the same coordinate as the rollout's ``eos_token_pos``
-    and as entry 46's ``token_id`` -- which is what makes the join 1:1.
+    and as a prepared manifest's ``token_id`` -- which is what makes the join 1:1.
     """
     out: dict[str, dict[int, dict[int, dict]]] = defaultdict(lambda: defaultdict(dict))
     with open(path, encoding="utf-8", newline="") as fh:
@@ -235,8 +230,7 @@ NO_REASONING_POS = -1
 """``convinced_token_pos`` for a step already committed before it wrote a reasoning token.
 
 A real boundary is an index into ``step["output_tokens"]`` and is therefore >= 0, so the
-sentinel cannot collide with one. It is the per-token twin of ``convinced_sentence_idx == 0``
-and marks the same cohort entries 41/42 drop.
+sentinel cannot collide with one. It is the per-token twin of ``convinced_sentence_idx == 0``.
 """
 
 
@@ -311,7 +305,7 @@ def read_rollouts(root: Path) -> dict[str, dict[int, dict]]:
     """``{name: {step: {"gt", "n_switches", "evals": {token_id: eval}}}}`` from the every_token arm.
 
     ``n_switches`` counts changes down the ordered eval list, the no-reasoning cutoff
-    included, exactly as entry 46 counted them down the sentence list.
+    included.
     """
     out: dict[str, dict[int, dict]] = {}
     for path in sorted(root.glob("*.json")):
@@ -416,7 +410,7 @@ def main() -> int:
         "is invisible. 'on' requires the row source to carry convinced_sentence_idx and "
         "fails if it does not, rather than writing a silently empty column. Says it "
         "outright rather than inferring it from an absent column: inference from absence "
-        "is what the --thin-mode round already cost (CLAUDE.md).",
+        "is what the --thin-mode round already cost.",
     )
     ap.add_argument(
         "--lens",
@@ -549,7 +543,7 @@ def main() -> int:
                     ct_pos = None if args.commitment == "off" else rstep["convinced_token_pos"]
                     ct_rp = None if ct_pos is None else (-1 if ct_pos == NO_REASONING_POS else ct_pos - first_tok)
                     ct_frac = None if ct_rp is None else (ct_rp / (n_tok - 1) if n_tok > 1 else 0.0)
-                    # Which SENTENCE the per-token boundary falls in, so the entry-41 axis
+                    # Which SENTENCE the per-token boundary falls in, so the sentence axis
                     # (+-6 sentences) can be redrawn around the corrected boundary instead
                     # of around the sentence end that happened to follow it.
                     ct_si = None if ct_pos is None else ct_sentence(ct_pos, toks)

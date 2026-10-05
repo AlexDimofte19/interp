@@ -22,9 +22,8 @@ Two index spaces meet here and they are not the same, which is the standing trap
                     direction-mass tables are keyed by.
 
 The gap between them is `reasoning_offset(eos)` == `eos[0] + 1`, the `<|channel|>analysis
-<|message|>` header. It happens to be 3 on every trajectory checked so far, and
-`scripts/build_probe_rollout_join.py` hardcodes that 3 — do not copy it. Read the offset per
-trajectory; a chain whose header tokenizes differently would be silently shifted otherwise.
+<|message|>` header. It happens to be 3 on every trajectory checked so far, but do not
+hardcode it. Read the offset per trajectory; a chain whose header tokenizes differently would be silently shifted otherwise.
 
 Sentence 0 is that header and owns no reasoning tokens, so every reasoning token lands in a
 sentence with index >= 1. That is what makes `convinced_label` collapse to one expression across

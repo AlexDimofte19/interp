@@ -5,7 +5,7 @@ them — are worth keeping on disk and training a probe on. Every consumer takes
 by name, so adding one is an entry in `METHODS` rather than a new branch in four files:
 
   * `telos_interp/loudness_analysis/build_loudness_tables.py` decides what to *write*,
-  * `scripts/delete_non_jlens_selected.py` decides what to *keep*,
+  * `telos_interp/loudness_analysis/delete_non_jlens_selected.py` decides what to *keep*,
   * `prepare_activations_for_probing` decides what a probe *trains on*.
 
 Two axes matter, and they are properties of the method rather than flags a caller can set
@@ -24,10 +24,7 @@ independently:
 `scored`
     Whether tokens are ranked by direction count (and layers by
     `rank_layers_by_direction`) or drawn uniformly at random. A scored arm records its
-    counts; an unscored one records **none**, deliberately —
-    `scripts/split_next_action_manifest.py` decides whether to rank or sample a token's
-    layers by whether a count is present, so a control that recorded counts would silently
-    collapse onto its lowest-scoring layer.
+    counts; an unscored one records **none**, deliberately.
 
 Stdlib only, like the rest of this package.
 """
@@ -94,7 +91,7 @@ METHODS: dict[str, SelectionMethod] = {
 }
 
 # What a gather or prune run selects when nothing is asked for: the jlens arm plus its
-# control. A lens arm without a matched control means nothing (see this package's README).
+# control. A lens arm without a matched control means nothing.
 DEFAULT_METHODS = ("jlens", "random")
 
 

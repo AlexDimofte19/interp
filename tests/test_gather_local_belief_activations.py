@@ -5,8 +5,8 @@ module constant. Now it is ``--interior-kinds``, so the same script serves the
 per-sentence-loudest arm, the sentence-end arm and the random-in-sentence control. Two
 things are worth pinning:
 
-* the default must resolve to exactly the old ``{"loudest_in_sentence"}``, or the tree that
-  entry 45 published stops reproducing;
+* the default must resolve to exactly the old ``{"loudest_in_sentence"}``, or existing trees
+  stop reproducing;
 * ``--include-endpoints`` must UNION rather than replace, since the endpoint kinds are
   shared by every strategy while the interior kind is what distinguishes them.
 

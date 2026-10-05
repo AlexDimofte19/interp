@@ -1,150 +1,144 @@
-# A Behavioural and Representational Evaluation of Goal-Directedness in Language Model Agents
+# Model Internals Speak Volumes: J-Lens Loudness Predicts Decodability
 
-*Raghu Arghal, Fade Chen, Niall Dalton, Evgenii Kortukov, Calum McNamara, Angelos Nalmpantis, Moksh Nirvaan, Gabriele Sarti, Mario Giulianelli*
+We represent a signal by a small subset of the model's vocabulary and define **J-Lens loudness**
+as the log probability mass the Jacobian lens (J-Lens) assigns to that subset at a given
+activation. We compute loudness over the reasoning chains of GPT-OSS-20B and Qwen3.6-35B-A3B
+agents navigating 2D grid worlds. We use it to pick the loudest layer and the loudest token
+positions in each chain, then train linear and MLP probes there and test whether the signal is
+more decodable. The main signal is **direction**: next-action probes, labelled with the model's
+local belief. The control signal is **grid**: cell-content probes. Logit-Lens loudness and random
+positions are the baselines.
 
-> **Abstract:** Understanding whether and how language model agents pursue goals is essential for ensuring the safety of AI systems deployed to act autonomously in the world. In this work, we study goal-directedness in a language model agent, GPT-OSS-20B, as it navigates procedurally generated 2D grid environments. We operationalize goal-directedness behaviourally--through the optimality of an agent's actions and through its robustness to environment perturbations--and representationally--by probing the agent's internal activations for evidence of structured spatial knowledge. Our behavioural evaluation reveals that GPT-OSS-20B generally acts as a goal-directed agent, navigating towards the goal across a range of grid sizes with above-chance optimality. Representationally, linear and MLP probes trained on the agent's residual stream activations at intermediate layers uncover internal representations that partially encode the spatial layout of the environment, including the positions of walls, the goal, and the agent itself. Taken together, our results indicate that GPT-OSS-20B can act as a goal-directed agent through reliance on internal representations that partially but non-trivially encode the spatial features of its environment.
-
-Paper: [arxiv.org/abs/2602.08964](https://arxiv.org/abs/2602.08964)
-
-Data and trained probes: [huggingface.co/project-telos](https://huggingface.co/project-telos)
-
-## Citation
-
-```bibtex
-@article{arghal-etal-2026-behavioural,
-    title={A Behavioural and Representational Evaluation of Goal-Directedness in Language Model Agents},
-    author={Raghu Arghal and Fade Chen and Niall Dalton and Evgenii Kortukov and Calum McNamara and Angelos Nalmpantis and Moksh Nirvaan and Gabriele Sarti and Mario Giulianelli},
-    year={2026},
-    journal={arXiv preprint arXiv:2602.08964},
-    url={https://arxiv.org/abs/2602.08964}
-}
-```
-
-## Installation
+## Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/SPAR-Telos/interp
-cd interp
-
-# Install with uv (recommended)
-uv sync
-
-# Or install with pip
-pip install -e .
-
-# For loading models on a GPU host (accelerate, and the pinned kernels)
-pip install -e ".[gpu]"
+uv sync --extra gpu        # model loading needs the gpu extra
+uv sync --extra notebook   # for the notebooks
 ```
 
-## Data and Trained Probes
+Everything that loads a model needs a GPU. Run it on **one** GPU, because spreading these MoE
+models over several produces NaNs. Qwen3.6-35B-A3B needs an 80 GB card. Every path is written
+out at the top of each wrapper (trajectories under `/workspace/trajectories`, outputs under
+`/workspace/{activations,prepared,rollouts,probes,results}`). Edit those variables to match your
+machine.
 
-Pre-computed trajectories, activations, trained probes, and evaluation results are available on the [project-telos](https://huggingface.co/project-telos) HuggingFace organization.
-
-**Trained probes:**
-
-| Repository | Description |
-|------------|-------------|
-| [cognitive_map_probes](https://huggingface.co/project-telos/cognitive_map_probes) | Trained cell identity classification probes |
-| [distance_probes](https://huggingface.co/project-telos/distance_probes) | Trained A* distance regression probes |
-| [decoder_probes](https://huggingface.co/project-telos/decoder_probes) | Trained decoder probes |
-
-**Datasets:**
-
-| Repository | Description |
-|------------|-------------|
-| [trajectories_train_single_step](https://huggingface.co/datasets/project-telos/trajectories_train_single_step) | Training trajectories (single step) |
-| [trajectories_test_full](https://huggingface.co/datasets/project-telos/trajectories_test_full) | Test trajectories (full episodes) |
-| [trajectories_test_full_with_cognitive_map_probes](https://huggingface.co/datasets/project-telos/trajectories_test_full_with_cognitive_map_probes) | Test trajectories with probe predictions |
-| [trajectories_key_door_100](https://huggingface.co/datasets/project-telos/trajectories_key_door_100) | Key-door environment trajectories |
-| [trajectories_key_no_door_100](https://huggingface.co/datasets/project-telos/trajectories_key_no_door_100) | Key-no-door environment trajectories |
-| [probes_train_single_step](https://huggingface.co/datasets/project-telos/probes_train_single_step) | Prepared probe training data |
-| [activations_test_full](https://huggingface.co/datasets/project-telos/activations_test_full) | Extracted test activations |
-| [activations_key_door_env_100](https://huggingface.co/datasets/project-telos/activations_key_door_env_100) | Key-door environment activations |
-| [cognitive_map_probes_results](https://huggingface.co/datasets/project-telos/cognitive_map_probes_results) | Cell identity probe evaluation results |
-| [distance_probes_results](https://huggingface.co/datasets/project-telos/distance_probes_results) | Distance probe evaluation results |
-
-## Reproduction
-
-The analysis pipeline has four stages. Each stage uses a CLI command provided by the `interp-cli` tool. See [`telos_interp/commands/README.md`](telos_interp/commands/README.md) for full documentation of all commands and options.
-
-To use pre-computed data, download the relevant datasets from the HuggingFace organization above and point the CLI commands to the downloaded directories.
-
-### 1. Gather activations
-
-Extract model activations from trajectory JSON files:
+The signal vocabularies are committed in `data/jlens/`. To rebuild them, run
+`notebooks/direction_tokens.ipynb` and `notebooks/grid_tokens.ipynb` (or their `_qwen` versions),
+then prune the grid vocabulary:
 
 ```bash
-interp-cli gather_activations \
-    --trajectory-paths "data/trajectories/size5/*.json" \
-    --output-dir data/activations/size5 \
-    --layers all \
-    --steps 0 \
-    --output-indices -1
+uv run python scripts/prune_grid_vocabulary.py --write
+uv run python scripts/prune_grid_vocabulary.py --in data/jlens/qwen/grid_tokens_full_qwen3-6-35b-a3b.json --write
 ```
 
-### 2. Prepare activations for probing
+## Reproducing the experiments
 
-Format extracted activations into datasets suitable for probe training:
+There is one wrapper tree per model and signal:
+
+```
+wrappers/gptoss_analysis/direction/
+wrappers/gptoss_analysis/grid/
+wrappers/qwen_analysis/direction/
+wrappers/qwen_analysis/grid/
+```
+
+**All four trees contain the same files, running the same code.** Only the values at the top of
+each file (model, paths, layer) differ. Each step below names a file relative to a tree. To
+reproduce it for any model and signal, run the same command from the respective folder. Run the
+steps in order, and run all scripts with `bash` from anywhere: they `cd` to the repo root
+themselves.
+
+### 0. Fit the J-Lens (once per model)
 
 ```bash
-interp-cli prepare_activations_for_probing \
-    --activations-dir data/activations/size5 \
-    --trajectories-dir data/trajectories/size5 \
-    --probe-type grid_tile \
-    --output-indices -1 \
-    --balance-classes-per-trajectory
+bash wrappers/gptoss_analysis/fit_jlens.sh
+bash wrappers/qwen_analysis/fit_jlens.sh
 ```
 
-### 3. Train probes
-
-Train cell identity classifiers or distance regression probes:
+### 1. Find the loudest layer (Figure 2, Figure 5)
 
 ```bash
-# Cell identity probe
-interp-cli train_cognitive_map_probe \
-    --train-data-path data/activations/size5/cognitive_map_activations_*.pt \
-    --model-type mlp \
-    --hidden-dims "512,256" \
-    --num-epochs 100
-
-# Distance regression probe
-interp-cli train_distance_probe \
-    --train-data-path data/activations/size7/distance_activations_*.pt \
-    --model-type mlp \
-    --hidden-dims "512,256" \
-    --num-epochs 100
+bash 1_loudest_layer/sample_loudness_profile.sh
+bash 1_loudest_layer/join_loudness_profile.sh
 ```
 
-Example configuration files are provided in `configs/`.
+Then run the notebook in `1_loudest_layer/`. It plots mean J-Lens and Logit-Lens loudness per layer
+and reports the argmax. The layers used are GPT-OSS-20B direction 15 and grid 14, and
+Qwen3.6-35B-A3B 27 for both.
 
-### 4. Evaluate and apply probes
-
-Evaluate probes on held-out data and apply them to generate trajectory-level predictions:
+### 2. Select tokens and build the datasets
 
 ```bash
-# Evaluate cell identity probe
-interp-cli eval_cognitive_map_probe \
-    --trajectories-dir data/trajectories/size5_test \
-    --activations-dir data/activations/size5_test \
-    --probe-path path/to/cognitive_map_probe.pt \
-    --output-indices -1
+bash 2_dataset_creation/1_p2_selection/p2_training_selection.sh   # J-Lens, Logit-Lens and random top-N, train split
+bash 2_dataset_creation/1_p2_selection/p2_eval_selection.sh       # the same, eval split
+bash 2_dataset_creation/1_p2_selection/heldout_sample.sh          # every reasoning token of the held-out set
 
-# Apply probe to trajectories
-interp-cli apply_cognitive_map_probe \
-    --activations-dir data/activations/size5 \
-    --trajectories-dir data/trajectories/size5 \
-    --probe-path path/to/cognitive_map_probe.pt \
-    --output-dir data/trajectories_with_probes/size5 \
-    --layers 20 \
-    --steps all \
-    --output-indices -1
+bash 2_dataset_creation/2_preparations/prepare_jlens.sh
+bash 2_dataset_creation/2_preparations/prepare_logitlens.sh
+bash 2_dataset_creation/2_preparations/prepare_random.sh
 ```
 
-## Development
+Direction trees only: label every selected token with the model's local belief.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, and testing instructions.
+```bash
+bash 2_dataset_creation/3_rollouts/rollout_jlens.sh
+bash 2_dataset_creation/3_rollouts/rollout_logitlens.sh
+bash 2_dataset_creation/3_rollouts/rollout_random.sh
+```
 
-## License
+### 3. Train and cross-evaluate the probes (Table 1, Table 4)
 
-This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
+```bash
+bash 3_train_and_eval_probes/train_*_all_selections.sh        # one file per tree
+bash 3_train_and_eval_probes/cross_eval_*_all_selections.sh   # one file per tree
+```
+
+This trains a linear and an MLP probe on each selection, then evaluates every probe on every
+selection's eval subset. The direction trees give Table 1 and the grid trees give Table 4.
+
+### 4. Score the probes on every held-out token
+
+Grid trees first build and evaluate the held-out cell dataset:
+
+```bash
+bash 4_loudness_evaluation/prepare_heldout_grid.sh
+bash 4_loudness_evaluation/eval_heldout_grid.sh
+```
+
+Then, in every tree:
+
+```bash
+bash 4_loudness_evaluation/score_heldout_per_token.sh
+```
+
+### 5. Sentence-level selection (Table 2, GPT-OSS-20B direction only)
+
+One cut per sentence: the J-Lens- or Logit-Lens-loudest token, a random token, or the sentence-final
+punctuation (EOS). Run from `wrappers/gptoss_analysis/direction/5_sentence_level/`:
+
+```bash
+for arm in jlens logitlens random eos; do bash 1_rollouts/rollout_$arm.sh; done
+bash 2_activations/gather_eos.sh                     # first: the others borrow its final-sentence tensors
+for arm in jlens logitlens random; do bash 2_activations/gather_$arm.sh; done
+bash 2_activations/link_end_of_reasoning.sh
+for arm in jlens logitlens random eos; do bash 3_preparations/prepare_$arm.sh; done
+bash 3_preparations/intersect_arms.sh                # keep only the sentences all four arms hold
+bash 4_train_and_eval_probes/train_sentence_probes_all_selections.sh
+bash 4_train_and_eval_probes/cross_eval_sentence_probes_all_selections.sh
+```
+
+### 6. Figures
+
+Once steps 1-4 have run for all four trees:
+
+```bash
+bash wrappers/loudness_analysis/build_random_eval_tables.sh   # per-token tables on the eval subsets
+bash wrappers/loudness_analysis/join_opposite_signal.sh       # adds the other signal's loudness to the held-out tables
+```
+
+- `wrappers/loudness_analysis/probe_performance_by_loudness.ipynb` draws balanced accuracy per
+  loudness decile for both models, both signals and both lenses (Figures 3, 4, 8, 9, 10). It also
+  draws the signal-word-excluded variants and the opposite-signal controls. Set `EVAL` in its
+  first cell to `"random_eval"` or `"heldout"`.
+- `wrappers/lens_agreement/jlens_vs_logitlens_loudness.ipynb` draws the token-level agreement
+  between J-Lens and Logit-Lens loudness, and between direction and grid loudness (Figures 6, 7).

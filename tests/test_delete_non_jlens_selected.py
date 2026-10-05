@@ -1,4 +1,4 @@
-"""Tests for scripts/delete_non_jlens_selected.py.
+"""Tests for telos_interp/loudness_analysis/delete_non_jlens_selected.py.
 
 The load-bearing one is `test_pruning_equals_filtered_gathering`: a trajectory gathered in
 full and then pruned must be byte-identical to one gathered through the filter in the first
@@ -18,7 +18,7 @@ import pytest
 import torch
 from tests.conftest import _run, _select_args
 
-dnjs = importlib.import_module("scripts.delete_non_jlens_selected")
+dnjs = importlib.import_module("telos_interp.loudness_analysis.delete_non_jlens_selected")
 
 
 def _prune(out_dir, env, signal_json, *extra):

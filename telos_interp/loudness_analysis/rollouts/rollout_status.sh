@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live status of the truncation-strategy rollouts (ICLR log entry 43).
+# Live status of the truncation-strategy rollouts.
 #
 #   watch -n 1 bash telos_interp/loudness_analysis/rollouts/rollout_status.sh
 #

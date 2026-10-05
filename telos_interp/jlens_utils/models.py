@@ -70,8 +70,7 @@ class ModelSpec:
             1 for a zero-centred one (`x * (1 + w)`, Qwen3.5/3.6), whose checkpoint stores the
             deviation from 1. Declared here, never inferred from the weights: the stored
             values do not say which convention they follow, and every Qwen lens output
-            gathered before this field existed used `x * w` (see
-            wrappers/qwen_analysis/norm_fix/README.md).
+            gathered before this field existed used `x * w`.
     """
 
     model_id: str

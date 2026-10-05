@@ -1,30 +1,48 @@
 #!/usr/bin/env bash
-# gpt-oss P2, step 3b: the selecting gather on the EVAL set. REUSED, NOT GATHERED.
-#
-# The same check as p2_training_selection.sh beside this file, over the other half of the
-# mass-era partition: the 720 of mass_eval720_view, byte-for-byte the pinned
-# next_action_mass_l15_eval_names.txt every gpt-oss probe on disk was scored against. Read
-# that script's header for where each arm lives and how it differs from Qwen P2.
-#
-# Unlike Qwen's mass_eval_144 (52 of 144 gathered), this eval set is complete, but it is a
-# plain random draw, not stratified: its (size x complexity) cells run 14-29.
 set -euo pipefail
-
-REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)   # so uv finds pyproject.toml
-HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-
-JLENS_TREE=/workspace/activations/jlens_mass_l15         # arms jlens, random
-LOGITLENS_TREE=/workspace/activations/logitlens_mass_l15 # arm logitlens
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)
+MODEL=openai/gpt-oss-20b
 TRAJ=/workspace/activations/mass_eval720_view/trajectories
-SIGNAL=direction_tokens_full.json
-
+JLENS_DIR=/workspace/jlens/gridenv
+SIGNAL_JSON=$REPO/data/jlens/direction_tokens_full.json
+SIGNAL_NAME=direction
+OUT=/workspace/activations/gptoss_direction_mass_l15_eval
 LAYER=15
-SAMPLE_PERCENT=1.0     # the whole chain; no --data_sample_p was passed
+LAYERS=7:23
+SAMPLE_PERCENT=1.0
+SAMPLE_SEED=42
+METHODS=jlens,logitlens,random
+SCORE=logprob_mass_full
+NUM_TOKENS=20
+RANDOM_TOKENS=20
+NUM_LAYERS=1
+ALWAYS_LAYERS=""
+SELECT_SEED=42
+BATCH_SIZE=256
+FORWARD_BATCH_SIZE=4
+export CUDA_VISIBLE_DEVICES=0
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd "$REPO"
-uv run python "$HERE/check_reused_tree.py" --tree "$JLENS_TREE" --trajectories "$TRAJ" \
-    --lens jlens --layers "$LAYER" --signal "$SIGNAL" \
-    --arms jlens,random --candidate-layer "$LAYER" --pt-layer "$LAYER"
-uv run python "$HERE/check_reused_tree.py" --tree "$LOGITLENS_TREE" --trajectories "$TRAJ" \
-    --lens logitlens --layers "$LAYER" --signal "$SIGNAL" \
-    --arms logitlens --candidate-layer "$LAYER" --pt-layer "$LAYER"
+uv run --extra gpu python telos_interp/loudness_analysis/build_loudness_tables.py \
+    --trajectory-paths "$TRAJ" \
+    --activations-dir "$OUT" \
+    --model-id "$MODEL" \
+    --jlens_dir "$JLENS_DIR" \
+    --signal-json "$SIGNAL_JSON" \
+    --signal-name "$SIGNAL_NAME" \
+    --direction-score "$SCORE" \
+    --select-methods "$METHODS" \
+    --select-num-tokens "$NUM_TOKENS" \
+    --select-random-tokens "$RANDOM_TOKENS" \
+    --select-num-layers "$NUM_LAYERS" \
+    --select-always-layers "$ALWAYS_LAYERS" \
+    --select-candidate-layers "$LAYER" \
+    --select-seed "$SELECT_SEED" \
+    --data_sample_p "$SAMPLE_PERCENT" \
+    --data-sample-seed "$SAMPLE_SEED" \
+    --lens both \
+    --layers "$LAYERS" \
+    --batch-size "$BATCH_SIZE" \
+    --forward-batch-size "$FORWARD_BATCH_SIZE" \
+    --device cuda

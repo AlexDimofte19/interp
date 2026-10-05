@@ -10,13 +10,13 @@ belief measured by the ``every_token`` rollout) and ``label_final`` (the traject
 TWO POPULATIONS, AND THEY ARE NOT COMPARABLE. The balanced accuracy inside a probe's own
 checkpoint is measured on the tokens ITS OWN selection picked, so a loud-selected probe is
 scored only on loud tokens and the arms do not share a population. What this script computes
-is every probe read on the SAME 87,221 tokens with no selection in between. Entry 49's result
-is that the two orderings INVERT, so a number is meaningless without naming which one it is.
+is every probe read on the SAME 87,221 tokens with no selection in between. The two orderings
+can INVERT, so a number is meaningless without naming which one it is.
 
 Balanced accuracy is the mean per-class recall over classes with support, matching
 ``train_next_action_probe::_evaluate`` so the two columns are the same statistic.
 
-A probe appears once per rowset it was scored in; since entry 48 the three rowsets hold
+A probe appears once per rowset it was scored in; the three rowsets hold
 identical rows, so the per-rowset numbers agree and the default collapses them. ``--by-rowset``
 keeps them apart for a CSV that predates that.
 """

@@ -1,9 +1,8 @@
 """What a probe reads, and what a row of its evaluation means -- the registry that lets one
 evaluator serve `next_action` and `grid_tile`.
 
-`eval_probe_per_token.py` and `eval_grid_probe_per_token.py` were the same script twice: five
-byte-identical helpers, one CLI, and four real differences. Those four differences are the
-interface below, and everything else is shared.
+The two probe types differ in four ways. Those four differences are the interface below, and
+everything else is shared.
 
   1. FEATURES. next_action reads the raw `(D,)` activation. grid_tile appends the cell's
      coordinates, `(D + 2,)`, because one activation is asked about every cell of the grid.

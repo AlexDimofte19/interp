@@ -959,18 +959,16 @@ def _prepare_train_eval_v3(
     # Both `subset` and the internal split permute ENTRIES. One entry is one trajectory in
     # a classic manifest, so both are trajectory-level there. In a token-major manifest a
     # trajectory owns ~20 entries that share its grid, and a permutation over entries puts
-    # near-duplicates of every eval row into training -- the landmine CLAUDE.md records,
-    # firing for real. Refuse rather than silently inflate: pre-split the manifest with
-    # scripts/split_next_action_manifest.py and pass the halves explicitly.
+    # near-duplicates of every eval row into training. Refuse rather than silently inflate: prepare train and eval from
+    # disjoint trajectory sets and pass the halves explicitly.
     token_major = len(set(compact["trajectory_names"])) < num_trajectories
     if token_major:
         if eval_data_path is None:
             raise ValueError(
                 f"{num_trajectories} entries cover only {len(set(compact['trajectory_names']))} "
                 "trajectories, so this manifest is token-major and an internal --eval-split "
-                "would put the same trajectory in both halves. Split it by trajectory first "
-                "(scripts/split_next_action_manifest.py ... --train-out X_train --eval-out "
-                "X_eval) and pass --eval-data-path."
+                "would put the same trajectory in both halves. Prepare train and eval from disjoint "
+                "trajectory sets and pass --eval-data-path."
             )
         if subset < 1.0:
             raise ValueError(

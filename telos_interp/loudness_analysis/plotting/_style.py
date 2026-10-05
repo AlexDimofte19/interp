@@ -110,7 +110,7 @@ METRICS = (
     ("switch", "changes the answer the\nPREVIOUS token's cutoff gave", None),
 )
 
-# Per-trajectory loudness rank -> bucket, mirroring the shape entry 37(c) reports.
+# Per-trajectory loudness rank -> bucket.
 RANK_EDGES = [(1, 1, "top-1"), (2, 5, "2-5"), (6, 20, "6-20"), (21, 99, "21-99"), (100, 10**9, "100+")]
 
 

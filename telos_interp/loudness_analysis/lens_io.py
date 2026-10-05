@@ -1,9 +1,8 @@
 """Reading a gathered lens tree: trajectories, analysis CSVs, mass tables, activation folders.
 
 These five helpers -- `trajectory_dirs`, `read_mass_columns`, `load_trajectory`,
-`read_lens_tables`, `find_act_folder` -- were byte-identical in `eval_probe_per_token.py` and
-`eval_grid_probe_per_token.py`. They are lifted here verbatim so both evaluators, and the
-join, read a tree the same way.
+`read_lens_tables`, `find_act_folder` -- live here so the evaluator and the join read a tree
+the same way.
 
 THE MASS TABLE IS NOT SELF-DESCRIBING. Its cells are `log P(any signal word)` over *some*
 vocabulary, and this repo deliberately points several vocabularies at the same trees. The

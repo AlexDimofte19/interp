@@ -161,7 +161,7 @@ def env(tmp_path, monkeypatch):
         "from_pretrained",
         classmethod(lambda cls, *a, **k: _StubModel()),
     )
-    sampled = importlib.import_module("scripts.jlens_action_ranks")
+    sampled = importlib.import_module("telos_interp.loudness_analysis.jlens_action_ranks")
     # Both take a ModelSpec now; the stubs ignore it, but they must accept it or every
     # test fails with a TypeError that says nothing about what is being tested.
     monkeypatch.setattr(sampled, "action_token_ids", lambda _spec=None: (ACTION_IDS, _StubTokenizer()))

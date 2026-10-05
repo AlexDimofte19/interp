@@ -7,7 +7,7 @@ agent_action):
   * acc and BALANCED acc vs final action   (where the trajectory ended)
   * on the rows where local != final: does the probe follow local or final?
   * the same three, split by whether the CUT TOKEN ITSELF is a signal word --
-    the verbalization confound of ICLR log 42(e)/43: if the model already typed
+    the verbalization confound: if the model already typed
     " up", both the probe activation and the rollout answer read that, trivially.
 
 The signal is a parameter, not the direction vocabulary. `--signal-json` takes any

@@ -1075,7 +1075,7 @@ def _prune_fixture(activations_dir, trajectories_dir, direction_path, **override
     """Run the real pruner over a jlens fixture, leaving a selection record behind."""
     import importlib
 
-    dnjs = importlib.import_module("scripts.delete_non_jlens_selected")
+    dnjs = importlib.import_module("telos_interp.loudness_analysis.delete_non_jlens_selected")
     opts = {
         "--select-num-tokens": "3",
         "--select-num-layers": "2",
@@ -1145,7 +1145,7 @@ class TestRecordedSelection:
         assert identity(recorded) == identity(reference)
 
     def test_recorded_random_is_countless(self, tmp_path):
-        """No counts means split_next_action_manifest samples the control instead of ranking it."""
+        """No counts means the control is sampled instead of ranked."""
         acts, trajs, directions = _make_jlens_fixture(tmp_path)
         _prune_fixture(acts, trajs, directions)
         manifest = _prepare_next_action(acts, trajs, tmp_path / "out", token_selection="recorded_random")

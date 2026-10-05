@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Per-token Jacobian-lens *loudness* placed inside its reasoning sentence.
 
-LOUDNESS here is the full-vocabulary direction mass, not the top-20 count entries 39/40
-used: the direction-mass table beside each analysis CSV holds ``log P(any direction word)``
+LOUDNESS here is the full-vocabulary direction mass, not the top-20 count: the direction-mass table beside each analysis CSV holds ``log P(any direction word)``
 at every (reasoning token, layer), computed on-device over the whole 446-token
 ``direction_tokens_full.json`` vocabulary. Layer 15's cell exponentiated is exactly
 ``sum(exp(logprob(t)) for t in direction_tokens)``.

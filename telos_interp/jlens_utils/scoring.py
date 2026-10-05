@@ -58,7 +58,7 @@ which is the opposite of what the count did. Prefer `logprob_mass` unless you sp
 want the product.
 
 Every score is "higher is better", including the negative ones, so every ranker downstream
-(`rank_tokens`, `rank_layers_by_direction`, `split_next_action_manifest.py`) sorts by
+(`rank_tokens`, `rank_layers_by_direction`) sorts by
 `-score` in all modes without knowing which is in use.
 
 Stdlib only, like the rest of this package.

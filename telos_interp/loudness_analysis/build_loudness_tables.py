@@ -67,7 +67,7 @@ The control arm is not optional bookkeeping: once the tree holds only the
 top-scoring tokens, a uniform draw over the reasoning chain can never be made
 again, so it has to be reserved before the rest is dropped.
 
-`scripts/delete_non_jlens_selected.py` applies the same filter to trajectories
+`telos_interp/loudness_analysis/delete_non_jlens_selected.py` applies the same filter to trajectories
 that were already gathered in full, and lands on the same files.
 
 Throughput
@@ -133,8 +133,8 @@ from telos_interp.jlens_utils import (
     write_selection_record,
 )
 
-# `scripts.jlens_action_ranks` is imported lazily in main() and lives outside this
-# package, so the repo root has to be on sys.path however this file is entered.
+# The repo root has to be on sys.path however this file is entered, so the lazy
+# `telos_interp` imports in main() resolve when it is run as a script.
 # parents[2] is that root: this file sits at telos_interp/loudness_analysis/.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -183,8 +183,7 @@ def sample_reasoning_positions(
     WHY A DRAW AND NOT A STRIDE. Reasoning chains are periodic -- sentences, and the
     direction words that cluster at their ends -- so an evenly spaced sample can alias
     against that structure and bias a per-layer mean. A uniform draw cannot; the layer
-    profile `scripts/jlens_layer_profile.py` computes stays unbiased, it just gets wider
-    error bars.
+    profile stays unbiased, it just gets wider error bars.
 
     `reasoning_pos` IS NOT RENUMBERED. The survivors keep their index in the FULL chain,
     so `abs_pos`, `token_idx` and every join downstream read exactly the coordinates a
@@ -544,8 +543,7 @@ def resolve_trajectory_paths(
         print(f"{before - len(paths)} non-trajectory JSON(s) skipped", flush=True)
     if args.names_file:
         # Pin the trajectory set by NAME. --per-combo/--seed do not reproduce an earlier
-        # draw (ICLR entry 36's correction: two runs with the same flags overlapped by
-        # 348 of 3600), so a tree that must cover the same trajectories as another one
+        # draw (two runs with the same flags overlapped by 348 of 3600), so a tree that must cover the same trajectories as another one
         # has to be given their names. Same semantics as run_inference.py --names-file.
         keep = set(Path(args.names_file).read_text().split())
         before = len(paths)
@@ -1427,7 +1425,6 @@ def save_selected_activations(
 
 def main() -> None:
     import torch
-    from scripts.jlens_action_ranks import action_token_ids, ensure_unembed_assets
     from transformers import AutoModelForCausalLM
 
     from telos_interp.commands.gather_activations.gather_activations_fn import _resolve_torch_dtype
@@ -1437,6 +1434,7 @@ def main() -> None:
         parse_index_specification,
         sanitize_model_id,
     )
+    from telos_interp.loudness_analysis.jlens_action_ranks import action_token_ids, ensure_unembed_assets
     from telos_interp.loudness_analysis.rollouts.run_inference import expand_paths, is_trajectory
 
     ap = argparse.ArgumentParser()

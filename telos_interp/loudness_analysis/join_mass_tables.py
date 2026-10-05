@@ -7,7 +7,7 @@ at that (token, layer). Hundreds of those tables are hundreds of files and nothi
 them. This writes the obvious thing -- all their rows, one file, with a `trajectory` column
 saying where each came from -- and does nothing else. No scoring, no aggregation, no
 selection. The mean per layer, the argmax, the plots: all of that belongs downstream, to a
-notebook or to `scripts/jlens_layer_profile.py`.
+notebook.
 
     python -m telos_interp.loudness_analysis.join_mass_tables \\
         /workspace/activations/qwen/qwen_loudness_profile_p20 --lens jlens --out jlens_tokens.csv

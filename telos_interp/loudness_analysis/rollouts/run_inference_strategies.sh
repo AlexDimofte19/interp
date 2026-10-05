@@ -9,12 +9,10 @@
 #                              disk was measured on, re-run here so the baseline is
 #                              written by this code version over these trajectories.
 #   jlens_argmax_per_sentence  one cutoff per sentence, at its LOUDEST token -- loudness
-#                              being the layer-15 full-vocabulary direction mass of ICLR
-#                              log entry 42, sum(exp(logprob(t))) over
-#                              direction_tokens_full.json. Entry 42(a) says a sentence
-#                              end is systematically its quietest point; entry 41(c)
-#                              says the commitment is already there a median ~7 tokens
-#                              earlier. This arm asks the model at the loud point instead.
+#                              being the layer-15 full-vocabulary direction mass,
+#                              sum(exp(logprob(t))) over direction_tokens_full.json.
+#                              A sentence end is systematically its quietest point.
+#                              This arm asks the model at the loud point instead.
 #   jlens_top_k_global         the TOP_K loudest tokens of the whole chain, wherever they
 #                              fall, so the sampling grid follows the lens rather than the
 #                              punctuation.
@@ -43,7 +41,7 @@
 #   bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh              # all three, in order
 #   bash telos_interp/loudness_analysis/rollouts/run_inference_strategies.sh jlens_top_k_global
 #
-#   # the dense held-out grid (ICLR log entry 48):
+#   # the dense held-out grid:
 #   NAMES_FILE=/workspace/trajectories/heldout360_names.txt \
 #   TRAJECTORIES=/workspace/trajectories/heldout360 \
 #   LENS_ROOT=/workspace/activations/heldout360_lens \

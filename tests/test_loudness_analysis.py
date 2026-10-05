@@ -27,7 +27,7 @@ from telos_interp.loudness_analysis.analysis import probe_accuracy_by_loudness a
     "present,expected",
     [
         (["jlens_direction_logmass_L15"], "jlens_direction_logmass_L15"),
-        (["jlens_mass_L15"], "jlens_mass_L15"),  # eval_probe_per_token
+        (["jlens_mass_L15"], "jlens_mass_L15"),
         (["jlens_logmass_L15"], "jlens_logmass_L15"),  # build_token_loudness_x
         (["dir_logmass_L15"], "dir_logmass_L15"),  # build_sentence_loudness
         (["dir_logmass"], "dir_logmass"),  # build_probe_loudness*

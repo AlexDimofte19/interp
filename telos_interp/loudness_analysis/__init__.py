@@ -1,4 +1,4 @@
-"""The lens -> probe -> loudness pipeline. See README.md.
+"""The lens -> probe -> loudness pipeline.
 
 Only the LIBRARY layer is re-exported here -- the registries, the column convention, the
 statistics, the tree readers and the provenance record. The pipeline scripts are not, because

@@ -1,15 +1,14 @@
 """Tests for the PER-TOKEN commitment boundary in telos_interp/loudness_analysis/join_rollouts.py.
 
-Every figure that reads "the model becomes convinced here" is downstream of one rule, and
-until entry 50 that rule only ever ran over sentence ENDS. The rule itself is unchanged --
+Every figure that reads "the model becomes convinced here" is downstream of one rule, which
+used to run over sentence ENDS only. The rule itself is unchanged --
 first cutoff from which every later truncated answer is correct -- but the grid it runs on
 is now every reasoning token, and the difference is not cosmetic:
 
 * a commitment that lands mid-sentence used to be rounded UP to the next sentence end;
 * a relapse between two sentence ends was invisible, so the boundary came out TOO EARLY.
 
-Both directions are pinned below, because neither shows up as a crash and both move the
-cohort that entries 41/42 drop.
+Both directions are pinned below, because neither shows up as a crash.
 """
 
 import importlib

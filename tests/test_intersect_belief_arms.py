@@ -1,4 +1,4 @@
-"""Tests for scripts/intersect_belief_arms.py.
+"""Tests for telos_interp/loudness_analysis/rollouts/intersect_belief_arms.py.
 
 The per-sentence arms vary one thing -- which token inside a sentence the chain is cut at --
 so a difference in *which sentences* they cover is a confound, not a result. This script
@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-intersect = importlib.import_module("scripts.intersect_belief_arms")
+intersect = importlib.import_module("telos_interp.loudness_analysis.rollouts.intersect_belief_arms")
 
 
 def row(name, step, cut_sentence_idx, token_id, label=0):

@@ -14,7 +14,7 @@ runs (see ``truncation_strategies.py``):
   ``jlens_argmax_per_sentence``  one cutoff per sentence, at its LOUDEST token.
   ``jlens_top_k_global``         the K loudest tokens of the whole reasoning chain.
 
-Loudness is the layer-15 full-vocabulary direction mass of ICLR log entry 42, read from
+Loudness is the layer-15 full-vocabulary direction mass, read from
 the direction-mass tables beside the analysis CSVs; the two jlens strategies therefore
 only cover trajectories that have one (``--lens-root``, ``--names-file``).
 
@@ -184,8 +184,7 @@ def build_step_prompts(
     step identity needed to assemble the record later, so generation can be decoupled from
     step boundaries (see ``generate_actions``). ``meta["eos_positions"]`` is kept as the
     plain list of cut positions under its historical name, since downstream joins
-    (``telos_interp/loudness_analysis/build_sentence_loudness.py``, ``scripts/build_probe_rollout_join.py``) key
-    on ``eos_token_pos``.
+    (``telos_interp/loudness_analysis/build_sentence_loudness.py``) key on ``eos_token_pos``.
 
     Propagates ``LoudnessUnavailable`` so the caller can skip the whole trajectory.
     """
@@ -780,7 +779,7 @@ def main() -> None:
         "--loudness-layer",
         type=int,
         default=DEFAULT_LAYER,
-        help="Mass-table layer whose direction mass defines loudness. Everything since log entry 36 is layer 15.",
+        help="Mass-table layer whose direction mass defines loudness. Default 15.",
     )
     parser.add_argument(
         "--top-k",

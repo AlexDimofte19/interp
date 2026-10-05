@@ -6,8 +6,7 @@ never-convinced chain, an already-convinced-at-0 chain and an ordinary boundary 
 branching. If sentence 0 ever owned a reasoning token, the `immediate` cohort would silently
 start producing 0s.
 
-The rest pin the index-space arithmetic that `scripts/build_probe_rollout_join.py` gets wrong by
-hardcoding 3: the gap between a mass table's `reasoning_pos` and a rollout's `eos_token_pos` is
+The rest pin the index-space arithmetic, which must not hardcode 3: the gap between a mass table's `reasoning_pos` and a rollout's `eos_token_pos` is
 `eos[0] + 1`, read per trajectory.
 """
 

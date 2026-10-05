@@ -2,10 +2,7 @@
 """Numbers behind the probe-loudness figures: does a LOUDER token decode better, and is it
 loudness doing the work or the token's position in its sentence?
 
-The probe-side twin of ``analyze_sentence_loudness.py``, and the local-belief re-run of
-ICLR log entry 37's finding 1 ("the mass score predicts decodability, monotonically") --
-which was measured with a FINAL-action label, on all 87k held-out tokens rather than on the
-tokens a probe was actually trained for.
+Read with the local-belief label.
 
 ACCURACY is BALANCED accuracy over the four actions, as everywhere else in this file: the
 mean of the four per-class recalls, over the classes present in the bin. A plain accuracy
@@ -37,7 +34,7 @@ PROBES = {
     # what differs: jlens- and logitlens-ranked tokens against a matched random draw.
     "qwen_p2": ["jlens_lr", "jlens_mlp", "logitlens_lr", "logitlens_mlp", "random_lr", "random_mlp"],
 }
-# which label a probe was TRAINED against -- base_/rand_ are the entry-38 final-action probes.
+# which label a probe was TRAINED against -- base_/rand_ are final-action probes.
 # The Qwen arms are all local-belief probes, `random_*` included: there `random` names the
 # token SELECTION, not the label, so it does not belong here.
 FINAL_LABEL_PROBES = {"base_lr", "base_mlp", "rand_lr", "rand_mlp"}
@@ -112,7 +109,7 @@ def by_bin(df: pd.DataFrame, bincol: str, probes: list[str], n_boot: int, rng) -
 
 def follows(df: pd.DataFrame, probes: list[str]) -> dict:
     """On the rows where the local belief and the final action DISAGREE, which does the
-    probe land on? Entry 45(a), now as a function of whatever the caller grouped by."""
+    probe land on? As a function of whatever the caller grouped by."""
     d = df[df["label_local"] != df["label_final"]]
     out = {"n": int(len(d)), "n_traj": int(d["name"].nunique()) if len(d) else 0}
     for p in probes:
@@ -293,12 +290,12 @@ def main() -> int:
         "--all-token-loudness",
         type=Path,
         default=Path("/workspace/reasoning_theatre/loudness/per_token.csv"),
-        help="entry 42's table over EVERY reasoning token, the reference the selected "
+        help="the loudness table over EVERY reasoning token, the reference the selected "
         "tokens are compared against. Skipped if absent.",
     )
     ap.add_argument("--out", type=Path, default=Path("/workspace/reasoning_theatre/probe_loudness"))
-    # Extend by flag, never by editing the registry (entry 47): with no flag the output of a
-    # re-run against entry 48's per_token.csv is byte-identical.
+    # Extend by flag, never by editing the registry: with no flag the output of a
+    # re-run against an existing per_token.csv is byte-identical.
     ap.add_argument(
         "--extra-probes",
         default="",
@@ -392,11 +389,7 @@ def main() -> int:
     if ptype.aggregation == "binary_counts":
         # Neither mode below reads a one-vs-rest table: counts mode would pool per-class
         # columns this table does not have, and rows mode has no single prediction per row.
-        raise SystemExit(
-            f"--probe-type {args.probe_type} is analysed in "
-            "wrappers/qwen_analysis/grid/4_loudness_evaluation/probe_accuracy_by_loudness_decile.ipynb "
-            "(stats.bal_acc_binary_from_counts), not here."
-        )
+        raise SystemExit(f"--probe-type {args.probe_type} is not analysed here; use stats.bal_acc_binary_from_counts.")
     CLASSES[:] = ptype.analysis_classes
     df, mass_col, n_before, n_after = _prepare(df, args)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -617,7 +610,7 @@ def main() -> int:
             "mean_logmass": float(allrows["all_token_loudness"].mean()),
             "quantiles": {str(x): float(allrows["all_token_loudness"].quantile(x)) for x in q},
             "share_signal_word": float(allrows["is_signal_word"].mean()),
-            "note": "entry 42's training-split table over EVERY reasoning token",
+            "note": "the training-split table over EVERY reasoning token",
         }
         cuts = allrows["all_token_loudness"].to_numpy()
         for rs in summary["rowsets"]:

@@ -163,7 +163,7 @@ def _reference_run(env, out_name, norm_offset=0.0):
         save_activations_to_files,
     )
 
-    sampled = importlib.import_module("scripts.jlens_action_ranks")
+    sampled = importlib.import_module("telos_interp.loudness_analysis.jlens_action_ranks")
     assets = sampled.ensure_unembed_assets(env["jlens_dir"])
     ids, tok = sampled.action_token_ids()
     id_cols = [ids[a] for a in jrt.ACTIONS]
@@ -502,7 +502,7 @@ def test_selection_record_is_written_and_reloadable(env, signal_json):
 
 
 def test_control_arm_carries_no_counts(env, signal_json):
-    """What lets split_next_action_manifest tell a control apart from a ranked selection."""
+    """What tells a control apart from a ranked selection."""
     from telos_interp.jlens_utils import read_selection_record, record_path
 
     picked = _run(env, "picked", *_select_args(signal_json, **{"random-tokens": 2}))
@@ -748,7 +748,7 @@ def test_overwrite_record_permits_it_explicitly(env, signal_json):
 
 
 def test_the_extend_wrapper_invocation_works(env, signal_json):
-    """Exactly what wrappers/jlens_extend_logitlens.sh runs, on an already-selected tree.
+    """An --extend run on an already-selected tree.
 
     --lens logitlens (the jlens CSV is not recomputed), --select-methods logitlens (only the
     new arm), --select-random-tokens 0 (the control is inherited from the record, never
@@ -787,8 +787,7 @@ def test_names_file_keeps_only_the_listed_trajectories(env, tmp_path):
     """The listed stem is processed; an unlisted one leaves the run with nothing to do.
 
     This is the only way to make a second gather cover the same trajectories as an
-    existing one -- ICLR entry 36's correction records that --per-combo/--seed does NOT
-    reproduce a previous draw (two runs with identical flags overlapped by 348 of 3600).
+    existing one -- --per-combo/--seed does NOT reproduce a previous draw (two runs with identical flags overlapped by 348 of 3600).
     """
     names = tmp_path / "names.txt"
 
@@ -813,8 +812,7 @@ def test_names_file_is_applied_before_the_size_filter(env, tmp_path):
 def test_an_empty_selection_is_an_error_not_an_empty_success(env, tmp_path):
     """Filtering everything away must raise rather than exit 0 with no CSV written.
 
-    The repo has been bitten by a script that "succeeded" while writing nothing
-    (analyze_probe_rollout.py, entry 47); a mistyped --names-file is the same trap.
+    A mistyped --names-file would otherwise "succeed" while writing nothing.
     """
     names = tmp_path / "names.txt"
     names.write_text("nothing_matches_this\n")

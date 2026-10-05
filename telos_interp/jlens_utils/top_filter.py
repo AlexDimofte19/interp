@@ -6,7 +6,7 @@ handful of tokens whose lens output is most direction-loaded. `top_filter` reads
 trajectory's analysis CSVs and returns exactly that handful, so both
 
   * `telos_interp/loudness_analysis/build_loudness_tables.py`, which uses it to decide what to *write*, and
-  * `scripts/delete_non_jlens_selected.py`, which uses it to decide what to *keep*
+  * `telos_interp/loudness_analysis/delete_non_jlens_selected.py`, which uses it to decide what to *keep*
 
 agree by construction: pruning an existing tree lands on the same files a filtered gather
 would have produced.
@@ -40,7 +40,7 @@ from .jlens_csv import (
 from .methods import DEFAULT_METHODS, get_method, score_artifact_path, scored_methods
 from .scoring import DEFAULT_SCORE, get_score
 
-# Layer 15 is the project's standing comparison point (see general_probe_train.sh), so it is
+# Layer 15 is the project's standing comparison point, so it is
 # kept for every selected token regardless of how it scores. Without that, a layer-15
 # baseline would need its own gather run.
 DEFAULT_ALWAYS_LAYERS = (15,)
@@ -98,10 +98,7 @@ class TokenPick:
     `pos` is an absolute forward-pass position in CSV coordinates and an output-relative
     index (the `.pt` filename) after `to_disk_coords`.
 
-    The scoring fields are `None` for an unscored arm. That absence is load-bearing
-    downstream: `scripts/split_next_action_manifest.py` decides whether to *rank* a token's
-    layers or *sample* them by whether a count is present, so a control that recorded counts
-    would silently collapse onto its lowest-scoring layer.
+    The scoring fields are `None` for an unscored arm.
 
     `direction_count` and `layer_direction_counts` hold the score under whichever
     `scoring.SCORES` mode the arm was built with — a count, or a (negative) logprob. The

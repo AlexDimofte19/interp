@@ -3,7 +3,7 @@
 Two things are load-bearing and neither is visible from the output of a run:
 
 * ``EosStrategy`` must keep cutting exactly where the old code cut, since every rollout on
-  disk (and entry 42's whole loudness join) is indexed by those positions. The test pins its
+  disk (and the whole loudness join) is indexed by those positions. The test pins its
   positions against ``reasoning_eos_positions`` itself.
 * the loud strategies must read the mass table in *reasoning_pos* coordinates and hand back
   *output_tokens* coordinates. An off-by-one there does not crash, it silently truncates one
@@ -324,8 +324,8 @@ def test_a_v1_record_holds_one_unnamed_arm(lens_root):
 def test_a_pick_outside_the_reasoning_region_is_refused(lens_root):
     """token_idx is an output_tokens index; abs_pos is prompt-inclusive.
 
-    Handing the record's abs_pos here would join to nothing, and CLAUDE.md's coordinate
-    trap is that such a mistake is silent. It must not be.
+    Handing the record's abs_pos here would join to nothing, and such a mistake would be
+    silent. It must not be.
     """
     _write_record(lens_root, {"random": {"picks": [{"step": 0, "token_idx": 705}]}})
     with pytest.raises(ts.SelectionUnavailable, match="is not an analysis token"):

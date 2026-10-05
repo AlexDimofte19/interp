@@ -6,7 +6,7 @@ token scores: `count`, `logprob_mass` and `logprob_sum` are entries in `scoring.
 
 Stdlib only — no torch — so the two standalone scripts that decide what lands on disk can
 import it without pulling in the model stack, and so the selection is unit-testable on a
-laptop. See README.md for how the pieces fit together.
+laptop.
 """
 
 from .commitment import (

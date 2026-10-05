@@ -2,7 +2,7 @@
 """Prune the grid signal vocabulary down to tokens that actually carry grid information.
 
 `data/jlens/grid_tokens_full.json` was produced by `notebooks/grid_tokens.ipynb` before the
-model-token-only rule (see `data/jlens/README.md`), and it shows: of its 1258 tokens, 830
+model-token-only rule, and it shows: of its 1258 tokens, 830
 never reach a jlens top-20 at all, and a large share of the mass that *is* captured comes
 from words with no grid sense -- ' cannot', ' index', ' case', ' field', ' line', bare 'a'
 and bare 'g'.

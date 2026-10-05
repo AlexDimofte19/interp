@@ -1,9 +1,8 @@
 """The merged evaluator must reproduce, value for value, the two scripts it replaces.
 
-`score_probes_per_token.py --probe-type next_action` replaces `scripts/eval_probe_per_token.py`
-and `--probe-type grid_tile` replaces `grid_cell_analysis/eval_grid_probe_per_token.py`. The
-golden CSVs under `tests/data/score_probes_per_token/` were written BY those two scripts on
-this exact fixture, before they were deleted -- so the comparison is against what the
+The golden CSVs under `tests/data/score_probes_per_token/` were written by the two evaluators
+`score_probes_per_token.py` replaced (`--probe-type next_action` and `--probe-type grid_tile`), on
+this exact fixture -- so the comparison is against what the
 originals actually produced, not against a remembered schema.
 
 The HEADER is expected to differ, and only in the lens score columns: those were

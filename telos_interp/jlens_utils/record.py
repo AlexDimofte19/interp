@@ -7,7 +7,7 @@ a CSV would work for a lens arm but not the control: after pruning, a uniform dr
 surviving tokens is no longer a uniform draw over the reasoning chain.
 
 So both `telos_interp/loudness_analysis/build_loudness_tables.py` (which prunes as it writes) and
-`scripts/delete_non_jlens_selected.py` (which prunes after the fact) drop this file next to
+`telos_interp/loudness_analysis/delete_non_jlens_selected.py` (which prunes after the fact) drop this file next to
 the CSVs, and `prepare_activations_for_probing`'s `recorded_*` modes read it back instead of
 re-scoring.
 
