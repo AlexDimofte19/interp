@@ -117,13 +117,26 @@ One cut per sentence: the J-Lens- or Logit-Lens-loudest token, a random token, o
 punctuation (EOS). Run from `wrappers/gptoss_analysis/direction/5_sentence_level/`:
 
 ```bash
-for arm in jlens logitlens random eos; do bash 1_rollouts/rollout_$arm.sh; done
-bash 2_activations/gather_eos.sh                     # first: the others borrow its final-sentence tensors
-for arm in jlens logitlens random; do bash 2_activations/gather_$arm.sh; done
+bash 2_activations/gather_eos.sh
+
+for arm in jlens logitlens random eos; do 
+  bash 1_rollouts/rollout_$arm.sh; 
+done
+
+for arm in jlens logitlens random; do
+  bash 2_activations/gather_$arm.sh; 
+done
+
 bash 2_activations/link_end_of_reasoning.sh
-for arm in jlens logitlens random eos; do bash 3_preparations/prepare_$arm.sh; done
-bash 3_preparations/intersect_arms.sh                # keep only the sentences all four arms hold
+
+for arm in jlens logitlens random eos; do     
+  bash 3_preparations/prepare_$arm.sh; 
+done
+
+bash 3_preparations/intersect_arms.sh   # keep only the sentences all four arms hold
+
 bash 4_train_and_eval_probes/train_sentence_probes_all_selections.sh
+
 bash 4_train_and_eval_probes/cross_eval_sentence_probes_all_selections.sh
 ```
 
